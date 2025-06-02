@@ -1,0 +1,31 @@
+[package]
+name = "sc_windows"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32",
+  "Win32_Graphics",
+  "Win32_Graphics_Gdi",
+  "Win32_System",
+  "Win32_System_LibraryLoader",
+  "Win32_System_DataExchange",
+  "Win32_System_Ole",
+  "Win32_System_Memory",
+  "Win32_UI",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Input",
+] }
+
+
+[profile.release]
+#panic = "abort"
+codegen-units = 1
+lto = true
+#incremental = false
+opt-level = 3
