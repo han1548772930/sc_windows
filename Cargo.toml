@@ -20,6 +20,7 @@ windows = { version = "0.58", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Input",
+  "Win32_UI_HiDpi",
 ] }
 
 
