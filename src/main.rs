@@ -7,23 +7,13 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory,
-};
-use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
-use windows::Win32::System::Com::CoInitializeEx;
-use windows::Win32::System::Com::*;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::HiDpi::{PROCESS_PER_MONITOR_DPI_AWARE, SetProcessDpiAwareness};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_Z,
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_Z,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -730,7 +720,6 @@ impl Toolbar {
 impl WindowState {
     fn new() -> Result<Self> {
         unsafe {
-            // 移除DPI相关代码，直接使用系统坐标
             let screen_width = GetSystemMetrics(SM_CXSCREEN);
             let screen_height = GetSystemMetrics(SM_CYSCREEN);
 
@@ -1276,11 +1265,8 @@ impl WindowState {
     }
     fn update_drag(&mut self, x: i32, y: i32) {
         if !self.mouse_pressed {
-            return false;
+            return;
         }
-
-        let min_box_size = MIN_BOX_SIZE;
-        let old_rect = self.selection_rect; // 保存旧矩形用于变化检测
 
         match self.drag_mode {
             DragMode::Drawing => {
@@ -2200,23 +2186,21 @@ impl WindowState {
         }
     }
 
-    fn draw_selection_border_fast(&self, hdc: HDC) {
+    fn draw_selection_border(&self, hdc: HDC) {
         unsafe {
             let old_pen = SelectObject(hdc, self.border_pen);
+            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            // 使用MoveToEx和LineTo绘制四条边，比Rectangle快
-            MoveToEx(
+            Rectangle(
                 hdc,
                 self.selection_rect.left,
                 self.selection_rect.top,
-                Some(std::ptr::null_mut()),
+                self.selection_rect.right,
+                self.selection_rect.bottom,
             );
-            LineTo(hdc, self.selection_rect.right, self.selection_rect.top);
-            LineTo(hdc, self.selection_rect.right, self.selection_rect.bottom);
-            LineTo(hdc, self.selection_rect.left, self.selection_rect.bottom);
-            LineTo(hdc, self.selection_rect.left, self.selection_rect.top);
 
             SelectObject(hdc, old_pen);
+            SelectObject(hdc, old_brush);
         }
     }
 
@@ -2432,10 +2416,6 @@ impl Drop for WindowState {
             DeleteObject(self.toolbar_border_pen);
             DeleteObject(self.button_brush);
             DeleteObject(self.button_hover_brush);
-            DeleteObject(self.toolbar_brush);
-            DeleteObject(self.toolbar_border_pen);
-            DeleteObject(self.button_brush);
-            DeleteObject(self.button_hover_brush);
         }
     }
 }
@@ -2471,27 +2451,7 @@ unsafe extern "system" fn window_proc(
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
             if !state_ptr.is_null() {
                 let state = &*state_ptr;
-
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-
-                // 使用优化的渲染方法
-                state.render_to_buffer_fast();
-
-                // 一次性复制到屏幕
-                BitBlt(
-                    hdc,
-                    0,
-                    0,
-                    state.screen_width,
-                    state.screen_height,
-                    state.back_buffer_dc,
-                    0,
-                    0,
-                    SRCCOPY,
-                );
-
-                EndPaint(hwnd, &ps);
+                state.paint(hwnd);
             }
             LRESULT(0)
         }
@@ -2507,6 +2467,7 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+
         WM_LBUTTONDOWN => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
             if !state_ptr.is_null() {
@@ -2556,15 +2517,6 @@ unsafe extern "system" fn window_proc(
         }
 
         WM_KEYDOWN => {
-            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
-            if !state_ptr.is_null() {
-                let state = &mut *state_ptr;
-
-                match wparam.0 as u32 {
-                    key if key == VK_ESCAPE.0.into() => {
-                        PostQuitMessage(0);
-                    }
-                    key if key == VK_RETURN.0.into() => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
             if !state_ptr.is_null() {
                 let state = &mut *state_ptr;
@@ -2646,7 +2598,7 @@ fn main() -> Result<()> {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        timeEndPeriod(1);
+
         Ok(())
     }
 }
