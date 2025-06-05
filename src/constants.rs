@@ -67,7 +67,7 @@ pub const BUTTON_HEIGHT: f32 = 30.0;
 pub const BUTTON_SPACING: f32 = 4.0;
 pub const TOOLBAR_PADDING: f32 = 8.0;
 pub const TOOLBAR_MARGIN: f32 = 3.0;
-pub const BUTTON_COUNT: i32 = 10;
+pub const BUTTON_COUNT: i32 = 11;
 
 // 尺寸常量
 pub const HANDLE_SIZE: f32 = 8.0;
@@ -84,3 +84,4 @@ pub const TEXT_ICON: &str = "T₊";
 pub const UNDO_ICON: &str = "↩";
 pub const CONFIRM_ICON: &str = "✔";
 pub const CANCEL_ICON: &str = "✖";
+pub const PIN_ICON: &str = "📌";  

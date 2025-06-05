@@ -20,6 +20,7 @@ pub enum ToolbarButton {
     Confirm,
     Cancel,
     None,
+    Pin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,6 +121,9 @@ pub struct WindowState {
     pub drawing_color: D2D1_COLOR_F,
     pub drawing_thickness: f32,
     pub history: Vec<HistoryState>,
+
+    pub is_pinned: bool,           // 新增：标记窗口是否被pin
+    pub original_window_pos: RECT, // 新增：保存原始窗口位置
 }
 #[derive(Debug, Clone)]
 pub struct IconData {

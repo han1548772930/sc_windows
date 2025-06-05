@@ -52,6 +52,7 @@ impl Toolbar {
             (ToolbarButton::Text, IconData::from_text(TEXT_ICON)),
             (ToolbarButton::Undo, IconData::from_text(UNDO_ICON)),
             (ToolbarButton::Save, IconData::from_text(SAVE_ICON)),
+            (ToolbarButton::Pin, IconData::from_text(PIN_ICON)),
             (ToolbarButton::Copy, IconData::from_text(COPY_ICON)),
             (ToolbarButton::Confirm, IconData::from_text(CONFIRM_ICON)),
             (ToolbarButton::Cancel, IconData::from_text(CANCEL_ICON)),
@@ -154,6 +155,9 @@ impl WindowState {
             }
             ToolbarButton::Copy => {
                 let _ = self.save_selection();
+            }
+            ToolbarButton::Pin => {
+                self.pin_selection(hwnd);
             }
             ToolbarButton::Confirm => {
                 let _ = self.save_selection();

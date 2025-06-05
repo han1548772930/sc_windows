@@ -190,10 +190,181 @@ impl WindowState {
                 },
                 drawing_thickness: 3.0,
                 history: Vec::new(),
+                is_pinned: false,                     // 新增字段初始化
+                original_window_pos: RECT::default(), // 新增字段初始化
             })
         }
     }
+    pub fn pin_selection(&mut self, hwnd: HWND) -> Result<()> {
+        unsafe {
+            let width = self.selection_rect.right - self.selection_rect.left;
+            let height = self.selection_rect.bottom - self.selection_rect.top;
 
+            if width <= 0 || height <= 0 {
+                return Ok(());
+            }
+
+            // 保存当前窗口位置（如果还没保存的话）
+            if !self.is_pinned {
+                let mut current_rect = RECT::default();
+                GetWindowRect(hwnd, &mut current_rect);
+                self.original_window_pos = current_rect;
+            }
+
+            // 获取选择区域的屏幕截图（包含绘图内容）
+            let screen_dc = GetDC(HWND(std::ptr::null_mut()));
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+            let old_bitmap = SelectObject(mem_dc, bitmap);
+
+            // 直接从屏幕复制选择区域（包含窗口内容和绘图）
+            BitBlt(
+                mem_dc,
+                0,
+                0,
+                width,
+                height,
+                screen_dc,
+                self.selection_rect.left,
+                self.selection_rect.top,
+                SRCCOPY,
+            );
+
+            // 从GDI位图创建新的D2D位图
+            if let Ok(new_d2d_bitmap) =
+                Self::create_d2d_bitmap_from_gdi(&self.render_target, mem_dc, width, height)
+            {
+                // 替换当前的截图位图
+                self.screenshot_bitmap = new_d2d_bitmap;
+            }
+
+            // 清理GDI资源
+            SelectObject(mem_dc, old_bitmap);
+            DeleteObject(bitmap);
+            DeleteDC(mem_dc);
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+
+            // 调整窗口大小和位置到选择区域
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                self.selection_rect.left,
+                self.selection_rect.top,
+                width,
+                height,
+                SWP_SHOWWINDOW,
+            );
+
+            // 更新内部状态
+            self.screen_width = width;
+            self.screen_height = height;
+
+            // 重置选择区域为整个新窗口
+            self.selection_rect = RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+
+            // 清除所有绘图元素和选择状态
+            self.drawing_elements.clear();
+            self.current_element = None;
+            self.selected_element = None;
+            self.current_tool = DrawingTool::None;
+            self.has_selection = false;
+
+            // 隐藏工具栏
+            self.toolbar.hide();
+
+            // 标记为已pin
+            self.is_pinned = true;
+
+            // 重新创建渲染目标以适应新尺寸
+            if let Ok(new_render_target) = self.create_render_target_for_size(hwnd, width, height) {
+                self.render_target = new_render_target;
+
+                // 重新创建画刷（因为render_target改变了）
+                if let Ok(brushes) = self.recreate_brushes() {
+                    self.selection_border_brush = brushes.0;
+                    self.handle_fill_brush = brushes.1;
+                    self.handle_border_brush = brushes.2;
+                    self.toolbar_bg_brush = brushes.3;
+                    self.button_hover_brush = brushes.4;
+                    self.button_active_brush = brushes.5;
+                    self.text_brush = brushes.6;
+                    self.mask_brush = brushes.7;
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    // 创建指定尺寸的渲染目标
+    unsafe fn create_render_target_for_size(
+        &self,
+        hwnd: HWND,
+        width: i32,
+        height: i32,
+    ) -> Result<ID2D1HwndRenderTarget> {
+        let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+
+        let hwnd_render_target_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+            hwnd,
+            pixelSize: D2D_SIZE_U {
+                width: width as u32,
+                height: height as u32,
+            },
+            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+        };
+
+        self.d2d_factory
+            .CreateHwndRenderTarget(&render_target_properties, &hwnd_render_target_properties)
+    }
+
+    // 重新创建画刷
+    unsafe fn recreate_brushes(
+        &self,
+    ) -> Result<(
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+        ID2D1SolidColorBrush,
+    )> {
+        Ok((
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_SELECTION_BORDER, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_HANDLE_FILL, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_HANDLE_BORDER, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_TOOLBAR_BG, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_BUTTON_HOVER, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_BUTTON_ACTIVE, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_TEXT_NORMAL, None)?,
+            self.render_target
+                .CreateSolidColorBrush(&COLOR_MASK, None)?,
+        ))
+    }
     unsafe fn create_d2d_bitmap_from_gdi(
         render_target: &ID2D1HwndRenderTarget,
         gdi_dc: HDC,
@@ -294,47 +465,50 @@ impl WindowState {
                 None,
             );
 
-            if self.has_selection {
-                // 绘制遮罩
-                self.draw_dimmed_overlay();
+            // 如果是pinned状态，只显示图片，不显示选择框等UI元素
+            if !self.is_pinned {
+                if self.has_selection {
+                    // 绘制遮罩
+                    self.draw_dimmed_overlay();
 
-                // 绘制选择框边框
-                self.draw_selection_border();
+                    // 绘制选择框边框
+                    self.draw_selection_border();
 
-                // 🔧 修改：先绘制所有元素到选择区域（用于保存），再应用裁剪显示
-                // 设置裁剪区域到选择框
-                self.push_selection_clip();
+                    // 设置裁剪区域到选择框
+                    self.push_selection_clip();
 
-                // 绘制绘图元素（会被裁剪显示，但完整内容已绘制到渲染目标）
-                for element in &self.drawing_elements {
-                    self.draw_element(element);
+                    // 绘制绘图元素（会被裁剪显示）
+                    for element in &self.drawing_elements {
+                        self.draw_element(element);
+                    }
+
+                    if let Some(ref element) = self.current_element {
+                        self.draw_element(element);
+                    }
+
+                    // 恢复裁剪区域
+                    self.pop_clip();
+
+                    // 绘制选择框手柄（不被裁剪）
+                    if self.current_tool == DrawingTool::None {
+                        self.draw_handles();
+                    }
+
+                    // 绘制元素选择（不被裁剪）
+                    self.draw_element_selection();
+
+                    // 绘制工具栏（不被裁剪）
+                    if self.toolbar.visible {
+                        self.draw_toolbar();
+                    }
+                } else {
+                    // 全屏遮罩
+                    let screen_rect = d2d_rect(0, 0, self.screen_width, self.screen_height);
+                    self.render_target
+                        .FillRectangle(&screen_rect, &self.mask_brush);
                 }
-
-                if let Some(ref element) = self.current_element {
-                    self.draw_element(element);
-                }
-
-                // 恢复裁剪区域
-                self.pop_clip();
-
-                // 绘制选择框手柄（不被裁剪）
-                if self.current_tool == DrawingTool::None {
-                    self.draw_handles();
-                }
-
-                // 绘制元素选择（不被裁剪）
-                self.draw_element_selection();
-
-                // 绘制工具栏（不被裁剪）
-                if self.toolbar.visible {
-                    self.draw_toolbar();
-                }
-            } else {
-                // 全屏遮罩
-                let screen_rect = d2d_rect(0, 0, self.screen_width, self.screen_height);
-                self.render_target
-                    .FillRectangle(&screen_rect, &self.mask_brush);
             }
+            // 如果是pinned状态，什么都不绘制，只显示背景截图
 
             let _ = self.render_target.EndDraw(None, None);
         }

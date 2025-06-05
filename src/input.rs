@@ -11,6 +11,18 @@ use crate::*;
 
 impl WindowState {
     pub fn handle_left_button_down(&mut self, hwnd: HWND, x: i32, y: i32) {
+        // 如果是pin状态，只处理窗口拖动
+        if self.is_pinned {
+            self.mouse_pressed = true;
+            self.drag_start_pos = POINT { x, y };
+            self.drag_mode = DragMode::Moving;
+
+            unsafe {
+                SetCapture(hwnd);
+            }
+            return;
+        }
+
         // 第一优先级：检查工具栏点击
         if self.has_selection {
             let toolbar_button = self.toolbar.get_button_at_position(x, y);
@@ -28,6 +40,7 @@ impl WindowState {
             }
         }
 
+        // ...existing code for non-pinned state...
         // 第二优先级：检查文本工具的简化处理
         if self.current_tool == DrawingTool::Text {
             // 简化：只检查是否点击了已有文本元素进行移动
@@ -127,6 +140,13 @@ impl WindowState {
             ReleaseCapture();
         }
 
+        // 如果是pin状态，只处理窗口拖动结束
+        if self.is_pinned {
+            self.mouse_pressed = false;
+            self.drag_mode = DragMode::None;
+            return;
+        }
+
         // 处理工具栏点击
         let toolbar_button = self.toolbar.get_button_at_position(x, y);
         if toolbar_button != ToolbarButton::None && toolbar_button == self.toolbar.clicked_button {
@@ -147,6 +167,17 @@ impl WindowState {
     }
 
     pub fn handle_key_down(&mut self, hwnd: HWND, key: u32) {
+        // 如果是pin状态，只允许ESC键退出pin模式
+        if self.is_pinned {
+            match key {
+                val if val == VK_ESCAPE.0 as u32 => {
+                    unsafe { PostQuitMessage(0) };
+                }
+                _ => {} // pin状态下忽略其他按键
+            }
+            return;
+        }
+
         // 只保留基本的键盘快捷键
         match key {
             val if val == VK_ESCAPE.0 as u32 => unsafe {
@@ -167,8 +198,46 @@ impl WindowState {
             _ => {}
         }
     }
+    pub fn update_pinned_window_position(&mut self, hwnd: HWND, x: i32, y: i32) {
+        unsafe {
+            let dx = x - self.drag_start_pos.x;
+            let dy = y - self.drag_start_pos.y;
 
+            // 获取当前窗口位置
+            let mut window_rect = RECT::default();
+            GetWindowRect(hwnd, &mut window_rect);
+
+            let new_x = window_rect.left + dx;
+            let new_y = window_rect.top + dy;
+
+            // 移动窗口
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                new_x,
+                new_y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER,
+            );
+        }
+    }
     pub fn handle_mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
+        // 如果是pin状态，只处理窗口拖动
+        if self.is_pinned {
+            if self.mouse_pressed && self.drag_mode == DragMode::Moving {
+                self.update_pinned_window_position(hwnd, x, y);
+            }
+
+            // pin状态下始终显示移动光标
+            unsafe {
+                if let Ok(cursor) = LoadCursorW(HINSTANCE(std::ptr::null_mut()), IDC_SIZEALL) {
+                    SetCursor(cursor);
+                }
+            }
+            return;
+        }
+
         // 检查工具栏悬停
         let hovered_button = self.toolbar.get_button_at_position(x, y);
         let is_button_disabled = match hovered_button {
