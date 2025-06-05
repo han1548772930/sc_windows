@@ -796,48 +796,7 @@ impl WindowState {
             }
         }
     }
-    fn calculate_text_size_for_element(&self, text: &str, font_size: f32) -> (i32, i32) {
-        if text.is_empty() {
-            return (80, 25);
-        }
 
-        unsafe {
-            if let Ok(temp_format) = self.dwrite_factory.CreateTextFormat(
-                w!("Microsoft YaHei"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                w!(""),
-            ) {
-                let text_wide = to_wide_chars(text);
-                if let Ok(text_layout) = self.dwrite_factory.CreateTextLayout(
-                    &text_wide[..text_wide.len() - 1],
-                    &temp_format,
-                    f32::MAX,
-                    f32::MAX,
-                ) {
-                    let mut metrics = Default::default();
-                    if text_layout.GetMetrics(&mut metrics).is_ok() {
-                        let width = (metrics.width.ceil() as i32).max(50) + 16;
-                        let height = (metrics.height.ceil() as i32).max(20) + 8;
-                        return (width, height);
-                    }
-                }
-            }
-        }
-
-        // 降级计算
-        let char_count = text.chars().count();
-        let estimated_width = if text.chars().any(|c| c as u32 > 127) {
-            (char_count as f32 * font_size * 0.9) as i32
-        } else {
-            (char_count as f32 * font_size * 0.6) as i32
-        };
-        let estimated_height = (font_size * 1.2) as i32;
-        (estimated_width.max(50) + 16, estimated_height.max(20) + 8)
-    }
     pub fn draw_toolbar(&self) {
         unsafe {
             // 绘制工具栏背景
