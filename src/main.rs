@@ -102,12 +102,40 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
 
+        WM_CHAR => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+            if !state_ptr.is_null() {
+                let state = &mut *state_ptr;
+                // 正确处理Unicode字符，支持中文输入
+                if let Some(character) = char::from_u32(wparam.0 as u32) {
+                    // 允许所有可打印字符，包括中文和其他Unicode字符
+                    // 排除控制字符（除了空格和制表符）
+                    if !character.is_control() || character == ' ' || character == '\t' {
+                        state.handle_text_input(character, hwnd);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+
+        WM_TIMER => {
+            let state_ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
+            if !state_ptr.is_null() {
+                let state = unsafe { &mut *state_ptr };
+                // 处理光标闪烁定时器
+                if wparam.0 == state.cursor_timer_id {
+                    state.handle_cursor_timer(hwnd);
+                }
+            }
+            LRESULT(0)
+        }
+
         WM_SETCURSOR => {
             // 让我们自己处理光标
             LRESULT(1)
         }
 
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
@@ -122,7 +150,7 @@ fn main() -> Result<()> {
             hInstance: instance.into(),
             lpszClassName: PCWSTR(class_name.as_ptr()),
             hbrBackground: HBRUSH(std::ptr::null_mut()),
-            hCursor: LoadCursorW(HINSTANCE(std::ptr::null_mut()), IDC_ARROW)?,
+            hCursor: LoadCursorW(Some(HINSTANCE(std::ptr::null_mut())), IDC_ARROW)?,
             style: CS_DBLCLKS | CS_OWNDC | CS_HREDRAW,
             ..Default::default()
         };
@@ -141,18 +169,18 @@ fn main() -> Result<()> {
             0,
             screen_width,
             screen_height,
-            HWND(std::ptr::null_mut()),
-            HMENU(std::ptr::null_mut()),
-            instance,
+            Some(HWND(std::ptr::null_mut())),
+            Some(HMENU(std::ptr::null_mut())),
+            Some(instance.into()),
             None,
         )?;
 
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = UpdateWindow(hwnd);
 
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, HWND(std::ptr::null_mut()), 0, 0).as_bool() {
-            TranslateMessage(&msg);
+        while GetMessageW(&mut msg, Some(HWND(std::ptr::null_mut())), 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 

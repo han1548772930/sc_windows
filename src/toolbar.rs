@@ -44,36 +44,36 @@ impl Toolbar {
         let button_y = toolbar_y + (TOOLBAR_HEIGHT - BUTTON_HEIGHT) / 2.0; // 垂直居中
         let mut button_x = toolbar_x + TOOLBAR_PADDING;
 
-        let buttons_data = [
-            (ToolbarButton::Rectangle, IconData::from_text(RECT_ICON)),
-            (ToolbarButton::Circle, IconData::from_text(CIRCLE_ICON)),
-            (ToolbarButton::Arrow, IconData::from_text(ARROW_ICON)),
-            (ToolbarButton::Pen, IconData::from_text(PEN_ICON)),
-            (ToolbarButton::Text, IconData::from_text(TEXT_ICON)),
-            (ToolbarButton::Undo, IconData::from_text(UNDO_ICON)),
-            (ToolbarButton::Save, IconData::from_text(SAVE_ICON)),
-            (ToolbarButton::Pin, IconData::from_text(PIN_ICON)),
-            (ToolbarButton::Copy, IconData::from_text(COPY_ICON)),
-            (ToolbarButton::Confirm, IconData::from_text(CONFIRM_ICON)),
-            (ToolbarButton::Cancel, IconData::from_text(CANCEL_ICON)),
+        let buttons = [
+            ToolbarButton::Rectangle,
+            ToolbarButton::Circle,
+            ToolbarButton::Arrow,
+            ToolbarButton::Pen,
+            ToolbarButton::Text,
+            ToolbarButton::Undo,
+            ToolbarButton::ExtractText, // 新增：放在Save左边
+            ToolbarButton::Languages,   // 新增：放在Save左边
+            ToolbarButton::Save,
+            ToolbarButton::Pin,
+            ToolbarButton::Confirm,
+            ToolbarButton::Cancel,
         ];
 
-        for (button_type, icon_data) in buttons_data.iter() {
+        for button_type in buttons.iter() {
             let button_rect = D2D_RECT_F {
                 left: button_x,
                 top: button_y,
                 right: button_x + BUTTON_WIDTH,
                 bottom: button_y + BUTTON_HEIGHT, // 使用BUTTON_HEIGHT而不是toolbar高度
             };
-            self.buttons
-                .push((button_rect, *button_type, icon_data.clone()));
+            self.buttons.push((button_rect, *button_type));
             button_x += BUTTON_WIDTH + BUTTON_SPACING;
         }
 
         self.visible = true;
     }
     pub fn get_button_at_position(&self, x: i32, y: i32) -> ToolbarButton {
-        for (rect, button_type, _) in &self.buttons {
+        for (rect, button_type) in &self.buttons {
             if x as f32 >= rect.left
                 && x as f32 <= rect.right
                 && y as f32 >= rect.top
@@ -105,6 +105,20 @@ impl Toolbar {
 
 impl WindowState {
     pub fn handle_toolbar_click(&mut self, button: ToolbarButton, hwnd: HWND) {
+        // 只有绘图工具按钮才设置为选中状态
+        match button {
+            ToolbarButton::Rectangle
+            | ToolbarButton::Circle
+            | ToolbarButton::Arrow
+            | ToolbarButton::Pen
+            | ToolbarButton::Text => {
+                self.toolbar.clicked_button = button;
+            }
+            _ => {
+                // 其他按钮（如 Undo、Save、Pin 等）不保持选中状态
+            }
+        }
+
         match button {
             ToolbarButton::Rectangle => {
                 self.current_tool = DrawingTool::Rectangle;
@@ -146,18 +160,23 @@ impl WindowState {
                 if self.can_undo() {
                     self.undo();
                     unsafe {
-                        InvalidateRect(hwnd, None, FALSE);
+                        InvalidateRect(Some(hwnd), None, FALSE.into());
                     }
                 }
             }
-            ToolbarButton::Save => {
-                let _ = self.save_selection();
+            ToolbarButton::ExtractText => {
+                // TODO: 实现文本提取功能
+                println!("ExtractText button clicked");
             }
-            ToolbarButton::Copy => {
-                let _ = self.save_selection();
+            ToolbarButton::Languages => {
+                // TODO: 实现语言功能
+                println!("Languages button clicked");
+            }
+            ToolbarButton::Save => {
+                let _ = self.save_selection_to_file(hwnd);
             }
             ToolbarButton::Pin => {
-                self.pin_selection(hwnd);
+                let _ = self.pin_selection(hwnd);
             }
             ToolbarButton::Confirm => {
                 let _ = self.save_selection();
@@ -180,7 +199,7 @@ impl WindowState {
         }
 
         unsafe {
-            InvalidateRect(hwnd, None, FALSE);
+            InvalidateRect(Some(hwnd), None, FALSE.into());
         }
     }
 }

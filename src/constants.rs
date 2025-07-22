@@ -60,6 +60,21 @@ pub const COLOR_TEXT_NORMAL: D2D1_COLOR_F = D2D1_COLOR_F {
     a: 1.0,
 };
 
+// 文字输入相关颜色
+pub const COLOR_TEXT_BORDER: D2D1_COLOR_F = D2D1_COLOR_F {
+    r: 0.5, // 灰色
+    g: 0.5,
+    b: 0.5,
+    a: 1.0,
+};
+
+pub const COLOR_TEXT_CURSOR: D2D1_COLOR_F = D2D1_COLOR_F {
+    r: 0.0, // 绿色光标
+    g: 1.0,
+    b: 0.0,
+    a: 1.0,
+};
+
 // 工具栏尺寸常量
 pub const TOOLBAR_HEIGHT: f32 = 40.0;
 pub const BUTTON_WIDTH: f32 = 30.0;
@@ -67,21 +82,18 @@ pub const BUTTON_HEIGHT: f32 = 30.0;
 pub const BUTTON_SPACING: f32 = 4.0;
 pub const TOOLBAR_PADDING: f32 = 8.0;
 pub const TOOLBAR_MARGIN: f32 = 3.0;
-pub const BUTTON_COUNT: i32 = 11;
+pub const BUTTON_COUNT: i32 = 12;
 
 // 尺寸常量
 pub const HANDLE_SIZE: f32 = 8.0;
 pub const HANDLE_DETECTION_RADIUS: f32 = 10.0;
 
-// 工具栏图标
-pub const SAVE_ICON: &str = "💾";
-pub const COPY_ICON: &str = "📋";
-pub const RECT_ICON: &str = "⬜";
-pub const CIRCLE_ICON: &str = "◯";
-pub const ARROW_ICON: &str = "ↆ";
-pub const PEN_ICON: &str = "🖊";
-pub const TEXT_ICON: &str = "T₊";
-pub const UNDO_ICON: &str = "↩";
-pub const CONFIRM_ICON: &str = "✔";
-pub const CANCEL_ICON: &str = "✖";
-pub const PIN_ICON: &str = "📌";  
+// 文字输入相关常量
+pub const DEFAULT_TEXT_WIDTH: i32 = 120; // 调整为更合理的初始宽度
+pub const DEFAULT_TEXT_HEIGHT: i32 = 32; // 调整为更合理的初始高度
+pub const MIN_TEXT_WIDTH: i32 = 40;
+pub const MIN_TEXT_HEIGHT: i32 = 20;
+pub const MAX_TEXT_WIDTH: i32 = 400; // 保留用于向后兼容，但实际不再使用
+pub const LINE_HEIGHT: i32 = 24; // 每行高度
+pub const CHAR_WIDTH: f32 = 15.0; // 平均字符宽度（进一步增大以确保准确性）
+pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压

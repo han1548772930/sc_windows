@@ -1,16 +1,17 @@
 use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 
 use windows::Win32::Graphics::Direct2D::Common::*;
+use windows_numerics::*;
 
 // 辅助函数
 pub fn to_wide_chars(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(once(0)).collect()
 }
 
-pub fn d2d_point(x: i32, y: i32) -> D2D_POINT_2F {
-    D2D_POINT_2F {
-        x: x as f32,
-        y: y as f32,
+pub fn d2d_point(x: i32, y: i32) -> Vector2 {
+    Vector2 {
+        X: x as f32,
+        Y: y as f32,
     }
 }
 

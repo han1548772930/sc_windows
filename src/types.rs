@@ -4,10 +4,10 @@ use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Gdi::*;
 
+use crate::svg_icons::SvgIconManager;
 use crate::utils::*;
-use crate::*;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolbarButton {
     Save,
     Copy,
@@ -17,6 +17,8 @@ pub enum ToolbarButton {
     Pen,
     Text,
     Undo,
+    ExtractText, // 新增：文本提取按钮
+    Languages,   // 新增：语言按钮
     Confirm,
     Cancel,
     None,
@@ -48,7 +50,7 @@ pub struct DrawingElement {
 pub struct Toolbar {
     pub rect: D2D_RECT_F,
     pub visible: bool,
-    pub buttons: Vec<(D2D_RECT_F, ToolbarButton, IconData)>,
+    pub buttons: Vec<(D2D_RECT_F, ToolbarButton)>,
     pub hovered_button: ToolbarButton,
     pub clicked_button: ToolbarButton,
 }
@@ -111,6 +113,7 @@ pub struct WindowState {
     pub mouse_pressed: bool,
     pub drag_start_pos: POINT,
     pub drag_start_rect: RECT,
+    pub drag_start_font_size: f32, // 保存拖拽开始时的字体大小
 
     // 绘图功能
     pub toolbar: Toolbar,
@@ -122,13 +125,19 @@ pub struct WindowState {
     pub drawing_thickness: f32,
     pub history: Vec<HistoryState>,
 
-    pub is_pinned: bool,           // 新增：标记窗口是否被pin
-    pub original_window_pos: RECT, // 新增：保存原始窗口位置
+    pub is_pinned: bool,                  // 新增：标记窗口是否被pin
+    pub original_window_pos: RECT,        // 新增：保存原始窗口位置
+    pub svg_icon_manager: SvgIconManager, // SVG 图标管理器
+
+    // 文字输入相关状态
+    pub text_editing: bool,                   // 是否正在编辑文字
+    pub editing_element_index: Option<usize>, // 正在编辑的文字元素索引
+    pub text_cursor_pos: usize,               // 文字光标位置
+    pub text_cursor_visible: bool,            // 光标是否可见（用于闪烁效果）
+    pub cursor_timer_id: usize,               // 光标闪烁定时器ID
+    pub just_saved_text: bool,                // 是否刚刚保存了文本（防止立即创建新文本）
 }
-#[derive(Debug, Clone)]
-pub struct IconData {
-    pub text: String,
-}
+// IconData 结构体已移除，现在只使用 SVG 图标
 #[derive(Clone, Debug)]
 pub struct HistoryState {
     pub drawing_elements: Vec<DrawingElement>,
@@ -164,41 +173,28 @@ impl DrawingElement {
 
         match self.tool {
             DrawingTool::Text => {
-                // 🔧 正确计算文本边界
+                // 文字：动态计算基于内容的边界
                 if !self.points.is_empty() {
-                    // 简化计算，基于文本长度和字体大小
-                    let display_text = if self.text.is_empty() {
-                        "Text"
-                    } else {
-                        &self.text
-                    };
-                    let font_size = if self.thickness > 0.0 {
-                        self.thickness
-                    } else {
-                        20.0
-                    };
+                    let start = &self.points[0];
 
-                    // 估算文本尺寸
-                    let char_count = display_text.chars().count();
-                    let estimated_width = if display_text.chars().any(|c| c as u32 > 127) {
-                        // 中文字符
-                        (char_count as f32 * font_size * 0.9) as i32
+                    // 如果有第二个点，使用它定义矩形（已经通过动态调整设置）
+                    if self.points.len() >= 2 {
+                        let end = &self.points[1];
+                        self.rect = RECT {
+                            left: start.x.min(end.x),
+                            top: start.y.min(end.y),
+                            right: start.x.max(end.x),
+                            bottom: start.y.max(end.y),
+                        };
                     } else {
-                        // 英文字符
-                        (char_count as f32 * font_size * 0.6) as i32
-                    };
-                    let estimated_height = (font_size * 1.2) as i32;
-
-                    // 🎯 使用合理的尺寸，而不是巨大的值
-                    let width = (estimated_width.max(50) + 16).min(300); // 限制最大宽度300px
-                    let height = (estimated_height.max(20) + 8).min(80); // 限制最大高度80px
-
-                    self.rect = RECT {
-                        left: self.points[0].x,
-                        top: self.points[0].y,
-                        right: self.points[0].x + width,
-                        bottom: self.points[0].y + height,
-                    };
+                        // 使用默认大小（初始状态）
+                        self.rect = RECT {
+                            left: start.x,
+                            top: start.y,
+                            right: start.x + crate::constants::DEFAULT_TEXT_WIDTH,
+                            bottom: start.y + crate::constants::DEFAULT_TEXT_HEIGHT,
+                        };
+                    }
                 }
             }
             DrawingTool::Pen => {
@@ -257,6 +253,7 @@ impl DrawingElement {
                     };
                 }
             }
+
             _ => {
                 // 其他工具使用第一个点作为基准
                 if !self.points.is_empty() {
@@ -439,6 +436,18 @@ impl DrawingElement {
                         x: new_rect.left,
                         y: new_rect.top,
                     };
+                    // 确保有第二个点来定义文本框的右下角
+                    if self.points.len() >= 2 {
+                        self.points[1] = POINT {
+                            x: new_rect.right,
+                            y: new_rect.bottom,
+                        };
+                    } else {
+                        self.points.push(POINT {
+                            x: new_rect.right,
+                            y: new_rect.bottom,
+                        });
+                    }
                 }
             }
             _ => {}
@@ -517,10 +526,4 @@ impl Toolbar {
         }
     }
 }
-impl IconData {
-    pub fn from_text(text: &str) -> Self {
-        IconData {
-            text: text.to_string(),
-        }
-    }
-}
+// IconData 实现已移除

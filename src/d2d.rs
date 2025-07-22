@@ -1,4 +1,5 @@
 use crate::WindowState;
+use crate::svg_icons::SvgIconManager;
 use crate::utils::*;
 use crate::*;
 
@@ -9,6 +10,7 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
+use windows_numerics::*;
 
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::*;
@@ -26,11 +28,11 @@ impl WindowState {
             let screen_height = GetSystemMetrics(SM_CYSCREEN);
 
             // 创建传统GDI资源用于屏幕捕获
-            let screen_dc = GetDC(HWND(std::ptr::null_mut()));
-            let screenshot_dc = CreateCompatibleDC(screen_dc);
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+            let screenshot_dc = CreateCompatibleDC(Some(screen_dc));
             let gdi_screenshot_bitmap =
                 CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
-            SelectObject(screenshot_dc, gdi_screenshot_bitmap);
+            SelectObject(screenshot_dc, gdi_screenshot_bitmap.into());
 
             // 捕获屏幕
             BitBlt(
@@ -39,12 +41,12 @@ impl WindowState {
                 0,
                 screen_width,
                 screen_height,
-                screen_dc,
+                Some(screen_dc),
                 0,
                 0,
                 SRCCOPY,
             )?;
-            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
 
             // 创建Direct2D Factory
             let d2d_factory =
@@ -177,6 +179,7 @@ impl WindowState {
                     right: 0,
                     bottom: 0,
                 },
+                drag_start_font_size: 20.0,
                 toolbar: Toolbar::new(),
                 current_tool: DrawingTool::None,
                 drawing_elements: Vec::new(),
@@ -192,6 +195,19 @@ impl WindowState {
                 history: Vec::new(),
                 is_pinned: false,                     // 新增字段初始化
                 original_window_pos: RECT::default(), // 新增字段初始化
+                svg_icon_manager: {
+                    let mut manager = SvgIconManager::new();
+                    let _ = manager.load_icons(); // 忽略加载错误
+                    manager
+                },
+
+                // 文字输入相关字段初始化
+                text_editing: false,
+                editing_element_index: None,
+                text_cursor_pos: 0,
+                text_cursor_visible: true,
+                cursor_timer_id: 1,     // 定时器ID
+                just_saved_text: false, // 初始化为false
             })
         }
     }
@@ -212,10 +228,10 @@ impl WindowState {
             }
 
             // 获取选择区域的屏幕截图（包含绘图内容）
-            let screen_dc = GetDC(HWND(std::ptr::null_mut()));
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+            let mem_dc = CreateCompatibleDC(Some(screen_dc));
             let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-            let old_bitmap = SelectObject(mem_dc, bitmap);
+            let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
             // 直接从屏幕复制选择区域（包含窗口内容和绘图）
             BitBlt(
@@ -224,7 +240,7 @@ impl WindowState {
                 0,
                 width,
                 height,
-                screen_dc,
+                Some(screen_dc),
                 self.selection_rect.left,
                 self.selection_rect.top,
                 SRCCOPY,
@@ -240,14 +256,14 @@ impl WindowState {
 
             // 清理GDI资源
             SelectObject(mem_dc, old_bitmap);
-            DeleteObject(bitmap);
+            DeleteObject(bitmap.into());
             DeleteDC(mem_dc);
-            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
 
             // 调整窗口大小和位置到选择区域
             SetWindowPos(
                 hwnd,
-                HWND_TOPMOST,
+                Some(HWND_TOPMOST),
                 self.selection_rect.left,
                 self.selection_rect.top,
                 width,
@@ -391,18 +407,18 @@ impl WindowState {
 
         let mut pixels: *mut std::ffi::c_void = std::ptr::null_mut();
         let dib = CreateDIBSection(
-            gdi_dc,
+            Some(gdi_dc),
             &bmi,
             DIB_RGB_COLORS,
             &mut pixels,
-            HANDLE(std::ptr::null_mut()),
+            Some(HANDLE(std::ptr::null_mut())),
             0,
         )?;
 
-        let temp_dc = CreateCompatibleDC(gdi_dc);
-        let old_bitmap = SelectObject(temp_dc, dib);
+        let temp_dc = CreateCompatibleDC(Some(gdi_dc));
+        let old_bitmap = SelectObject(temp_dc, dib.into());
 
-        BitBlt(temp_dc, 0, 0, width, height, gdi_dc, 0, 0, SRCCOPY)?;
+        BitBlt(temp_dc, 0, 0, width, height, Some(gdi_dc), 0, 0, SRCCOPY)?;
 
         SelectObject(temp_dc, old_bitmap);
         DeleteDC(temp_dc);
@@ -430,7 +446,7 @@ impl WindowState {
             &bitmap_properties,
         )?;
 
-        DeleteObject(dib);
+        DeleteObject(dib.into());
         Ok(bitmap)
     }
 
@@ -635,64 +651,8 @@ impl WindowState {
             if let Ok(brush) = element_brush {
                 match element.tool {
                     DrawingTool::Text => {
-                        // 暂时用虚线框代替复杂的文本输入
                         if !element.points.is_empty() {
-                            // 创建虚线样式
-                            let stroke_style_properties = D2D1_STROKE_STYLE_PROPERTIES {
-                                startCap: D2D1_CAP_STYLE_FLAT,
-                                endCap: D2D1_CAP_STYLE_FLAT,
-                                dashCap: D2D1_CAP_STYLE_FLAT,
-                                lineJoin: D2D1_LINE_JOIN_MITER,
-                                miterLimit: 10.0,
-                                dashStyle: D2D1_DASH_STYLE_DASH,
-                                dashOffset: 0.0,
-                            };
-
-                            if let Ok(dashed_stroke) = self
-                                .d2d_factory
-                                .CreateStrokeStyle(&stroke_style_properties, None)
-                            {
-                                // 绘制虚线文本框
-
-                                let text_rect = d2d_rect(
-                                    element.points[0].x,
-                                    element.points[0].y,
-                                    element.points[0].x + TEXT_BOX_WIDTH, // 使用常量
-                                    element.points[0].y + TEXT_BOX_HEIGHT, // 使用常量
-                                );
-
-                                self.render_target.DrawRectangle(
-                                    &text_rect,
-                                    &brush,
-                                    2.0,
-                                    Some(&dashed_stroke),
-                                );
-
-                                // 在框内绘制占位文字
-                                if !element.text.is_empty() {
-                                    let text_wide = to_wide_chars(&element.text);
-                                    self.render_target.DrawText(
-                                        &text_wide[..text_wide.len() - 1],
-                                        &self.text_format,
-                                        &text_rect,
-                                        &brush,
-                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                        DWRITE_MEASURING_MODE_NATURAL,
-                                    );
-                                } else {
-                                    // 显示占位符
-                                    let placeholder = "Text";
-                                    let placeholder_wide = to_wide_chars(placeholder);
-                                    self.render_target.DrawText(
-                                        &placeholder_wide[..placeholder_wide.len() - 1],
-                                        &self.text_format,
-                                        &text_rect,
-                                        &brush,
-                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                        DWRITE_MEASURING_MODE_NATURAL,
-                                    );
-                                }
-                            }
+                            self.draw_text_element(element);
                         }
                     }
                     DrawingTool::Rectangle => {
@@ -720,10 +680,10 @@ impl WindowState {
                             let radius_y =
                                 (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
 
-                            let ellipse = D2D1_ELLIPSE {
-                                point: D2D_POINT_2F {
-                                    x: center_x,
-                                    y: center_y,
+                            let ellipse: D2D1_ELLIPSE = D2D1_ELLIPSE {
+                                point: windows_numerics::Vector2 {
+                                    X: center_x,
+                                    Y: center_y,
                                 },
                                 radiusX: radius_x,
                                 radiusY: radius_y,
@@ -837,6 +797,16 @@ impl WindowState {
                 }
 
                 if element.selected && element.tool != DrawingTool::Pen {
+                    // 对于文本元素，只有在编辑模式下才显示选择边框（拖动时不显示输入框）
+                    if element.tool == DrawingTool::Text {
+                        let is_editing_this_element = self.text_editing
+                            && self.editing_element_index.map_or(false, |idx| {
+                                idx < self.drawing_elements.len() && idx == element_index
+                            });
+                        if !is_editing_this_element {
+                            return; // 文本元素未在编辑状态时不显示选择边框
+                        }
+                    }
                     unsafe {
                         if element.tool == DrawingTool::Arrow && element.points.len() >= 2 {
                             // 箭头只显示起点和终点手柄（如果在选择框内）
@@ -850,9 +820,9 @@ impl WindowState {
                                     && point.y <= self.selection_rect.bottom
                                 {
                                     let handle_ellipse = D2D1_ELLIPSE {
-                                        point: D2D_POINT_2F {
-                                            x: point.x as f32,
-                                            y: point.y as f32,
+                                        point: Vector2 {
+                                            X: point.x as f32,
+                                            Y: point.y as f32,
                                         },
                                         radiusX: half_handle,
                                         radiusY: half_handle,
@@ -921,21 +891,32 @@ impl WindowState {
                                 // 恢复裁剪区域
                                 self.pop_clip();
 
-                                // 绘制8个手柄（只显示在选择框内的）
-                                let center_x = (element.rect.left + element.rect.right) / 2;
-                                let center_y = (element.rect.top + element.rect.bottom) / 2;
+                                // 根据元素类型绘制不同数量的手柄
                                 let half_handle = HANDLE_SIZE / 2.0;
 
-                                let handles = [
-                                    (element.rect.left, element.rect.top),
-                                    (center_x, element.rect.top),
-                                    (element.rect.right, element.rect.top),
-                                    (element.rect.right, center_y),
-                                    (element.rect.right, element.rect.bottom),
-                                    (center_x, element.rect.bottom),
-                                    (element.rect.left, element.rect.bottom),
-                                    (element.rect.left, center_y),
-                                ];
+                                let handles = if element.tool == DrawingTool::Text {
+                                    // 文本元素只绘制4个对角手柄
+                                    vec![
+                                        (element.rect.left, element.rect.top),
+                                        (element.rect.right, element.rect.top),
+                                        (element.rect.right, element.rect.bottom),
+                                        (element.rect.left, element.rect.bottom),
+                                    ]
+                                } else {
+                                    // 其他元素绘制8个手柄
+                                    let center_x = (element.rect.left + element.rect.right) / 2;
+                                    let center_y = (element.rect.top + element.rect.bottom) / 2;
+                                    vec![
+                                        (element.rect.left, element.rect.top),
+                                        (center_x, element.rect.top),
+                                        (element.rect.right, element.rect.top),
+                                        (element.rect.right, center_y),
+                                        (element.rect.right, element.rect.bottom),
+                                        (center_x, element.rect.bottom),
+                                        (element.rect.left, element.rect.bottom),
+                                        (element.rect.left, center_y),
+                                    ]
+                                };
 
                                 for (hx, hy) in handles.iter() {
                                     // 只有当手柄在选择框内时才显示
@@ -945,9 +926,9 @@ impl WindowState {
                                         && *hy <= self.selection_rect.bottom
                                     {
                                         let handle_ellipse = D2D1_ELLIPSE {
-                                            point: D2D_POINT_2F {
-                                                x: *hx as f32,
-                                                y: *hy as f32,
+                                            point: Vector2 {
+                                                X: *hx as f32,
+                                                Y: *hy as f32,
                                             },
                                             radiusX: half_handle,
                                             radiusY: half_handle,
@@ -984,7 +965,7 @@ impl WindowState {
                 .FillRoundedRectangle(&toolbar_rounded_rect, &self.toolbar_bg_brush);
 
             // 绘制按钮
-            for (rect, button_type, icon_data) in &self.toolbar.buttons {
+            for (rect, button_type) in &self.toolbar.buttons {
                 // 检查按钮是否应该被禁用
                 let is_disabled = match button_type {
                     ToolbarButton::Undo => !self.can_undo(), // 撤销按钮根据历史记录状态
@@ -992,10 +973,8 @@ impl WindowState {
                     _ => false,
                 };
 
-                // 绘制按钮背景状态
-                if is_disabled {
-                    // 禁用状态 - 不绘制任何背景，保持默认状态
-                } else if *button_type == self.toolbar.hovered_button {
+                // 绘制按钮背景状态 - 只有 hover 时才显示背景
+                if !is_disabled && *button_type == self.toolbar.hovered_button {
                     // 悬停状态 - 只有未禁用的按钮才能悬停
                     let hover_color = D2D1_COLOR_F {
                         r: 0.75,
@@ -1015,69 +994,422 @@ impl WindowState {
                         self.render_target
                             .FillRoundedRectangle(&button_rounded_rect, &hover_brush);
                     }
-                } else {
-                    // 检查是否是当前选中的工具 - 蓝色背景
-                    let is_current_tool = match button_type {
-                        ToolbarButton::Rectangle => self.current_tool == DrawingTool::Rectangle,
-                        ToolbarButton::Circle => self.current_tool == DrawingTool::Circle,
-                        ToolbarButton::Arrow => self.current_tool == DrawingTool::Arrow,
-                        ToolbarButton::Pen => self.current_tool == DrawingTool::Pen,
-                        ToolbarButton::Text => self.current_tool == DrawingTool::Text,
-                        _ => false,
-                    };
-
-                    if is_current_tool {
-                        let button_rounded_rect = D2D1_ROUNDED_RECT {
-                            rect: *rect,
-                            radiusX: 6.0,
-                            radiusY: 6.0,
-                        };
-                        self.render_target
-                            .FillRoundedRectangle(&button_rounded_rect, &self.button_active_brush);
-                    }
                 }
 
-                // 确定文字颜色
-                let text_color = if is_disabled {
-                    // 禁用状态 - 浅灰色文字
-                    D2D1_COLOR_F {
-                        r: 0.6,
-                        g: 0.6,
-                        b: 0.6,
-                        a: 1.0,
-                    }
-                } else if *button_type == self.toolbar.clicked_button {
-                    // 点击状态 - 绿色文字
-                    D2D1_COLOR_F {
-                        r: 0.13,
-                        g: 0.77,
-                        b: 0.37,
-                        a: 1.0,
-                    }
+                // 文字颜色不再需要，因为我们只使用 SVG 图标
+
+                // 确定图标颜色
+                let icon_color = if *button_type == self.toolbar.clicked_button {
+                    // 选中状态 - 绿色
+                    Some((33, 196, 94)) // #21c45e 绿色
                 } else {
-                    // 普通状态 - 深色文字
-                    D2D1_COLOR_F {
-                        r: 0.1,
-                        g: 0.1,
-                        b: 0.1,
-                        a: 1.0,
-                    }
+                    // 普通状态 - 默认颜色（黑色）
+                    Some((16, 16, 16)) // #101010 深灰色
                 };
 
-                // 创建对应颜色的画刷并绘制居中文字
-                if let Ok(text_brush) = self.render_target.CreateSolidColorBrush(&text_color, None)
-                {
-                    let text_wide = to_wide_chars(&icon_data.text);
+                // 渲染 SVG 图标
+                if let Ok(Some(icon_bitmap)) = self.svg_icon_manager.render_icon_to_bitmap(
+                    *button_type,
+                    &self.render_target,
+                    24, // 图标大小
+                    icon_color,
+                ) {
+                    // 计算图标居中位置
+                    let icon_size = 20.0; // 显示大小
+                    let icon_x = rect.left + (rect.right - rect.left - icon_size) / 2.0;
+                    let icon_y = rect.top + (rect.bottom - rect.top - icon_size) / 2.0;
 
-                    self.render_target.DrawText(
-                        &text_wide[..text_wide.len() - 1],
-                        &self.centered_text_format,
-                        rect,
-                        &text_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
+                    let icon_rect = D2D_RECT_F {
+                        left: icon_x,
+                        top: icon_y,
+                        right: icon_x + icon_size,
+                        bottom: icon_y + icon_size,
+                    };
+
+                    // 绘制图标
+                    self.render_target.DrawBitmap(
+                        &icon_bitmap,
+                        Some(&icon_rect),
+                        if is_disabled { 0.4 } else { 1.0 }, // 禁用时半透明
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        None,
                     );
                 }
+            }
+        }
+    }
+
+    // 绘制文字元素
+    pub fn draw_text_element(&self, element: &DrawingElement) {
+        unsafe {
+            // 计算文字区域
+            let text_rect = if element.points.len() >= 2 {
+                // 如果有两个点，使用它们定义矩形
+                d2d_rect(
+                    element.points[0].x,
+                    element.points[0].y,
+                    element.points[1].x,
+                    element.points[1].y,
+                )
+            } else if !element.points.is_empty() {
+                // 如果只有一个点，使用默认大小
+                d2d_rect(
+                    element.points[0].x,
+                    element.points[0].y,
+                    element.points[0].x + DEFAULT_TEXT_WIDTH,
+                    element.points[0].y + DEFAULT_TEXT_HEIGHT,
+                )
+            } else {
+                return;
+            };
+
+            // 只有在文本编辑模式下且正在编辑此元素时才绘制边框（拖动时不显示输入框）
+            if self.text_editing
+                && self.editing_element_index.map_or(false, |idx| {
+                    idx < self.drawing_elements.len()
+                        && std::ptr::eq(element, &self.drawing_elements[idx])
+                })
+            {
+                // 创建灰色画刷
+                let border_brush = self
+                    .render_target
+                    .CreateSolidColorBrush(&COLOR_TEXT_BORDER, None);
+
+                if let Ok(brush) = border_brush {
+                    // 创建虚线样式
+                    let stroke_style_properties = D2D1_STROKE_STYLE_PROPERTIES {
+                        startCap: D2D1_CAP_STYLE_FLAT,
+                        endCap: D2D1_CAP_STYLE_FLAT,
+                        dashCap: D2D1_CAP_STYLE_FLAT,
+                        lineJoin: D2D1_LINE_JOIN_MITER,
+                        miterLimit: 10.0,
+                        dashStyle: D2D1_DASH_STYLE_DASH,
+                        dashOffset: 0.0,
+                    };
+
+                    if let Ok(dashed_stroke) = self
+                        .d2d_factory
+                        .CreateStrokeStyle(&stroke_style_properties, None)
+                    {
+                        // 绘制虚线边框
+                        self.render_target.DrawRectangle(
+                            &text_rect,
+                            &brush,
+                            1.0,
+                            Some(&dashed_stroke),
+                        );
+                    }
+                }
+
+                // 绘制四个手柄
+                let half_handle = HANDLE_SIZE / 2.0;
+                let handles = [
+                    (text_rect.left, text_rect.top),     // 左上
+                    (text_rect.right, text_rect.top),    // 右上
+                    (text_rect.right, text_rect.bottom), // 右下
+                    (text_rect.left, text_rect.bottom),  // 左下
+                ];
+
+                for (hx, hy) in handles.iter() {
+                    let handle_rect = D2D_RECT_F {
+                        left: hx - half_handle,
+                        top: hy - half_handle,
+                        right: hx + half_handle,
+                        bottom: hy + half_handle,
+                    };
+
+                    self.render_target
+                        .FillRectangle(&handle_rect, &self.handle_fill_brush);
+                    self.render_target.DrawRectangle(
+                        &handle_rect,
+                        &self.handle_border_brush,
+                        1.0,
+                        None,
+                    );
+                }
+            }
+
+            // 绘制文字内容（透明背景）
+            if !element.text.is_empty() {
+                // 创建文字画刷
+                let text_brush = self
+                    .render_target
+                    .CreateSolidColorBrush(&element.color, None);
+
+                if let Ok(brush) = text_brush {
+                    // 添加内边距
+                    let text_content_rect = D2D_RECT_F {
+                        left: text_rect.left + TEXT_PADDING,
+                        top: text_rect.top + TEXT_PADDING,
+                        right: text_rect.right - TEXT_PADDING,
+                        bottom: text_rect.bottom - TEXT_PADDING,
+                    };
+
+                    // 支持多行文字显示
+                    let lines: Vec<&str> = if element.text.is_empty() {
+                        vec![""] // 空文本时显示一个空行（用于显示光标）
+                    } else {
+                        element.text.lines().collect()
+                    };
+                    // 使用动态行高，基于字体大小
+                    let font_size = element.thickness.max(8.0);
+                    let line_height = font_size * 1.2;
+
+                    for (i, line) in lines.iter().enumerate() {
+                        let line_rect = D2D_RECT_F {
+                            left: text_content_rect.left,
+                            top: text_content_rect.top + (i as f32 * line_height),
+                            right: text_content_rect.right,
+                            bottom: text_content_rect.top + ((i + 1) as f32 * line_height),
+                        };
+
+                        // 即使是空行也要绘制（为了光标定位）
+                        if !line.is_empty() {
+                            let line_wide = to_wide_chars(line);
+
+                            // 为每个文本元素创建动态字体大小的文本格式
+                            let font_size = element.thickness.max(8.0);
+                            if let Ok(dynamic_text_format) = self.dwrite_factory.CreateTextFormat(
+                                w!("Microsoft YaHei"),
+                                None,
+                                DWRITE_FONT_WEIGHT_NORMAL,
+                                DWRITE_FONT_STYLE_NORMAL,
+                                DWRITE_FONT_STRETCH_NORMAL,
+                                font_size,
+                                w!(""),
+                            ) {
+                                self.render_target.DrawText(
+                                    &line_wide[..line_wide.len() - 1],
+                                    &dynamic_text_format,
+                                    &line_rect,
+                                    &brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    DWRITE_MEASURING_MODE_NATURAL,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 如果正在编辑此文字元素，绘制光标
+            if self.text_editing {
+                if let Some(editing_index) = self.editing_element_index {
+                    if editing_index < self.drawing_elements.len()
+                        && std::ptr::eq(element, &self.drawing_elements[editing_index])
+                        && self.text_cursor_visible
+                    {
+                        self.draw_text_cursor(element, &text_rect);
+                    }
+                }
+            }
+        }
+    }
+
+    // 精确测量文本尺寸的方法
+    pub fn measure_text_precise(&self, text: &str, max_width: f32) -> Result<(f32, f32)> {
+        unsafe {
+            if text.is_empty() {
+                return Ok((0.0, LINE_HEIGHT as f32));
+            }
+
+            let text_wide = to_wide_chars(text);
+            let text_layout = self.dwrite_factory.CreateTextLayout(
+                &text_wide[..text_wide.len() - 1],
+                &self.text_format,
+                max_width,
+                f32::MAX,
+            )?;
+
+            let mut metrics = std::mem::zeroed::<DWRITE_TEXT_METRICS>();
+            text_layout.GetMetrics(&mut metrics)?;
+            Ok((metrics.width, metrics.height))
+        }
+    }
+
+    // 使用指定字体大小精确测量文本尺寸的方法
+    pub fn measure_text_precise_with_font_size(
+        &self,
+        text: &str,
+        max_width: f32,
+        font_size: f32,
+    ) -> Result<(f32, f32)> {
+        unsafe {
+            if text.is_empty() {
+                return Ok((0.0, font_size * 1.2)); // 使用字体大小的1.2倍作为行高
+            }
+
+            // 创建动态字体大小的文本格式
+            let dynamic_text_format = self.dwrite_factory.CreateTextFormat(
+                w!("Microsoft YaHei"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                font_size,
+                w!(""),
+            )?;
+
+            let text_wide = to_wide_chars(text);
+            let text_layout = self.dwrite_factory.CreateTextLayout(
+                &text_wide[..text_wide.len() - 1],
+                &dynamic_text_format,
+                max_width,
+                f32::MAX,
+            )?;
+
+            let mut metrics = std::mem::zeroed::<DWRITE_TEXT_METRICS>();
+            text_layout.GetMetrics(&mut metrics)?;
+            Ok((metrics.width, metrics.height))
+        }
+    }
+
+    // 精确测量光标前文本的宽度
+    pub fn measure_text_width_before_cursor(&self, text: &str, cursor_pos: usize) -> Result<f32> {
+        unsafe {
+            if text.is_empty() || cursor_pos == 0 {
+                return Ok(0.0);
+            }
+
+            // 获取光标前的文本（使用字符索引而不是字节索引）
+            let text_before_cursor = text.chars().take(cursor_pos).collect::<String>();
+
+            // 找到光标所在的行
+            let lines: Vec<&str> = text_before_cursor.lines().collect();
+            let current_line_text = if text_before_cursor.ends_with('\n') {
+                "" // 如果以换行符结尾，光标在新行开始
+            } else {
+                lines.last().map_or("", |&line| line)
+            };
+
+            if current_line_text.is_empty() {
+                return Ok(0.0);
+            }
+
+            let line_wide = to_wide_chars(current_line_text);
+            let text_layout = self.dwrite_factory.CreateTextLayout(
+                &line_wide[..line_wide.len() - 1],
+                &self.text_format,
+                f32::MAX,
+                f32::MAX,
+            )?;
+
+            let mut metrics = std::mem::zeroed::<DWRITE_TEXT_METRICS>();
+            text_layout.GetMetrics(&mut metrics)?;
+            Ok(metrics.width)
+        }
+    }
+
+    // 计算光标所在的行号
+    pub fn get_cursor_line_number(&self, text: &str, cursor_pos: usize) -> usize {
+        if text.is_empty() || cursor_pos == 0 {
+            return 0;
+        }
+
+        let text_before_cursor = text.chars().take(cursor_pos).collect::<String>();
+        let lines_before_cursor: Vec<&str> = text_before_cursor.lines().collect();
+
+        if text_before_cursor.ends_with('\n') {
+            lines_before_cursor.len()
+        } else {
+            lines_before_cursor.len().saturating_sub(1)
+        }
+    }
+
+    // 使用指定字体大小精确测量光标前文本的宽度
+    pub fn measure_text_width_before_cursor_with_font_size(
+        &self,
+        text: &str,
+        cursor_pos: usize,
+        font_size: f32,
+    ) -> Result<f32> {
+        unsafe {
+            if text.is_empty() || cursor_pos == 0 {
+                return Ok(0.0);
+            }
+
+            // 获取光标前的文本（使用字符索引而不是字节索引）
+            let text_before_cursor = text.chars().take(cursor_pos).collect::<String>();
+
+            // 找到光标所在的行
+            let lines: Vec<&str> = text_before_cursor.lines().collect();
+            let current_line_text = if text_before_cursor.ends_with('\n') {
+                "" // 如果以换行符结尾，光标在新行开始
+            } else {
+                lines.last().map_or("", |&line| line)
+            };
+
+            if current_line_text.is_empty() {
+                return Ok(0.0);
+            }
+
+            // 创建动态字体大小的文本格式
+            let dynamic_text_format = self.dwrite_factory.CreateTextFormat(
+                w!("Microsoft YaHei"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                font_size,
+                w!(""),
+            )?;
+
+            let line_wide = to_wide_chars(current_line_text);
+            let text_layout = self.dwrite_factory.CreateTextLayout(
+                &line_wide[..line_wide.len() - 1],
+                &dynamic_text_format,
+                f32::MAX,
+                f32::MAX,
+            )?;
+
+            let mut metrics = std::mem::zeroed::<DWRITE_TEXT_METRICS>();
+            text_layout.GetMetrics(&mut metrics)?;
+            Ok(metrics.width)
+        }
+    }
+
+    // 绘制文字光标
+    fn draw_text_cursor(&self, element: &DrawingElement, text_rect: &D2D_RECT_F) {
+        unsafe {
+            // 创建光标画刷
+            let cursor_brush = self
+                .render_target
+                .CreateSolidColorBrush(&COLOR_TEXT_CURSOR, None);
+
+            if let Ok(brush) = cursor_brush {
+                // 使用精确测量计算光标位置
+                let cursor_line = self.get_cursor_line_number(&element.text, self.text_cursor_pos);
+
+                // 使用动态字体大小精确测量光标前文本的宽度
+                let font_size = element.thickness.max(8.0); // 移除最大字体限制
+                let cursor_x_offset = self
+                    .measure_text_width_before_cursor_with_font_size(
+                        &element.text,
+                        self.text_cursor_pos,
+                        font_size,
+                    )
+                    .unwrap_or(0.0);
+
+                let cursor_x = text_rect.left + TEXT_PADDING + cursor_x_offset;
+
+                // 计算光标的垂直位置，使用动态行高
+                let line_height = font_size * 1.2;
+                let cursor_y_top =
+                    text_rect.top + TEXT_PADDING + (cursor_line as f32 * line_height);
+                let cursor_y_bottom = cursor_y_top + line_height - 2.0;
+
+                // 绘制光标线，线条粗细也根据字体大小调整
+                let cursor_thickness = (font_size / 20.0).max(1.0).min(3.0);
+                let cursor_start = d2d_point(cursor_x as i32, cursor_y_top as i32);
+                let cursor_end = d2d_point(cursor_x as i32, cursor_y_bottom as i32);
+
+                self.render_target.DrawLine(
+                    cursor_start,
+                    cursor_end,
+                    &brush,
+                    cursor_thickness,
+                    None,
+                );
             }
         }
     }
@@ -1086,7 +1418,7 @@ impl Drop for WindowState {
     fn drop(&mut self) {
         unsafe {
             DeleteDC(self.screenshot_dc);
-            DeleteObject(self.gdi_screenshot_bitmap);
+            DeleteObject(self.gdi_screenshot_bitmap.into());
             CoUninitialize();
         }
     }

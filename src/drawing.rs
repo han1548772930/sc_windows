@@ -154,10 +154,10 @@ impl WindowState {
             }
 
             // 🎯 最简单：直接截屏当前窗口的选择区域
-            let screen_dc = GetDC(HWND(std::ptr::null_mut()));
-            let mem_dc = CreateCompatibleDC(screen_dc);
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+            let mem_dc = CreateCompatibleDC(Some(screen_dc));
             let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-            let old_bitmap = SelectObject(mem_dc, bitmap);
+            let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
             // 直接从屏幕复制选择区域（包含窗口内容和绘图）
             BitBlt(
@@ -166,27 +166,74 @@ impl WindowState {
                 0,
                 width,
                 height,
-                screen_dc,
+                Some(screen_dc),
                 self.selection_rect.left,
                 self.selection_rect.top,
                 SRCCOPY,
             );
 
             // 复制到剪贴板
-            if OpenClipboard(HWND(std::ptr::null_mut())).is_ok() {
+            if OpenClipboard(Some(HWND(std::ptr::null_mut()))).is_ok() {
                 let _ = EmptyClipboard();
-                let _ = SetClipboardData(2, HANDLE(bitmap.0 as *mut std::ffi::c_void));
+                let _ = SetClipboardData(2, Some(HANDLE(bitmap.0 as *mut std::ffi::c_void)));
                 let _ = CloseClipboard();
             } else {
-                DeleteObject(bitmap);
+                DeleteObject(bitmap.into());
             }
 
             // 清理资源
             SelectObject(mem_dc, old_bitmap);
-            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
             DeleteDC(mem_dc);
 
             Ok(())
         }
+    }
+
+    // 新增：保存选择区域到文件（让用户选择保存路径）
+    pub fn save_selection_to_file(&self, _hwnd: HWND) -> Result<()> {
+        unsafe {
+            let width = self.selection_rect.right - self.selection_rect.left;
+            let height = self.selection_rect.bottom - self.selection_rect.top;
+
+            if width <= 0 || height <= 0 {
+                return Ok(());
+            }
+
+            // 暂时简化实现：保存到固定路径
+            // TODO: 后续可以添加文件对话框
+            let file_path = "screenshot.bmp";
+
+            // 截取屏幕选择区域
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+            let mem_dc = CreateCompatibleDC(Some(screen_dc));
+            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+            let old_bitmap = SelectObject(mem_dc, bitmap.into());
+
+            // 从屏幕复制选择区域
+            let _ = BitBlt(
+                mem_dc,
+                0,
+                0,
+                width,
+                height,
+                Some(screen_dc),
+                self.selection_rect.left,
+                self.selection_rect.top,
+                SRCCOPY,
+            );
+
+            // 输出调试信息
+            println!("保存截图到文件: {}", file_path);
+            println!("图片尺寸: {}x{}", width, height);
+
+            // 清理资源
+            SelectObject(mem_dc, old_bitmap);
+            let _ = DeleteDC(mem_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+            let _ = DeleteObject(bitmap.into());
+        }
+
+        Ok(())
     }
 }

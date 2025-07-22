@@ -1,12 +1,13 @@
 // 模块声明
 pub mod constants;
-pub mod types;
-pub mod utils;
 pub mod d2d;
 pub mod drawing;
-pub mod toolbar;
 pub mod input;
+pub mod svg_icons;
+pub mod toolbar;
+pub mod types;
+pub mod utils;
 
 // 重新导出常用类型
-pub use types::*;
 pub use constants::*;
+pub use types::*;
