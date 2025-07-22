@@ -160,20 +160,27 @@ impl WindowState {
                 if self.can_undo() {
                     self.undo();
                     unsafe {
-                        InvalidateRect(Some(hwnd), None, FALSE.into());
+                        let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
                     }
                 }
             }
             ToolbarButton::ExtractText => {
                 // TODO: 实现文本提取功能
-                println!("ExtractText button clicked");
             }
             ToolbarButton::Languages => {
                 // TODO: 实现语言功能
-                println!("Languages button clicked");
             }
             ToolbarButton::Save => {
-                let _ = self.save_selection_to_file(hwnd);
+                // 尝试保存文件，只有成功保存时才退出程序
+                if let Ok(saved) = self.save_selection_to_file(hwnd) {
+                    if saved {
+                        // 保存成功，退出程序
+                        unsafe {
+                            PostQuitMessage(0);
+                        }
+                    }
+                    // 如果用户取消了保存，程序继续运行
+                }
             }
             ToolbarButton::Pin => {
                 let _ = self.pin_selection(hwnd);
@@ -181,25 +188,22 @@ impl WindowState {
             ToolbarButton::Confirm => {
                 let _ = self.save_selection();
                 unsafe {
-                    PostQuitMessage(0);
+                    // Confirm按钮保存后隐藏窗口而不是退出程序
+                    let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }
             ToolbarButton::Cancel => {
-                self.current_tool = DrawingTool::None;
-                self.selected_element = None;
-                self.current_element = None;
-                for element in &mut self.drawing_elements {
-                    element.selected = false;
-                }
+                // Cancel按钮重置所有状态并隐藏窗口
+                self.reset_to_initial_state();
                 unsafe {
-                    PostQuitMessage(0);
+                    let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }
             _ => {}
         }
 
         unsafe {
-            InvalidateRect(Some(hwnd), None, FALSE.into());
+            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
         }
     }
 }

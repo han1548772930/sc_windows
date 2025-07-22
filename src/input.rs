@@ -4,7 +4,7 @@ use windows::{
         Graphics::Gdi::*,
         UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
-    core::{PCWSTR, w},
+    core::PCWSTR,
 };
 
 use crate::*;
@@ -304,7 +304,11 @@ impl WindowState {
         if self.is_pinned {
             match key {
                 val if val == VK_ESCAPE.0 as u32 => {
-                    unsafe { PostQuitMessage(0) };
+                    // ESC键清除所有状态并隐藏窗口
+                    self.reset_to_initial_state();
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    };
                 }
                 _ => {} // pin状态下忽略其他按键
             }
@@ -366,12 +370,15 @@ impl WindowState {
         // 只保留基本的键盘快捷键
         match key {
             val if val == VK_ESCAPE.0 as u32 => unsafe {
-                PostQuitMessage(0);
+                // ESC键清除所有状态并隐藏窗口
+                self.reset_to_initial_state();
+                let _ = ShowWindow(hwnd, SW_HIDE);
             },
             val if val == VK_RETURN.0 as u32 => {
                 let _ = self.save_selection();
                 unsafe {
-                    PostQuitMessage(0);
+                    // Enter键保存后隐藏窗口而不是退出程序
+                    let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }
             val if val == VK_Z.0 as u32 => unsafe {
@@ -760,14 +767,6 @@ impl WindowState {
                     if element.tool != DrawingTool::Pen {
                         // 直接检测元素手柄，不受选择框边界限制
                         let handle_mode = self.get_element_handle_at_position(x, y, &element.rect);
-
-                        // 调试信息
-                        if element.tool == DrawingTool::Text {
-                            println!(
-                                "Debug: Text element handle check at ({}, {}), mode: {:?}",
-                                x, y, handle_mode
-                            );
-                        }
 
                         if handle_mode != DragMode::None {
                             return match handle_mode {

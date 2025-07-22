@@ -136,6 +136,9 @@ pub struct WindowState {
     pub text_cursor_visible: bool,            // 光标是否可见（用于闪烁效果）
     pub cursor_timer_id: usize,               // 光标闪烁定时器ID
     pub just_saved_text: bool,                // 是否刚刚保存了文本（防止立即创建新文本）
+
+    // 系统托盘
+    pub system_tray: Option<crate::system_tray::SystemTray>, // 系统托盘实例
 }
 // IconData 结构体已移除，现在只使用 SVG 图标
 #[derive(Clone, Debug)]

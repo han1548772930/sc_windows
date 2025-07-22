@@ -22,7 +22,7 @@ impl WindowState {
     pub fn new(hwnd: HWND) -> Result<Self> {
         unsafe {
             // 初始化COM
-            CoInitialize(None);
+            let _ = CoInitialize(None);
 
             let screen_width = GetSystemMetrics(SM_CXSCREEN);
             let screen_height = GetSystemMetrics(SM_CYSCREEN);
@@ -208,9 +208,208 @@ impl WindowState {
                 text_cursor_visible: true,
                 cursor_timer_id: 1,     // 定时器ID
                 just_saved_text: false, // 初始化为false
+
+                // 系统托盘初始化为None，稍后在窗口创建后初始化
+                system_tray: None,
             })
         }
     }
+
+    /// 初始化系统托盘
+    pub fn init_system_tray(&mut self, hwnd: HWND) -> Result<()> {
+        // 创建托盘图标
+        let icon = crate::system_tray::create_default_icon()?;
+
+        // 创建托盘实例
+        let mut tray = crate::system_tray::SystemTray::new(hwnd, 1001);
+
+        // 添加托盘图标
+        tray.add_icon("截图工具 - Alt+S 截图，右键查看菜单", icon)?;
+
+        // 保存到WindowState中
+        self.system_tray = Some(tray);
+
+        Ok(())
+    }
+
+    /// 重新截取当前屏幕
+    pub fn capture_screen(&mut self) -> Result<()> {
+        unsafe {
+            // 获取屏幕DC
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+
+            // 重新捕获屏幕到现有的GDI位图
+            BitBlt(
+                self.screenshot_dc,
+                0,
+                0,
+                self.screen_width,
+                self.screen_height,
+                Some(screen_dc),
+                0,
+                0,
+                SRCCOPY,
+            )?;
+
+            // 释放屏幕DC
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+            // 从更新的GDI位图重新创建D2D位图
+            let new_d2d_bitmap = Self::create_d2d_bitmap_from_gdi(
+                &self.render_target,
+                self.screenshot_dc,
+                self.screen_width,
+                self.screen_height,
+            )?;
+
+            // 替换当前的截图位图
+            self.screenshot_bitmap = new_d2d_bitmap;
+
+            Ok(())
+        }
+    }
+
+    /// 重置到初始状态（清除所有选择和绘制内容）
+    pub fn reset_to_initial_state(&mut self) {
+        // 清除选择区域
+        self.has_selection = false;
+        self.selection_rect = RECT::default();
+
+        // 清除所有绘制元素
+        self.drawing_elements.clear();
+        self.current_element = None;
+        self.selected_element = None;
+
+        // 重置工具状态
+        self.current_tool = DrawingTool::None;
+        self.toolbar.clicked_button = ToolbarButton::None;
+
+        // 清除拖拽状态
+        self.drag_mode = DragMode::None;
+        self.mouse_pressed = false;
+
+        // 停止文字编辑
+        if self.text_editing {
+            self.text_editing = false;
+            self.editing_element_index = None;
+            self.text_cursor_pos = 0;
+            self.text_cursor_visible = true;
+        }
+
+        // 清除历史记录
+        self.history.clear();
+
+        // 重置pin状态
+        self.is_pinned = false;
+
+        // 重置其他状态
+        self.just_saved_text = false;
+    }
+
+    /// 处理托盘消息
+    pub fn handle_tray_message(&mut self, hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
+        let tray_msg = crate::system_tray::handle_tray_message(wparam, lparam);
+
+        match tray_msg {
+            crate::system_tray::TrayMessage::LeftClick(_) => {
+                // 左键点击 - 显示/隐藏窗口
+                unsafe {
+                    if IsWindowVisible(hwnd).as_bool() {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                }
+            }
+            crate::system_tray::TrayMessage::RightClick(_) => {
+                // 右键点击 - 显示上下文菜单
+                self.show_tray_context_menu(hwnd);
+            }
+            crate::system_tray::TrayMessage::DoubleClick(_) => {
+                // 双击 - 显示窗口并开始截图
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 显示托盘右键菜单
+    fn show_tray_context_menu(&self, hwnd: HWND) {
+        unsafe {
+            // 创建弹出菜单
+            if let Ok(hmenu) = CreatePopupMenu() {
+                // 添加菜单项
+                let show_text = crate::utils::to_wide_chars("显示窗口");
+                let screenshot_text = crate::utils::to_wide_chars("开始截图");
+                let settings_text = crate::utils::to_wide_chars("设置");
+                let exit_text = crate::utils::to_wide_chars("退出");
+
+                let _ = AppendMenuW(hmenu, MF_STRING, 1001, PCWSTR(show_text.as_ptr()));
+                let _ = AppendMenuW(hmenu, MF_STRING, 1002, PCWSTR(screenshot_text.as_ptr()));
+                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(hmenu, MF_STRING, 1004, PCWSTR(settings_text.as_ptr()));
+                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(hmenu, MF_STRING, 1003, PCWSTR(exit_text.as_ptr()));
+
+                // 获取鼠标位置
+                let mut cursor_pos = POINT::default();
+                let _ = GetCursorPos(&mut cursor_pos);
+
+                // 显示菜单
+                let _ = SetForegroundWindow(hwnd); // 确保菜单能正确显示
+                let cmd = TrackPopupMenu(
+                    hmenu,
+                    TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                    cursor_pos.x,
+                    cursor_pos.y,
+                    Some(0),
+                    hwnd,
+                    None,
+                );
+
+                // 处理菜单选择
+                match cmd.0 {
+                    1001 => {
+                        // 显示窗口
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                    1002 => {
+                        // 开始截图
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                        let _ = SetForegroundWindow(hwnd);
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE,
+                        );
+                    }
+                    1004 => {
+                        // 显示现代化设置窗口
+                        println!("🔧 打开现代化设置窗口...");
+                        let _ = crate::nwg_modern_settings::ModernSettingsApp::show();
+                    }
+                    1003 => {
+                        // 退出程序
+                        PostQuitMessage(0);
+                    }
+                    _ => {}
+                }
+
+                // 清理菜单
+                let _ = DestroyMenu(hmenu);
+            }
+        }
+    }
+
     pub fn pin_selection(&mut self, hwnd: HWND) -> Result<()> {
         unsafe {
             let width = self.selection_rect.right - self.selection_rect.left;
@@ -223,7 +422,7 @@ impl WindowState {
             // 保存当前窗口位置（如果还没保存的话）
             if !self.is_pinned {
                 let mut current_rect = RECT::default();
-                GetWindowRect(hwnd, &mut current_rect);
+                let _ = GetWindowRect(hwnd, &mut current_rect);
                 self.original_window_pos = current_rect;
             }
 
@@ -234,7 +433,7 @@ impl WindowState {
             let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
             // 直接从屏幕复制选择区域（包含窗口内容和绘图）
-            BitBlt(
+            let _ = BitBlt(
                 mem_dc,
                 0,
                 0,
@@ -256,12 +455,12 @@ impl WindowState {
 
             // 清理GDI资源
             SelectObject(mem_dc, old_bitmap);
-            DeleteObject(bitmap.into());
-            DeleteDC(mem_dc);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(mem_dc);
             ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
 
             // 调整窗口大小和位置到选择区域
-            SetWindowPos(
+            let _ = SetWindowPos(
                 hwnd,
                 Some(HWND_TOPMOST),
                 self.selection_rect.left,
@@ -324,29 +523,31 @@ impl WindowState {
         width: i32,
         height: i32,
     ) -> Result<ID2D1HwndRenderTarget> {
-        let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
+        unsafe {
+            let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                usage: D2D1_RENDER_TARGET_USAGE_NONE,
+                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+            };
 
-        let hwnd_render_target_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd,
-            pixelSize: D2D_SIZE_U {
-                width: width as u32,
-                height: height as u32,
-            },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-        };
+            let hwnd_render_target_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                hwnd,
+                pixelSize: D2D_SIZE_U {
+                    width: width as u32,
+                    height: height as u32,
+                },
+                presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+            };
 
-        self.d2d_factory
-            .CreateHwndRenderTarget(&render_target_properties, &hwnd_render_target_properties)
+            self.d2d_factory
+                .CreateHwndRenderTarget(&render_target_properties, &hwnd_render_target_properties)
+        }
     }
 
     // 重新创建画刷
@@ -362,24 +563,26 @@ impl WindowState {
         ID2D1SolidColorBrush,
         ID2D1SolidColorBrush,
     )> {
-        Ok((
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_SELECTION_BORDER, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_HANDLE_FILL, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_HANDLE_BORDER, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_TOOLBAR_BG, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_BUTTON_HOVER, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_BUTTON_ACTIVE, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_TEXT_NORMAL, None)?,
-            self.render_target
-                .CreateSolidColorBrush(&COLOR_MASK, None)?,
-        ))
+        unsafe {
+            Ok((
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_SELECTION_BORDER, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_HANDLE_FILL, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_HANDLE_BORDER, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_TOOLBAR_BG, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_BUTTON_HOVER, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_BUTTON_ACTIVE, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_TEXT_NORMAL, None)?,
+                self.render_target
+                    .CreateSolidColorBrush(&COLOR_MASK, None)?,
+            ))
+        }
     }
     unsafe fn create_d2d_bitmap_from_gdi(
         render_target: &ID2D1HwndRenderTarget,
@@ -387,67 +590,69 @@ impl WindowState {
         width: i32,
         height: i32,
     ) -> Result<ID2D1Bitmap> {
-        // 创建DIB来传输像素数据
-        let mut bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height, // 负值表示自上而下
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
-            },
-            bmiColors: [RGBQUAD::default(); 1],
-        };
+        unsafe {
+            // 创建DIB来传输像素数据
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height, // 负值表示自上而下
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
 
-        let mut pixels: *mut std::ffi::c_void = std::ptr::null_mut();
-        let dib = CreateDIBSection(
-            Some(gdi_dc),
-            &bmi,
-            DIB_RGB_COLORS,
-            &mut pixels,
-            Some(HANDLE(std::ptr::null_mut())),
-            0,
-        )?;
+            let mut pixels: *mut std::ffi::c_void = std::ptr::null_mut();
+            let dib = CreateDIBSection(
+                Some(gdi_dc),
+                &bmi,
+                DIB_RGB_COLORS,
+                &mut pixels,
+                Some(HANDLE(std::ptr::null_mut())),
+                0,
+            )?;
 
-        let temp_dc = CreateCompatibleDC(Some(gdi_dc));
-        let old_bitmap = SelectObject(temp_dc, dib.into());
+            let temp_dc = CreateCompatibleDC(Some(gdi_dc));
+            let old_bitmap = SelectObject(temp_dc, dib.into());
 
-        BitBlt(temp_dc, 0, 0, width, height, Some(gdi_dc), 0, 0, SRCCOPY)?;
+            BitBlt(temp_dc, 0, 0, width, height, Some(gdi_dc), 0, 0, SRCCOPY)?;
 
-        SelectObject(temp_dc, old_bitmap);
-        DeleteDC(temp_dc);
+            SelectObject(temp_dc, old_bitmap);
+            let _ = DeleteDC(temp_dc);
 
-        // 创建D2D位图
-        let bitmap_properties = D2D1_BITMAP_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 96.0,
-            dpiY: 96.0,
-        };
+            // 创建D2D位图
+            let bitmap_properties = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
 
-        let size = D2D_SIZE_U {
-            width: width as u32,
-            height: height as u32,
-        };
+            let size = D2D_SIZE_U {
+                width: width as u32,
+                height: height as u32,
+            };
 
-        let stride = width as u32 * 4;
-        let bitmap = render_target.CreateBitmap(
-            size,
-            Some(pixels as *const c_void),
-            stride,
-            &bitmap_properties,
-        )?;
+            let stride = width as u32 * 4;
+            let bitmap = render_target.CreateBitmap(
+                size,
+                Some(pixels as *const c_void),
+                stride,
+                &bitmap_properties,
+            )?;
 
-        DeleteObject(dib.into());
-        Ok(bitmap)
+            let _ = DeleteObject(dib.into());
+            Ok(bitmap)
+        }
     }
 
     pub fn paint(&self, hwnd: HWND) {
@@ -455,7 +660,7 @@ impl WindowState {
             let mut ps = PAINTSTRUCT::default();
             BeginPaint(hwnd, &mut ps);
             self.render();
-            EndPaint(hwnd, &ps);
+            let _ = EndPaint(hwnd, &ps);
         }
     }
 
@@ -1417,8 +1622,8 @@ impl WindowState {
 impl Drop for WindowState {
     fn drop(&mut self) {
         unsafe {
-            DeleteDC(self.screenshot_dc);
-            DeleteObject(self.gdi_screenshot_bitmap.into());
+            let _ = DeleteDC(self.screenshot_dc);
+            let _ = DeleteObject(self.gdi_screenshot_bitmap.into());
             CoUninitialize();
         }
     }

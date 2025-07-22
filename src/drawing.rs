@@ -1,7 +1,4 @@
 use crate::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::{Foundation::*, Graphics::Gdi::*, System::DataExchange::*};
 use windows::core::*;
 
@@ -160,7 +157,7 @@ impl WindowState {
             let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
             // 直接从屏幕复制选择区域（包含窗口内容和绘图）
-            BitBlt(
+            let _ = BitBlt(
                 mem_dc,
                 0,
                 0,
@@ -178,32 +175,34 @@ impl WindowState {
                 let _ = SetClipboardData(2, Some(HANDLE(bitmap.0 as *mut std::ffi::c_void)));
                 let _ = CloseClipboard();
             } else {
-                DeleteObject(bitmap.into());
+                let _ = DeleteObject(bitmap.into());
             }
 
             // 清理资源
             SelectObject(mem_dc, old_bitmap);
             ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-            DeleteDC(mem_dc);
+            let _ = DeleteDC(mem_dc);
 
             Ok(())
         }
     }
 
     // 新增：保存选择区域到文件（让用户选择保存路径）
-    pub fn save_selection_to_file(&self, _hwnd: HWND) -> Result<()> {
+    pub fn save_selection_to_file(&self, hwnd: HWND) -> Result<bool> {
+        let width = self.selection_rect.right - self.selection_rect.left;
+        let height = self.selection_rect.bottom - self.selection_rect.top;
+
+        if width <= 0 || height <= 0 {
+            return Ok(false);
+        }
+
+        // 显示文件保存对话框
+        let file_path = match crate::file_dialog::show_image_save_dialog(hwnd, "screenshot.png") {
+            Some(path) => path,
+            None => return Ok(false), // 用户取消了对话框
+        };
+
         unsafe {
-            let width = self.selection_rect.right - self.selection_rect.left;
-            let height = self.selection_rect.bottom - self.selection_rect.top;
-
-            if width <= 0 || height <= 0 {
-                return Ok(());
-            }
-
-            // 暂时简化实现：保存到固定路径
-            // TODO: 后续可以添加文件对话框
-            let file_path = "screenshot.bmp";
-
             // 截取屏幕选择区域
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
             let mem_dc = CreateCompatibleDC(Some(screen_dc));
@@ -223,15 +222,102 @@ impl WindowState {
                 SRCCOPY,
             );
 
-            // 输出调试信息
-            println!("保存截图到文件: {}", file_path);
-            println!("图片尺寸: {}x{}", width, height);
+            // 保存位图到文件
+            self.save_bitmap_to_file(bitmap, &file_path, width, height)?;
 
             // 清理资源
             SelectObject(mem_dc, old_bitmap);
             let _ = DeleteDC(mem_dc);
             ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
             let _ = DeleteObject(bitmap.into());
+        }
+
+        Ok(true) // 成功保存文件
+    }
+
+    /// 保存位图到文件
+    fn save_bitmap_to_file(
+        &self,
+        bitmap: HBITMAP,
+        file_path: &str,
+        width: i32,
+        height: i32,
+    ) -> Result<()> {
+        unsafe {
+            // 获取位图信息
+            let mut bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height, // 负值表示自上而下的位图
+                    biPlanes: 1,
+                    biBitCount: 24, // 24位RGB
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
+
+            // 计算位图数据大小
+            let bytes_per_line = ((width * 3 + 3) / 4) * 4; // 4字节对齐
+            let data_size = bytes_per_line * height;
+            let mut bitmap_data = vec![0u8; data_size as usize];
+
+            // 获取屏幕DC
+            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+
+            // 获取位图数据
+            GetDIBits(
+                screen_dc,
+                bitmap,
+                0,
+                height as u32,
+                Some(bitmap_data.as_mut_ptr() as *mut _),
+                &mut bitmap_info,
+                DIB_RGB_COLORS,
+            );
+
+            // 创建BMP文件头
+            let file_header = BITMAPFILEHEADER {
+                bfType: 0x4D42, // "BM"
+                bfSize: (std::mem::size_of::<BITMAPFILEHEADER>()
+                    + std::mem::size_of::<BITMAPINFOHEADER>()
+                    + data_size as usize) as u32,
+                bfReserved1: 0,
+                bfReserved2: 0,
+                bfOffBits: (std::mem::size_of::<BITMAPFILEHEADER>()
+                    + std::mem::size_of::<BITMAPINFOHEADER>()) as u32,
+            };
+
+            // 写入文件
+            use std::fs::File;
+            use std::io::Write;
+
+            let mut file = File::create(file_path)?;
+
+            // 写入文件头
+            let file_header_bytes = std::slice::from_raw_parts(
+                &file_header as *const _ as *const u8,
+                std::mem::size_of::<BITMAPFILEHEADER>(),
+            );
+            file.write_all(file_header_bytes)?;
+
+            // 写入信息头
+            let info_header_bytes = std::slice::from_raw_parts(
+                &bitmap_info.bmiHeader as *const _ as *const u8,
+                std::mem::size_of::<BITMAPINFOHEADER>(),
+            );
+            file.write_all(info_header_bytes)?;
+
+            // 写入位图数据
+            file.write_all(&bitmap_data)?;
+
+            // 清理资源
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
         }
 
         Ok(())
