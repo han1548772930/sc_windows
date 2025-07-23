@@ -302,13 +302,14 @@ impl WindowState {
                 drawing_elements: Vec::new(),
                 current_element: None,
                 selected_element: None,
-                drawing_color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 1.0,
+                drawing_color: {
+                    let (drawing_color, _, _, _) = crate::constants::get_colors_from_settings();
+                    drawing_color
                 },
-                drawing_thickness: 3.0,
+                drawing_thickness: {
+                    let settings = crate::simple_settings::SimpleSettings::load();
+                    settings.line_thickness
+                },
                 history: Vec::new(),
                 is_pinned: false,                     // 新增字段初始化
                 original_window_pos: RECT::default(), // 新增字段初始化
@@ -479,33 +480,6 @@ impl WindowState {
         let tray_msg = crate::system_tray::handle_tray_message(wparam, lparam);
 
         match tray_msg {
-            crate::system_tray::TrayMessage::LeftClick(_) => {
-                // 左键点击 - 显示/隐藏窗口
-                unsafe {
-                    if IsWindowVisible(hwnd).as_bool() {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    } else {
-                        // 重新截取屏幕
-                        self.reset_to_initial_state();
-                        if self.capture_screen().is_ok() {
-                            let _ = ShowWindow(hwnd, SW_SHOW);
-                            let _ = SetForegroundWindow(hwnd);
-                            let _ = SetWindowPos(
-                                hwnd,
-                                Some(HWND_TOPMOST),
-                                0,
-                                0,
-                                0,
-                                0,
-                                SWP_NOMOVE | SWP_NOSIZE,
-                            );
-                            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                            let _ = UpdateWindow(hwnd);
-                        }
-                    }
-                }
-            }
             crate::system_tray::TrayMessage::RightClick(_) => {
                 // 确保窗口处于正确状态再显示菜单
                 unsafe {
@@ -524,25 +498,6 @@ impl WindowState {
                 }
                 // 右键点击 - 显示上下文菜单
                 self.show_tray_context_menu(hwnd);
-            }
-            crate::system_tray::TrayMessage::DoubleClick(_) => {
-                // 双击 - 显示窗口并开始截图
-                unsafe {
-                    self.reset_to_initial_state();
-                    if self.capture_screen().is_ok() {
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                        let _ = SetForegroundWindow(hwnd);
-                        let _ = SetWindowPos(
-                            hwnd,
-                            Some(HWND_TOPMOST),
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE,
-                        );
-                    }
-                }
             }
             _ => {}
         }
@@ -860,6 +815,46 @@ impl WindowState {
 
             let _ = DeleteObject(dib.into());
             Ok(bitmap)
+        }
+    }
+
+    /// 重新加载设置中的颜色和线条粗细
+    pub fn reload_settings(&mut self) {
+        let (drawing_color, text_color, _, _) = crate::constants::get_colors_from_settings();
+        let settings = crate::simple_settings::SimpleSettings::load();
+
+        self.drawing_color = drawing_color;
+        self.drawing_thickness = settings.line_thickness;
+
+        // 更新现有文字元素的颜色和字体大小
+        for element in &mut self.drawing_elements {
+            if element.tool == DrawingTool::Text {
+                element.color = text_color;
+                element.thickness = settings.font_size;
+            }
+        }
+    }
+
+    /// 重新注册全局热键
+    pub fn reregister_hotkey(&self, hwnd: HWND) -> windows::core::Result<()> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+        unsafe {
+            // 先注销旧的热键
+            let _ = UnregisterHotKey(Some(hwnd), 1001);
+
+            // 从设置中读取新的热键配置
+            let settings = crate::simple_settings::SimpleSettings::load();
+
+            // 注册新的热键
+            RegisterHotKey(
+                Some(hwnd),
+                1001,
+                HOT_KEY_MODIFIERS(settings.hotkey_modifiers),
+                settings.hotkey_key,
+            )?;
+
+            Ok(())
         }
     }
 
@@ -1582,23 +1577,76 @@ impl WindowState {
 
                             // 为每个文本元素创建动态字体大小的文本格式
                             let font_size = element.thickness.max(8.0);
+
+                            // 从设置中获取字体属性
+                            let settings = crate::simple_settings::SimpleSettings::load();
+                            let font_name_wide = crate::utils::to_wide_chars(&settings.font_name);
+                            let font_weight = if settings.font_weight > 400 {
+                                DWRITE_FONT_WEIGHT_BOLD
+                            } else {
+                                DWRITE_FONT_WEIGHT_NORMAL
+                            };
+                            let font_style = if settings.font_italic {
+                                DWRITE_FONT_STYLE_ITALIC
+                            } else {
+                                DWRITE_FONT_STYLE_NORMAL
+                            };
+
                             if let Ok(dynamic_text_format) = self.dwrite_factory.CreateTextFormat(
-                                w!("Microsoft YaHei"),
+                                PCWSTR(font_name_wide.as_ptr()),
                                 None,
-                                DWRITE_FONT_WEIGHT_NORMAL,
-                                DWRITE_FONT_STYLE_NORMAL,
+                                font_weight,
+                                font_style,
                                 DWRITE_FONT_STRETCH_NORMAL,
                                 font_size,
                                 w!(""),
                             ) {
-                                self.render_target.DrawText(
-                                    &line_wide[..line_wide.len() - 1],
-                                    &dynamic_text_format,
-                                    &line_rect,
-                                    &brush,
-                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    DWRITE_MEASURING_MODE_NATURAL,
-                                );
+                                // 创建字体颜色画刷
+                                let font_color = D2D1_COLOR_F {
+                                    r: settings.font_color.0 as f32 / 255.0,
+                                    g: settings.font_color.1 as f32 / 255.0,
+                                    b: settings.font_color.2 as f32 / 255.0,
+                                    a: 1.0,
+                                };
+                                if let Ok(font_brush) =
+                                    self.render_target.CreateSolidColorBrush(&font_color, None)
+                                {
+                                    // 创建文本布局以支持下划线和删除线
+                                    if let Ok(text_layout) = self.dwrite_factory.CreateTextLayout(
+                                        &line_wide[..line_wide.len() - 1],
+                                        &dynamic_text_format,
+                                        line_rect.right - line_rect.left,
+                                        line_rect.bottom - line_rect.top,
+                                    ) {
+                                        // 应用下划线和删除线
+                                        if settings.font_underline {
+                                            let _ = text_layout.SetUnderline(
+                                                true,
+                                                DWRITE_TEXT_RANGE {
+                                                    startPosition: 0,
+                                                    length: (line_wide.len() - 1) as u32,
+                                                },
+                                            );
+                                        }
+                                        if settings.font_strikeout {
+                                            let _ = text_layout.SetStrikethrough(
+                                                true,
+                                                DWRITE_TEXT_RANGE {
+                                                    startPosition: 0,
+                                                    length: (line_wide.len() - 1) as u32,
+                                                },
+                                            );
+                                        }
+
+                                        // 绘制文本布局
+                                        self.render_target.DrawTextLayout(
+                                            d2d_point(line_rect.left as i32, line_rect.top as i32),
+                                            &text_layout,
+                                            &font_brush,
+                                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1652,12 +1700,25 @@ impl WindowState {
                 return Ok((0.0, font_size * 1.2)); // 使用字体大小的1.2倍作为行高
             }
 
-            // 创建动态字体大小的文本格式
+            // 创建动态字体大小的文本格式，使用设置中的字体属性
+            let settings = crate::simple_settings::SimpleSettings::load();
+            let font_name_wide = crate::utils::to_wide_chars(&settings.font_name);
+            let font_weight = if settings.font_weight > 400 {
+                DWRITE_FONT_WEIGHT_BOLD
+            } else {
+                DWRITE_FONT_WEIGHT_NORMAL
+            };
+            let font_style = if settings.font_italic {
+                DWRITE_FONT_STYLE_ITALIC
+            } else {
+                DWRITE_FONT_STYLE_NORMAL
+            };
+
             let dynamic_text_format = self.dwrite_factory.CreateTextFormat(
-                w!("Microsoft YaHei"),
+                PCWSTR(font_name_wide.as_ptr()),
                 None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
+                font_weight,
+                font_style,
                 DWRITE_FONT_STRETCH_NORMAL,
                 font_size,
                 w!(""),
@@ -1756,12 +1817,25 @@ impl WindowState {
                 return Ok(0.0);
             }
 
-            // 创建动态字体大小的文本格式
+            // 创建动态字体大小的文本格式，使用设置中的字体属性
+            let settings = crate::simple_settings::SimpleSettings::load();
+            let font_name_wide = crate::utils::to_wide_chars(&settings.font_name);
+            let font_weight = if settings.font_weight > 400 {
+                DWRITE_FONT_WEIGHT_BOLD
+            } else {
+                DWRITE_FONT_WEIGHT_NORMAL
+            };
+            let font_style = if settings.font_italic {
+                DWRITE_FONT_STYLE_ITALIC
+            } else {
+                DWRITE_FONT_STYLE_NORMAL
+            };
+
             let dynamic_text_format = self.dwrite_factory.CreateTextFormat(
-                w!("Microsoft YaHei"),
+                PCWSTR(font_name_wide.as_ptr()),
                 None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
+                font_weight,
+                font_style,
                 DWRITE_FONT_STRETCH_NORMAL,
                 font_size,
                 w!(""),

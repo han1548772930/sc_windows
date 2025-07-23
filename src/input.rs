@@ -249,8 +249,11 @@ impl WindowState {
 
         let mut text_element = DrawingElement::new(DrawingTool::Text);
         text_element.points.push(POINT { x, y });
-        text_element.color = self.drawing_color;
-        text_element.thickness = 20.0;
+        // 文字元素使用文字颜色
+        let (_, text_color, _, _) = crate::constants::get_colors_from_settings();
+        text_element.color = text_color;
+        let settings = crate::simple_settings::SimpleSettings::load();
+        text_element.thickness = settings.font_size;
         text_element.text = String::from("Sample Text");
 
         // 🔧 使用常量确保一致性
@@ -1559,10 +1562,17 @@ impl WindowState {
                     self.drag_start_pos = POINT { x, y };
 
                     let mut new_element = DrawingElement::new(self.current_tool);
-                    new_element.color = self.drawing_color;
-                    // 文本工具使用固定的字体大小，其他工具使用绘图线条粗细
+                    // 根据工具类型设置颜色
+                    if self.current_tool == DrawingTool::Text {
+                        let (_, text_color, _, _) = crate::constants::get_colors_from_settings();
+                        new_element.color = text_color;
+                    } else {
+                        new_element.color = self.drawing_color;
+                    }
+                    // 文本工具使用字体大小，其他工具使用绘图线条粗细
                     new_element.thickness = if self.current_tool == DrawingTool::Text {
-                        20.0 // 固定的文本字体大小
+                        let settings = crate::simple_settings::SimpleSettings::load();
+                        settings.font_size
                     } else {
                         self.drawing_thickness as f32
                     };
@@ -1813,10 +1823,26 @@ impl WindowState {
         // 创建新的文字元素
         let mut text_element = DrawingElement::new(DrawingTool::Text);
         text_element.points.push(POINT { x, y });
-        text_element.color = self.drawing_color;
-        text_element.thickness = 20.0; // 固定默认字体大小，不受绘图线条粗细影响
+        // 文字元素使用文字颜色
+        let (_, text_color, _, _) = crate::constants::get_colors_from_settings();
+        text_element.color = text_color;
+        // 文字元素使用设置中的字体大小
+        let settings = crate::simple_settings::SimpleSettings::load();
+        text_element.thickness = settings.font_size;
         text_element.text = String::new(); // 空文本，等待用户输入
         text_element.selected = true;
+
+        // 根据字体大小设置初始文本框尺寸
+        let font_size = settings.font_size;
+        let dynamic_line_height = (font_size * 1.2) as i32;
+        let initial_width = (font_size * 6.0) as i32; // 大约6个字符的宽度
+        let initial_height = dynamic_line_height + (crate::constants::TEXT_PADDING * 2.0) as i32;
+
+        // 设置第二个点来定义文本框尺寸
+        text_element.points.push(POINT {
+            x: x + initial_width,
+            y: y + initial_height,
+        });
 
         // 更新边界矩形
         text_element.update_bounding_rect();

@@ -101,10 +101,15 @@ unsafe extern "system" fn window_proc(
                         // 继续运行，不退出程序
                     }
 
-                    // 注册全局热键 Ctrl+Alt+S (MOD_CONTROL | MOD_ALT + 'S')
+                    // 从设置中读取热键配置并注册全局热键
+                    let settings = sc_windows::simple_settings::SimpleSettings::load();
                     let hotkey_id = 1001;
-                    let _ =
-                        RegisterHotKey(Some(hwnd), hotkey_id, MOD_CONTROL | MOD_ALT, 'S' as u32);
+                    let _ = RegisterHotKey(
+                        Some(hwnd),
+                        hotkey_id,
+                        HOT_KEY_MODIFIERS(settings.hotkey_modifiers),
+                        settings.hotkey_key,
+                    );
 
                     let state_box = Box::new(state);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state_box) as isize);
@@ -234,6 +239,19 @@ unsafe extern "system" fn window_proc(
             val if val == WM_USER + 2 => {
                 // 隐藏截图窗口
                 let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(0)
+            }
+
+            // 处理设置更改消息
+            val if val == WM_USER + 3 => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    // 重新加载设置
+                    state.reload_settings();
+                    // 重新注册热键
+                    let _ = state.reregister_hotkey(hwnd);
+                }
                 LRESULT(0)
             }
 

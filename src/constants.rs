@@ -1,6 +1,6 @@
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
-pub const WINDOW_CLASS_NAME: &str = "ScreenshotWindow";
+pub const WINDOW_CLASS_NAME: &str = "sc_windows_main";
 pub const MIN_BOX_SIZE: i32 = 50;
 pub const TEXT_BOX_WIDTH: i32 = 100;
 pub const TEXT_BOX_HEIGHT: i32 = 30;
@@ -99,22 +99,30 @@ pub const CHAR_WIDTH: f32 = 15.0; // 平均字符宽度（进一步增大以确�
 pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压
 
 /// 从设置文件加载颜色，如果加载失败则使用默认值
-pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
+pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
     let settings = crate::simple_settings::SimpleSettings::load();
 
-    // 绘图颜色（用于画笔等）
+    // 绘图颜色（用于画笔、矩形、圆形、箭头等）
     let drawing_color = D2D1_COLOR_F {
-        r: settings.color_red as f32 / 255.0,
-        g: settings.color_green as f32 / 255.0,
-        b: settings.color_blue as f32 / 255.0,
+        r: settings.drawing_color_red as f32 / 255.0,
+        g: settings.drawing_color_green as f32 / 255.0,
+        b: settings.drawing_color_blue as f32 / 255.0,
         a: 1.0,
     };
 
-    // 选择框边框颜色（使用相同的颜色但稍微调亮）
+    // 文字颜色
+    let text_color = D2D1_COLOR_F {
+        r: settings.text_color_red as f32 / 255.0,
+        g: settings.text_color_green as f32 / 255.0,
+        b: settings.text_color_blue as f32 / 255.0,
+        a: 1.0,
+    };
+
+    // 选择框边框颜色（使用绘图颜色但稍微调亮）
     let selection_border_color = D2D1_COLOR_F {
-        r: (settings.color_red as f32 / 255.0 * 0.8 + 0.2).min(1.0),
-        g: (settings.color_green as f32 / 255.0 * 0.8 + 0.2).min(1.0),
-        b: (settings.color_blue as f32 / 255.0 * 0.8 + 0.2).min(1.0),
+        r: (settings.drawing_color_red as f32 / 255.0 * 0.8 + 0.2).min(1.0),
+        g: (settings.drawing_color_green as f32 / 255.0 * 0.8 + 0.2).min(1.0),
+        b: (settings.drawing_color_blue as f32 / 255.0 * 0.8 + 0.2).min(1.0),
         a: 1.0,
     };
 
@@ -126,5 +134,10 @@ pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) 
         a: 0.95, // 保持一定透明度
     };
 
-    (drawing_color, selection_border_color, toolbar_bg_color)
+    (
+        drawing_color,
+        text_color,
+        selection_border_color,
+        toolbar_bg_color,
+    )
 }
