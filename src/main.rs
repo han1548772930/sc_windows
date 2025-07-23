@@ -1,3 +1,4 @@
+// 在调试模式下显示控制台，在发布模式下隐藏
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
@@ -16,6 +17,75 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
+// 固钉窗口的窗口过程
+pub unsafe extern "system" fn pin_window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+
+                // 获取窗口客户区大小
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+
+                // 获取存储的位图句柄
+                let bitmap_handle = HBITMAP(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _);
+
+                if !bitmap_handle.0.is_null() {
+                    // 创建兼容DC并选择位图
+                    let mem_dc = CreateCompatibleDC(Some(hdc));
+                    let old_bitmap = SelectObject(mem_dc, bitmap_handle.into());
+
+                    // 绘制位图到窗口
+                    let _ = BitBlt(
+                        hdc,
+                        0,
+                        0,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        Some(mem_dc),
+                        0,
+                        0,
+                        SRCCOPY,
+                    );
+
+                    // 清理资源
+                    SelectObject(mem_dc, old_bitmap);
+                    let _ = DeleteDC(mem_dc);
+                }
+
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+
+            WM_KEYDOWN => {
+                if wparam.0 == VK_ESCAPE.0 as usize {
+                    // ESC键关闭固钉窗口
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+
+            WM_DESTROY => {
+                // 清理存储的位图
+                let bitmap_handle = HBITMAP(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _);
+                if !bitmap_handle.0.is_null() {
+                    let _ = DeleteObject(bitmap_handle.into());
+                }
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -27,11 +97,14 @@ unsafe extern "system" fn window_proc(
             WM_CREATE => match WindowState::new(hwnd) {
                 Ok(mut state) => {
                     // 初始化系统托盘
-                    let _ = state.init_system_tray(hwnd);
+                    if let Err(_e) = state.init_system_tray(hwnd) {
+                        // 继续运行，不退出程序
+                    }
 
-                    // 注册全局热键 Alt+S (MOD_ALT + 'S')
+                    // 注册全局热键 Ctrl+Alt+S (MOD_CONTROL | MOD_ALT + 'S')
                     let hotkey_id = 1001;
-                    let _ = RegisterHotKey(Some(hwnd), hotkey_id, MOD_ALT, 'S' as u32);
+                    let _ =
+                        RegisterHotKey(Some(hwnd), hotkey_id, MOD_CONTROL | MOD_ALT, 'S' as u32);
 
                     let state_box = Box::new(state);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state_box) as isize);
@@ -157,30 +230,49 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
+            // 处理 OCR 完成后关闭截图的消息
+            val if val == WM_USER + 2 => {
+                // 隐藏截图窗口
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(0)
+            }
+
             // 处理全局热键消息
             WM_HOTKEY => {
                 if wparam.0 == 1001 {
-                    // Alt+S 热键被按下，重新截取屏幕并显示窗口
                     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
                     if !state_ptr.is_null() {
                         let state = &mut *state_ptr;
-                        // 重置状态
-                        state.reset_to_initial_state();
-                        // 重新截取当前屏幕
-                        let _ = state.capture_screen();
-                    }
 
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(hwnd);
-                    let _ = SetWindowPos(
-                        hwnd,
-                        Some(HWND_TOPMOST),
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE,
-                    );
+                        // 如果窗口当前可见，先隐藏它
+                        if IsWindowVisible(hwnd).as_bool() {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+
+                        // 重置状态并截取屏幕
+                        state.reset_to_initial_state();
+
+                        // 确保窗口恢复到全屏状态
+                        let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                        if state.capture_screen().is_ok() {
+                            let _ = ShowWindow(hwnd, SW_SHOW);
+                            let _ = SetForegroundWindow(hwnd);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                Some(HWND_TOPMOST),
+                                0,
+                                0,
+                                screen_width,
+                                screen_height,
+                                SWP_SHOWWINDOW,
+                            );
+                            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                            let _ = UpdateWindow(hwnd);
+                        }
+                    }
                 }
                 LRESULT(0)
             }
@@ -192,7 +284,8 @@ unsafe extern "system" fn window_proc(
 
 fn main() -> Result<()> {
     unsafe {
-        SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)?;
+        // 尝试设置DPI感知，如果失败也继续运行
+        let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
         let instance = GetModuleHandleW(None)?;
         let class_name = to_wide_chars(WINDOW_CLASS_NAME);
 

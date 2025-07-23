@@ -165,7 +165,8 @@ impl WindowState {
                 }
             }
             ToolbarButton::ExtractText => {
-                // TODO: 实现文本提取功能
+                // 实现文本提取功能
+                self.extract_text_from_selection(hwnd);
             }
             ToolbarButton::Languages => {
                 // TODO: 实现语言功能
@@ -188,7 +189,7 @@ impl WindowState {
             ToolbarButton::Confirm => {
                 let _ = self.save_selection();
                 unsafe {
-                    // Confirm按钮保存后隐藏窗口而不是退出程序
+                    // Confirm按钮保存后隐藏窗口
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }

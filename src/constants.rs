@@ -1,4 +1,3 @@
-use crate::nwg_modern_settings::NwgModernSettings;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
 pub const WINDOW_CLASS_NAME: &str = "ScreenshotWindow";
@@ -101,29 +100,29 @@ pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压
 
 /// 从设置文件加载颜色，如果加载失败则使用默认值
 pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
-    let settings = crate::nwg_modern_settings::NwgModernSettings::load();
+    let settings = crate::simple_settings::SimpleSettings::load();
 
     // 绘图颜色（用于画笔等）
     let drawing_color = D2D1_COLOR_F {
-        r: settings.drawing_color[0] as f32 / 255.0,
-        g: settings.drawing_color[1] as f32 / 255.0,
-        b: settings.drawing_color[2] as f32 / 255.0,
+        r: settings.color_red as f32 / 255.0,
+        g: settings.color_green as f32 / 255.0,
+        b: settings.color_blue as f32 / 255.0,
         a: 1.0,
     };
 
-    // 选择框边框颜色
+    // 选择框边框颜色（使用相同的颜色但稍微调亮）
     let selection_border_color = D2D1_COLOR_F {
-        r: settings.selection_border_color[0] as f32 / 255.0,
-        g: settings.selection_border_color[1] as f32 / 255.0,
-        b: settings.selection_border_color[2] as f32 / 255.0,
+        r: (settings.color_red as f32 / 255.0 * 0.8 + 0.2).min(1.0),
+        g: (settings.color_green as f32 / 255.0 * 0.8 + 0.2).min(1.0),
+        b: (settings.color_blue as f32 / 255.0 * 0.8 + 0.2).min(1.0),
         a: 1.0,
     };
 
-    // 工具栏背景颜色
+    // 工具栏背景颜色（使用深色）
     let toolbar_bg_color = D2D1_COLOR_F {
-        r: settings.toolbar_bg_color[0] as f32 / 255.0,
-        g: settings.toolbar_bg_color[1] as f32 / 255.0,
-        b: settings.toolbar_bg_color[2] as f32 / 255.0,
+        r: 0.2,
+        g: 0.2,
+        b: 0.2,
         a: 0.95, // 保持一定透明度
     };
 

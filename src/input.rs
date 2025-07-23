@@ -213,19 +213,32 @@ impl WindowState {
         self.mouse_pressed = true;
         self.drag_start_pos = POINT { x, y };
 
-        // 处理选择框相关逻辑
-        if self.has_selection {
-            let in_selection_area = x >= self.selection_rect.left
-                && x <= self.selection_rect.right
-                && y >= self.selection_rect.top
-                && y <= self.selection_rect.bottom;
+        // 记录鼠标按下的位置和状态，但不立即做决定
+        self.mouse_pressed = true;
+        self.drag_start_pos = POINT { x, y };
 
-            if in_selection_area {
-                self.start_drag(x, y);
-            }
-        } else {
-            self.start_drag(x, y);
+        unsafe {
+            SetCapture(hwnd);
         }
+
+        // 如果有自动高亮的窗口，暂时不做任何操作
+        // 等到鼠标释放时再决定是选中窗口还是开始新的选择
+        if self.auto_highlight_enabled && self.has_selection {
+            // 保存当前状态，等待鼠标释放时的判断
+            return;
+        }
+
+        // 如果没有自动高亮但有选择区域，可能是工具栏操作，先检查工具栏
+        if self.has_selection && !self.auto_highlight_enabled {
+            let toolbar_button = self.toolbar.get_button_at_position(x, y);
+            if toolbar_button != ToolbarButton::None {
+                // 工具栏点击，不开始拖拽
+                return;
+            }
+        }
+
+        // 处理其他情况的拖拽开始
+        self.start_drag(x, y);
 
         unsafe {
             let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
@@ -277,11 +290,50 @@ impl WindowState {
             return;
         }
 
+        // 检查是否是单击（没有拖拽）
+        let is_click = self.mouse_pressed
+            && (x - self.drag_start_pos.x).abs() < 5
+            && (y - self.drag_start_pos.y).abs() < 5;
+
         // 处理工具栏点击
         let toolbar_button = self.toolbar.get_button_at_position(x, y);
         if toolbar_button != ToolbarButton::None && toolbar_button == self.toolbar.clicked_button {
             // 工具栏按钮已经在 handle_left_button_down 中处理
         } else {
+            // 如果是单击且当前有选择区域
+            if is_click && self.has_selection {
+                // 如果自动高亮仍然启用，说明这是对自动高亮窗口的点击选择
+                if self.auto_highlight_enabled {
+                    // 更新并显示工具栏，确认选择，并禁用自动高亮（进入已选择状态）
+                    self.toolbar.update_position(
+                        &self.selection_rect,
+                        self.screen_width,
+                        self.screen_height,
+                    );
+                    self.toolbar.visible = true;
+                    // 禁用自动高亮，进入已选择状态
+                    self.auto_highlight_enabled = false;
+                } else {
+                    // 自动高亮已禁用，说明这是手动拖拽的结果
+                    // 更新并显示工具栏
+                    self.toolbar.update_position(
+                        &self.selection_rect,
+                        self.screen_width,
+                        self.screen_height,
+                    );
+                    self.toolbar.visible = true;
+                    // 保持自动高亮禁用状态
+                }
+            } else if is_click && !self.has_selection {
+                // 如果是单击但没有选择区域，重新启用自动高亮
+                self.auto_highlight_enabled = true;
+            }
+
+            // 如果没有选择区域，重新启用自动高亮以便下次使用
+            if !self.has_selection {
+                self.auto_highlight_enabled = true;
+            }
+
             // 只有在没有选中元素且不是绘图工具时才清除工具栏状态
             if self.selected_element.is_none() && self.current_tool == DrawingTool::None {
                 self.toolbar.clear_clicked_button();
@@ -370,7 +422,7 @@ impl WindowState {
         // 只保留基本的键盘快捷键
         match key {
             val if val == VK_ESCAPE.0 as u32 => unsafe {
-                // ESC键清除所有状态并隐藏窗口
+                // ESC键直接清除所有状态并隐藏窗口
                 self.reset_to_initial_state();
                 let _ = ShowWindow(hwnd, SW_HIDE);
             },
@@ -431,6 +483,28 @@ impl WindowState {
             return;
         }
 
+        // 窗口自动高亮检测（仅在启用自动高亮且没有按下鼠标时）
+        if self.auto_highlight_enabled && !self.mouse_pressed {
+            if let Some(window_info) = self.window_detector.get_window_at_point(x, y) {
+                // 如果检测到窗口，自动设置选择区域为窗口边界
+                self.selection_rect = window_info.rect;
+                self.has_selection = true;
+
+                // 触发重绘以显示高亮框
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                }
+            } else {
+                // 如果没有检测到窗口，清除自动高亮
+                if self.has_selection {
+                    self.has_selection = false;
+                    unsafe {
+                        let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                    }
+                }
+            }
+        }
+
         // 检查工具栏悬停
         let hovered_button = self.toolbar.get_button_at_position(x, y);
         let is_button_disabled = match hovered_button {
@@ -446,6 +520,24 @@ impl WindowState {
 
         // 处理拖拽
         if self.mouse_pressed {
+            // 检查是否开始拖拽（移动距离超过阈值）
+            let drag_threshold = 5;
+            let dx = (x - self.drag_start_pos.x).abs();
+            let dy = (y - self.drag_start_pos.y).abs();
+
+            if dx > drag_threshold || dy > drag_threshold {
+                // 开始拖拽，禁用自动高亮
+                if self.auto_highlight_enabled {
+                    self.auto_highlight_enabled = false;
+
+                    // 如果之前有自动高亮的选择，清除它并开始新的手动选择
+                    if self.has_selection {
+                        self.has_selection = false;
+                        self.start_drag(self.drag_start_pos.x, self.drag_start_pos.y);
+                    }
+                }
+            }
+
             self.update_drag(x, y);
 
             // 在拖拽过程中也设置正确的光标
@@ -2137,5 +2229,20 @@ impl WindowState {
                 }
             }
         }
+    }
+
+    /// 切换自动窗口高亮功能
+    pub fn toggle_auto_highlight(&mut self) {
+        self.auto_highlight_enabled = !self.auto_highlight_enabled;
+
+        // 如果禁用自动高亮，清除当前的自动高亮选择
+        if !self.auto_highlight_enabled && self.has_selection {
+            self.has_selection = false;
+        }
+    }
+
+    /// 获取自动高亮状态
+    pub fn is_auto_highlight_enabled(&self) -> bool {
+        self.auto_highlight_enabled
     }
 }

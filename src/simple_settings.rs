@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
 use windows::{
     Win32::{
         Foundation::*,
         Graphics::Gdi::*,
         System::LibraryLoader::*,
-        UI::{Controls::*, WindowsAndMessaging::*},
+        UI::{Controls::Dialogs::*, Controls::*, WindowsAndMessaging::*},
     },
     core::*,
 };
@@ -22,6 +23,10 @@ pub struct SimpleSettings {
     pub auto_copy: bool,
     pub show_cursor: bool,
     pub delay_ms: u32,
+    // 颜色设置
+    pub color_red: u8,
+    pub color_green: u8,
+    pub color_blue: u8,
 }
 
 impl Default for SimpleSettings {
@@ -32,6 +37,9 @@ impl Default for SimpleSettings {
             auto_copy: false,
             show_cursor: false,
             delay_ms: 0,
+            color_red: 255,
+            color_green: 0,
+            color_blue: 0,
         }
     }
 }
@@ -71,6 +79,9 @@ impl SimpleSettings {
     }
 }
 
+/// 全局设置窗口句柄，确保只能打开一个设置窗口
+static mut SETTINGS_WINDOW: Option<HWND> = None;
+
 /// 简单设置窗口
 pub struct SimpleSettingsWindow {
     hwnd: HWND,
@@ -81,8 +92,12 @@ pub struct SimpleSettingsWindow {
     auto_copy_check: HWND,
     show_cursor_check: HWND,
     delay_edit: HWND,
+    color_button: HWND,
+    color_preview: HWND,
     ok_button: HWND,
     cancel_button: HWND,
+    // 字体句柄
+    font: HFONT,
 }
 
 // 控件ID
@@ -91,13 +106,37 @@ const ID_FONT_SIZE: i32 = 1002;
 const ID_AUTO_COPY: i32 = 1003;
 const ID_SHOW_CURSOR: i32 = 1004;
 const ID_DELAY: i32 = 1005;
-const ID_OK: i32 = 1006;
-const ID_CANCEL: i32 = 1007;
+const ID_COLOR_BUTTON: i32 = 1006;
+const ID_OK: i32 = 1007;
+const ID_CANCEL: i32 = 1008;
 
 impl SimpleSettingsWindow {
+    /// 检查设置窗口是否已经打开
+    pub fn is_open() -> bool {
+        unsafe {
+            if let Some(hwnd) = SETTINGS_WINDOW {
+                IsWindow(Some(hwnd)).as_bool()
+            } else {
+                false
+            }
+        }
+    }
     /// 显示设置窗口
     pub fn show(parent_hwnd: HWND) -> Result<()> {
         unsafe {
+            // 检查是否已经有设置窗口打开
+            if let Some(existing_hwnd) = SETTINGS_WINDOW {
+                if IsWindow(Some(existing_hwnd)).as_bool() {
+                    // 如果窗口已存在，将其置于前台
+                    let _ = ShowWindow(existing_hwnd, SW_RESTORE);
+                    let _ = SetForegroundWindow(existing_hwnd);
+                    let _ = BringWindowToTop(existing_hwnd);
+                    return Ok(());
+                } else {
+                    // 窗口句柄无效，清除它
+                    SETTINGS_WINDOW = None;
+                }
+            }
             // 初始化Common Controls 6.0以启用现代样式
             let mut icc = INITCOMMONCONTROLSEX {
                 dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -133,8 +172,8 @@ impl SimpleSettingsWindow {
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                650, // 更宽的窗口
-                520, // 更高的窗口
+                480, // 窗口宽度
+                450, // 窗口高度 - 增加高度以显示按钮
                 Some(parent_hwnd),
                 None,
                 Some(instance.into()),
@@ -152,8 +191,30 @@ impl SimpleSettingsWindow {
             let y = (screen_height - height) / 2;
             let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
+            // 保存窗口句柄到全局变量
+            SETTINGS_WINDOW = Some(hwnd);
+
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
+
+            // 模态对话框消息循环 - 只处理这个窗口的消息
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                // 检查消息是否是给我们的窗口或其子窗口的
+                if msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                } else {
+                    // 如果不是给我们窗口的消息，转发给默认处理
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+
+                // 如果窗口被销毁，退出循环
+                if !IsWindow(Some(hwnd)).as_bool() {
+                    break;
+                }
+            }
 
             Ok(())
         }
@@ -166,51 +227,123 @@ impl SimpleSettingsWindow {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match msg {
-            WM_CREATE => {
-                let settings = SimpleSettings::load();
-                let mut window = SimpleSettingsWindow {
-                    hwnd,
-                    settings,
-                    line_thickness_edit: HWND::default(),
-                    font_size_edit: HWND::default(),
-                    auto_copy_check: HWND::default(),
-                    show_cursor_check: HWND::default(),
-                    delay_edit: HWND::default(),
-                    ok_button: HWND::default(),
-                    cancel_button: HWND::default(),
-                };
+        unsafe {
+            match msg {
+                WM_CREATE => {
+                    let settings = SimpleSettings::load();
+                    let mut window = SimpleSettingsWindow {
+                        hwnd,
+                        settings,
+                        line_thickness_edit: HWND::default(),
+                        font_size_edit: HWND::default(),
+                        auto_copy_check: HWND::default(),
+                        show_cursor_check: HWND::default(),
+                        delay_edit: HWND::default(),
+                        color_button: HWND::default(),
+                        color_preview: HWND::default(),
+                        ok_button: HWND::default(),
+                        cancel_button: HWND::default(),
+                        font: HFONT::default(),
+                    };
 
-                window.create_controls();
-                window.load_values();
+                    window.create_controls();
+                    window.load_values();
 
-                let window_box = Box::new(window);
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(window_box) as isize);
+                    let window_box = Box::new(window);
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(window_box) as isize);
 
-                LRESULT(0)
-            }
-
-            WM_COMMAND => {
-                let window_ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SimpleSettingsWindow;
-                if !window_ptr.is_null() {
-                    let window = &mut *window_ptr;
-                    window.handle_command((wparam.0 & 0xFFFF) as i32);
+                    LRESULT(0)
                 }
-                LRESULT(0)
-            }
 
-            WM_CLOSE => {
-                let window_ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SimpleSettingsWindow;
-                if !window_ptr.is_null() {
-                    let _window = Box::from_raw(window_ptr);
+                WM_COMMAND => {
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SimpleSettingsWindow;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        window.handle_command((wparam.0 & 0xFFFF) as i32);
+                    }
+                    LRESULT(0)
                 }
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
 
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+                WM_CLOSE => {
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SimpleSettingsWindow;
+                    if !window_ptr.is_null() {
+                        let _window = Box::from_raw(window_ptr);
+                        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    }
+                    SETTINGS_WINDOW = None;
+                    let _ = DestroyWindow(hwnd);
+                    LRESULT(0)
+                }
+
+                WM_CTLCOLORSTATIC => {
+                    let hdc = HDC(wparam.0 as *mut _);
+                    let control_hwnd = HWND(lparam.0 as *mut _);
+
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SimpleSettingsWindow;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+
+                        // 检查是否是颜色预览控件
+                        if control_hwnd == window.color_preview {
+                            // 创建颜色画刷
+                            let color = (window.settings.color_red as u32)
+                                | ((window.settings.color_green as u32) << 8)
+                                | ((window.settings.color_blue as u32) << 16);
+                            let brush = CreateSolidBrush(COLORREF(color));
+
+                            // 设置背景色
+                            SetBkColor(hdc, COLORREF(color));
+
+                            return LRESULT(brush.0 as isize);
+                        }
+                    }
+
+                    // 对于所有其他静态文本控件，设置透明背景
+                    SetBkMode(hdc, TRANSPARENT);
+
+                    // 返回空画刷，让父窗口绘制背景
+                    return LRESULT(GetStockObject(HOLLOW_BRUSH).0 as isize);
+                }
+
+                WM_CTLCOLORBTN => {
+                    // 处理复选框背景 - 返回NULL画刷强制透明
+                    let hdc = HDC(wparam.0 as *mut _);
+                    SetBkMode(hdc, TRANSPARENT);
+                    return LRESULT(GetStockObject(NULL_BRUSH).0 as isize);
+                }
+
+                WM_ERASEBKGND => {
+                    // 处理背景擦除 - 确保复选框区域透明
+                    let hdc = HDC(wparam.0 as *mut _);
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+
+                    // 使用系统背景色填充
+                    let bg_brush = GetSysColorBrush(COLOR_BTNFACE);
+                    FillRect(hdc, &rect, bg_brush);
+
+                    return LRESULT(1); // 表示我们处理了背景擦除
+                }
+
+                WM_DESTROY => {
+                    SETTINGS_WINDOW = None;
+                    LRESULT(0)
+                }
+
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            }
+        }
+    }
+
+    /// 设置控件现代主题
+    unsafe fn set_modern_theme(hwnd: HWND) {
+        unsafe {
+            // 尝试设置现代主题
+            let theme_name = to_wide_chars("Explorer");
+            let _ = SetWindowTheme(hwnd, PCWSTR(theme_name.as_ptr()), PCWSTR::null());
         }
     }
 
@@ -219,67 +352,62 @@ impl SimpleSettingsWindow {
         unsafe {
             let instance = GetModuleHandleW(None).unwrap().into();
 
-            // 现代化标题
-            let _ = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("🎨 截图工具 - 现代化设置").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                20,
-                20,
-                610,
-                35,
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
+            // 创建微软雅黑字体
+            self.font = CreateFontW(
+                -14,                                        // 字体高度
+                0,                                          // 字体宽度
+                0,                                          // 角度
+                0,                                          // 基线角度
+                FW_NORMAL.0 as i32,                         // 字体粗细
+                0,                                          // 斜体
+                0,                                          // 下划线
+                0,                                          // 删除线
+                DEFAULT_CHARSET,                            // 字符集
+                OUT_DEFAULT_PRECIS,                         // 输出精度
+                CLIP_DEFAULT_PRECIS,                        // 裁剪精度
+                DEFAULT_QUALITY,                            // 输出质量
+                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,   // 字体族
+                PCWSTR(to_wide_chars("微软雅黑").as_ptr()), // 字体名称
             );
 
-            // 分隔线
-            let _ = CreateWindowExW(
-                WS_EX_STATICEDGE,
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD,
-                20,
-                60,
-                610,
-                2,
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            );
-
-            // 🖌️ 绘图工具分组标题
-            let _ = CreateWindowExW(
+            // 🖌️ 绘图设置分组
+            let group1 = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("🖌️ 绘图工具").as_ptr()),
+                PCWSTR(to_wide_chars("🖌️ 绘图设置").as_ptr()),
                 WS_VISIBLE | WS_CHILD,
-                40,
-                80,
+                20,
+                20,
                 200,
-                25,
+                20,
                 Some(self.hwnd),
                 None,
                 Some(instance),
                 None,
-            );
+            )
+            .unwrap_or_default();
+            SendMessageW(group1, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), None);
 
             // 线条粗细
-            let _ = CreateWindowExW(
+            let thickness_label = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("线条粗细 (1-20):").as_ptr()),
+                PCWSTR(to_wide_chars("线条粗细:").as_ptr()),
                 WS_VISIBLE | WS_CHILD,
-                60,
-                115,
-                150,
+                40,
+                50,
+                80,
                 20,
                 Some(self.hwnd),
                 None,
                 Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                thickness_label,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
                 None,
             );
 
@@ -288,30 +416,43 @@ impl SimpleSettingsWindow {
                 PCWSTR(to_wide_chars("EDIT").as_ptr()),
                 PCWSTR::null(),
                 WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                230,
-                113,
-                100,
-                24,
+                130,
+                48,
+                60,
+                22,
                 Some(self.hwnd),
                 Some(HMENU(ID_LINE_THICKNESS as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            SendMessageW(
+                self.line_thickness_edit,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
 
             // 字体大小
-            let _ = CreateWindowExW(
+            let font_label = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("字体大小 (8-72):").as_ptr()),
+                PCWSTR(to_wide_chars("字体大小:").as_ptr()),
                 WS_VISIBLE | WS_CHILD,
-                30,
-                95,
-                120,
+                240,
+                50,
+                80,
                 20,
                 Some(self.hwnd),
                 None,
                 Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                font_label,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
                 None,
             );
 
@@ -320,63 +461,125 @@ impl SimpleSettingsWindow {
                 PCWSTR(to_wide_chars("EDIT").as_ptr()),
                 PCWSTR::null(),
                 WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                160,
-                93,
-                80,
-                24,
+                330,
+                48,
+                60,
+                22,
                 Some(self.hwnd),
                 Some(HMENU(ID_FONT_SIZE as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            SendMessageW(
+                self.font_size_edit,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
 
-            // 复选框
+            // 选项设置分组
+            let options_group = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR(to_wide_chars("⚙️ 选项设置").as_ptr()),
+                WS_VISIBLE | WS_CHILD,
+                20,
+                90,
+                200,
+                20,
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                options_group,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 复选框 - 使用普通样式，然后子类化
             self.auto_copy_check = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
                 PCWSTR(to_wide_chars("自动复制到剪贴板").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                30,
-                130,
-                200,
-                24,
+                WS_VISIBLE | WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                40,
+                120,
+                180,
+                22,
                 Some(self.hwnd),
                 Some(HMENU(ID_AUTO_COPY as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            SendMessageW(
+                self.auto_copy_check,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 移除复选框的主题以获得更好的控制
+            let _ = SetWindowTheme(self.auto_copy_check, PCWSTR::null(), PCWSTR::null());
+
+            // 强制重绘复选框
+            let _ = InvalidateRect(Some(self.auto_copy_check), None, true);
+            let _ = UpdateWindow(self.auto_copy_check);
 
             self.show_cursor_check = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
                 PCWSTR(to_wide_chars("截图时显示光标").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                30,
-                160,
-                200,
-                24,
+                WS_VISIBLE | WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32),
+                240,
+                120,
+                180,
+                22,
                 Some(self.hwnd),
                 Some(HMENU(ID_SHOW_CURSOR as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            SendMessageW(
+                self.show_cursor_check,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 移除复选框的主题以获得更好的控制
+            let _ = SetWindowTheme(self.show_cursor_check, PCWSTR::null(), PCWSTR::null());
+
+            // 强制重绘复选框
+            let _ = InvalidateRect(Some(self.show_cursor_check), None, true);
+            let _ = UpdateWindow(self.show_cursor_check);
 
             // 延迟设置
-            let _ = CreateWindowExW(
+            let delay_label = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("截图延迟 (毫秒):").as_ptr()),
+                PCWSTR(to_wide_chars("截图延迟(毫秒):").as_ptr()),
                 WS_VISIBLE | WS_CHILD,
-                30,
+                40,
                 195,
                 120,
                 20,
                 Some(self.hwnd),
                 None,
                 Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                delay_label,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
                 None,
             );
 
@@ -385,16 +588,109 @@ impl SimpleSettingsWindow {
                 PCWSTR(to_wide_chars("EDIT").as_ptr()),
                 PCWSTR::null(),
                 WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                160,
+                170,
                 193,
-                80,
-                24,
+                60,
+                22,
                 Some(self.hwnd),
                 Some(HMENU(ID_DELAY as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            SendMessageW(
+                self.delay_edit,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 🎨 颜色设置分组标题
+            let color_group = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR(to_wide_chars("🎨 颜色设置").as_ptr()),
+                WS_VISIBLE | WS_CHILD,
+                20,
+                240,
+                200,
+                20,
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                color_group,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 颜色标签
+            let color_label = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR(to_wide_chars("绘图颜色:").as_ptr()),
+                WS_VISIBLE | WS_CHILD,
+                40,
+                270,
+                80,
+                20,
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                color_label,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // 颜色预览框
+            self.color_preview = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR::null(),
+                WS_VISIBLE | WS_CHILD,
+                130,
+                268,
+                40,
+                24,
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+
+            // 颜色选择按钮
+            self.color_button = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
+                PCWSTR(to_wide_chars("选择颜色...").as_ptr()),
+                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+                180,
+                268,
+                90,
+                24,
+                Some(self.hwnd),
+                Some(HMENU(ID_COLOR_BUTTON as *mut _)),
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            Self::set_modern_theme(self.color_button);
+            SendMessageW(
+                self.color_button,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
 
             // 按钮
             self.ok_button = CreateWindowExW(
@@ -402,32 +698,46 @@ impl SimpleSettingsWindow {
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
                 PCWSTR(to_wide_chars("确定").as_ptr()),
                 WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                200,
-                250,
+                280,
+                350,
                 80,
-                32,
+                30,
                 Some(self.hwnd),
                 Some(HMENU(ID_OK as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            Self::set_modern_theme(self.ok_button);
+            SendMessageW(
+                self.ok_button,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
 
             self.cancel_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
                 PCWSTR(to_wide_chars("取消").as_ptr()),
                 WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                290,
-                250,
+                370,
+                350,
                 80,
-                32,
+                30,
                 Some(self.hwnd),
                 Some(HMENU(ID_CANCEL as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
+            Self::set_modern_theme(self.cancel_button);
+            SendMessageW(
+                self.cancel_button,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
         }
     }
 
@@ -458,6 +768,9 @@ impl SimpleSettingsWindow {
                 Some(WPARAM(if self.settings.show_cursor { 1 } else { 0 })),
                 None,
             );
+
+            // 更新颜色预览
+            self.update_color_preview();
         }
     }
 
@@ -468,13 +781,59 @@ impl SimpleSettingsWindow {
                 self.save_settings();
                 unsafe {
                     let _ = self.settings.save();
-                    let _ = DestroyWindow(self.hwnd);
+                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
             }
             ID_CANCEL => unsafe {
-                let _ = DestroyWindow(self.hwnd);
+                let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             },
+            ID_COLOR_BUTTON => {
+                self.show_color_dialog();
+            }
             _ => {}
+        }
+    }
+
+    /// 显示颜色选择对话框
+    fn show_color_dialog(&mut self) {
+        unsafe {
+            // 创建自定义颜色数组
+            let mut custom_colors = [COLORREF(0); 16];
+
+            let mut cc = CHOOSECOLORW {
+                lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+                hwndOwner: self.hwnd,
+                hInstance: HWND::default(),
+                rgbResult: COLORREF(
+                    (self.settings.color_red as u32)
+                        | ((self.settings.color_green as u32) << 8)
+                        | ((self.settings.color_blue as u32) << 16),
+                ),
+                lpCustColors: custom_colors.as_mut_ptr(),
+                Flags: CC_FULLOPEN | CC_RGBINIT,
+                lCustData: LPARAM(0),
+                lpfnHook: None,
+                lpTemplateName: PCWSTR::null(),
+            };
+
+            if ChooseColorW(&mut cc).as_bool() {
+                // 用户选择了颜色，更新设置
+                let color = cc.rgbResult.0;
+                self.settings.color_red = (color & 0xFF) as u8;
+                self.settings.color_green = ((color >> 8) & 0xFF) as u8;
+                self.settings.color_blue = ((color >> 16) & 0xFF) as u8;
+
+                // 更新颜色预览
+                self.update_color_preview();
+            }
+        }
+    }
+
+    /// 更新颜色预览
+    fn update_color_preview(&self) {
+        unsafe {
+            // 强制重绘颜色预览控件
+            let _ = InvalidateRect(Some(self.color_preview), None, true);
         }
     }
 
@@ -518,4 +877,9 @@ impl SimpleSettingsWindow {
             self.settings.show_cursor = show_cursor_state.0 != 0;
         }
     }
+}
+
+/// 显示设置窗口的便利函数
+pub fn show_settings_window() -> Result<()> {
+    SimpleSettingsWindow::show(HWND::default())
 }

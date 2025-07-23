@@ -47,13 +47,10 @@ impl SvgIconManager {
             (ToolbarButton::Cancel, include_str!("../icons/x.svg")),
         ];
 
-        println!("🔍 开始加载嵌入的SVG图标...");
         for (button, svg_content) in &embedded_icons {
             let svg_data = svg_content.as_bytes().to_vec();
             self.icons.insert(*button, svg_data);
-            println!("✅ 成功加载嵌入图标: {:?}", button);
         }
-        println!("📊 总共加载了 {} 个嵌入图标", self.icons.len());
 
         Ok(())
     }

@@ -139,6 +139,10 @@ pub struct WindowState {
 
     // 系统托盘
     pub system_tray: Option<crate::system_tray::SystemTray>, // 系统托盘实例
+
+    // 窗口检测
+    pub window_detector: crate::window_detection::WindowDetector, // 窗口检测器
+    pub auto_highlight_enabled: bool,                             // 是否启用自动高亮窗口
 }
 // IconData 结构体已移除，现在只使用 SVG 图标
 #[derive(Clone, Debug)]

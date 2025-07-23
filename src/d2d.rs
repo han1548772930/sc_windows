@@ -14,9 +14,106 @@ use windows_numerics::*;
 
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
+
+// 固钉窗口的窗口过程
+unsafe extern "system" fn pin_window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+
+                // 获取窗口客户区大小
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+
+                // 获取存储的位图句柄
+                let bitmap_handle = HBITMAP(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _);
+
+                if !bitmap_handle.0.is_null() {
+                    // 创建兼容DC并选择位图
+                    let mem_dc = CreateCompatibleDC(Some(hdc));
+                    let old_bitmap = SelectObject(mem_dc, bitmap_handle.into());
+
+                    // 绘制位图到窗口
+                    let _ = BitBlt(
+                        hdc,
+                        0,
+                        0,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        Some(mem_dc),
+                        0,
+                        0,
+                        SRCCOPY,
+                    );
+
+                    // 清理资源
+                    SelectObject(mem_dc, old_bitmap);
+                    let _ = DeleteDC(mem_dc);
+                }
+
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDOWN => {
+                // 开始拖拽窗口
+                let _ = SetCapture(hwnd);
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                // 结束拖拽
+                let _ = ReleaseCapture();
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                // 如果鼠标被捕获，拖拽窗口
+                if GetCapture() == hwnd {
+                    // 使用DefWindowProc的默认拖拽行为
+                    return DefWindowProcW(hwnd, WM_NCHITTEST, wparam, lparam);
+                }
+                LRESULT(0)
+            }
+
+            WM_NCHITTEST => {
+                // 让整个窗口都可以拖拽
+                LRESULT(HTCAPTION as isize)
+            }
+
+            WM_KEYDOWN => {
+                if wparam.0 == VK_ESCAPE.0 as usize {
+                    // ESC键关闭固钉窗口
+                    let _ = DestroyWindow(hwnd);
+                }
+                LRESULT(0)
+            }
+
+            WM_DESTROY => {
+                // 清理存储的位图
+                let bitmap_handle = HBITMAP(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _);
+                if !bitmap_handle.0.is_null() {
+                    let _ = DeleteObject(bitmap_handle.into());
+                }
+                LRESULT(0)
+            }
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
 
 impl WindowState {
     pub fn new(hwnd: HWND) -> Result<Self> {
@@ -29,13 +126,28 @@ impl WindowState {
 
             // 创建传统GDI资源用于屏幕捕获
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+            if screen_dc.is_invalid() {
+                return Err(Error::from_win32());
+            }
+
             let screenshot_dc = CreateCompatibleDC(Some(screen_dc));
+            if screenshot_dc.is_invalid() {
+                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+                return Err(Error::from_win32());
+            }
+
             let gdi_screenshot_bitmap =
                 CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
+            if gdi_screenshot_bitmap.is_invalid() {
+                let _ = DeleteDC(screenshot_dc);
+                let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+                return Err(Error::from_win32());
+            }
+
             SelectObject(screenshot_dc, gdi_screenshot_bitmap.into());
 
-            // 捕获屏幕
-            BitBlt(
+            // 捕获屏幕 - 这里可能会因为权限问题失败
+            let blt_result = BitBlt(
                 screenshot_dc,
                 0,
                 0,
@@ -45,8 +157,13 @@ impl WindowState {
                 0,
                 0,
                 SRCCOPY,
-            )?;
+            );
+
             ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+            if blt_result.is_err() {
+                // 不返回错误，继续初始化，但屏幕截图功能可能受限
+            }
 
             // 创建Direct2D Factory
             let d2d_factory =
@@ -211,6 +328,10 @@ impl WindowState {
 
                 // 系统托盘初始化为None，稍后在窗口创建后初始化
                 system_tray: None,
+
+                // 窗口检测相关字段初始化
+                window_detector: crate::window_detection::WindowDetector::new(),
+                auto_highlight_enabled: true, // 默认启用自动高亮
             })
         }
     }
@@ -224,7 +345,7 @@ impl WindowState {
         let mut tray = crate::system_tray::SystemTray::new(hwnd, 1001);
 
         // 添加托盘图标
-        tray.add_icon("截图工具 - Alt+S 截图，右键查看菜单", icon)?;
+        tray.add_icon("截图工具 - Ctrl+Alt+S 截图，右键查看菜单", icon)?;
 
         // 保存到WindowState中
         self.system_tray = Some(tray);
@@ -235,10 +356,42 @@ impl WindowState {
     /// 重新截取当前屏幕
     pub fn capture_screen(&mut self) -> Result<()> {
         unsafe {
+            // 获取当前屏幕尺寸（可能在pin后发生了变化）
+            let current_screen_width = GetSystemMetrics(SM_CXSCREEN);
+            let current_screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+            // 如果屏幕尺寸发生了变化，需要重新创建资源
+            if current_screen_width != self.screen_width
+                || current_screen_height != self.screen_height
+            {
+                self.screen_width = current_screen_width;
+                self.screen_height = current_screen_height;
+
+                // 重新创建GDI资源
+                let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+                let new_screenshot_dc = CreateCompatibleDC(Some(screen_dc));
+                let new_gdi_bitmap =
+                    CreateCompatibleBitmap(screen_dc, self.screen_width, self.screen_height);
+                SelectObject(new_screenshot_dc, new_gdi_bitmap.into());
+
+                // 清理旧资源
+                let _ = DeleteDC(self.screenshot_dc);
+                let _ = DeleteObject(self.gdi_screenshot_bitmap.into());
+
+                // 更新资源
+                self.screenshot_dc = new_screenshot_dc;
+                self.gdi_screenshot_bitmap = new_gdi_bitmap;
+
+                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+                // 标记需要重新创建渲染目标
+                // 这将在下次绘制时自动处理
+            }
+
             // 获取屏幕DC
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
 
-            // 重新捕获屏幕到现有的GDI位图
+            // 重新捕获屏幕到GDI位图
             BitBlt(
                 self.screenshot_dc,
                 0,
@@ -265,6 +418,9 @@ impl WindowState {
             // 替换当前的截图位图
             self.screenshot_bitmap = new_d2d_bitmap;
 
+            // 刷新窗口列表
+            let _ = self.window_detector.refresh_windows();
+
             Ok(())
         }
     }
@@ -284,6 +440,9 @@ impl WindowState {
         self.current_tool = DrawingTool::None;
         self.toolbar.clicked_button = ToolbarButton::None;
 
+        // 隐藏工具栏
+        self.toolbar.hide();
+
         // 清除拖拽状态
         self.drag_mode = DragMode::None;
         self.mouse_pressed = false;
@@ -302,8 +461,17 @@ impl WindowState {
         // 重置pin状态
         self.is_pinned = false;
 
+        // 恢复屏幕尺寸（如果之前被pin功能修改过）
+        unsafe {
+            self.screen_width = GetSystemMetrics(SM_CXSCREEN);
+            self.screen_height = GetSystemMetrics(SM_CYSCREEN);
+        }
+
         // 重置其他状态
         self.just_saved_text = false;
+
+        // 重新启用自动窗口高亮功能
+        self.auto_highlight_enabled = true;
     }
 
     /// 处理托盘消息
@@ -316,70 +484,52 @@ impl WindowState {
                 unsafe {
                     if IsWindowVisible(hwnd).as_bool() {
                         let _ = ShowWindow(hwnd, SW_HIDE);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     } else {
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                        let _ = SetForegroundWindow(hwnd);
+                        // 重新截取屏幕
+                        self.reset_to_initial_state();
+                        if self.capture_screen().is_ok() {
+                            let _ = ShowWindow(hwnd, SW_SHOW);
+                            let _ = SetForegroundWindow(hwnd);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                Some(HWND_TOPMOST),
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE,
+                            );
+                            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                            let _ = UpdateWindow(hwnd);
+                        }
                     }
                 }
             }
             crate::system_tray::TrayMessage::RightClick(_) => {
+                // 确保窗口处于正确状态再显示菜单
+                unsafe {
+                    // 如果窗口可见，暂时设置为不是最顶层，避免菜单被遮挡
+                    if IsWindowVisible(hwnd).as_bool() {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_NOTOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    }
+                }
                 // 右键点击 - 显示上下文菜单
                 self.show_tray_context_menu(hwnd);
             }
             crate::system_tray::TrayMessage::DoubleClick(_) => {
                 // 双击 - 显示窗口并开始截图
                 unsafe {
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(hwnd);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// 显示托盘右键菜单
-    fn show_tray_context_menu(&self, hwnd: HWND) {
-        unsafe {
-            // 创建弹出菜单
-            if let Ok(hmenu) = CreatePopupMenu() {
-                // 添加菜单项
-                let show_text = crate::utils::to_wide_chars("显示窗口");
-                let screenshot_text = crate::utils::to_wide_chars("开始截图");
-                let settings_text = crate::utils::to_wide_chars("设置");
-                let exit_text = crate::utils::to_wide_chars("退出");
-
-                let _ = AppendMenuW(hmenu, MF_STRING, 1001, PCWSTR(show_text.as_ptr()));
-                let _ = AppendMenuW(hmenu, MF_STRING, 1002, PCWSTR(screenshot_text.as_ptr()));
-                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-                let _ = AppendMenuW(hmenu, MF_STRING, 1004, PCWSTR(settings_text.as_ptr()));
-                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-                let _ = AppendMenuW(hmenu, MF_STRING, 1003, PCWSTR(exit_text.as_ptr()));
-
-                // 获取鼠标位置
-                let mut cursor_pos = POINT::default();
-                let _ = GetCursorPos(&mut cursor_pos);
-
-                // 显示菜单
-                let _ = SetForegroundWindow(hwnd); // 确保菜单能正确显示
-                let cmd = TrackPopupMenu(
-                    hmenu,
-                    TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                    cursor_pos.x,
-                    cursor_pos.y,
-                    Some(0),
-                    hwnd,
-                    None,
-                );
-
-                // 处理菜单选择
-                match cmd.0 {
-                    1001 => {
-                        // 显示窗口
-                        let _ = ShowWindow(hwnd, SW_SHOW);
-                        let _ = SetForegroundWindow(hwnd);
-                    }
-                    1002 => {
-                        // 开始截图
+                    self.reset_to_initial_state();
+                    if self.capture_screen().is_ok() {
                         let _ = ShowWindow(hwnd, SW_SHOW);
                         let _ = SetForegroundWindow(hwnd);
                         let _ = SetWindowPos(
@@ -392,10 +542,48 @@ impl WindowState {
                             SWP_NOMOVE | SWP_NOSIZE,
                         );
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 显示托盘右键菜单
+    fn show_tray_context_menu(&self, hwnd: HWND) {
+        unsafe {
+            // 创建弹出菜单
+            if let Ok(hmenu) = CreatePopupMenu() {
+                // 添加菜单项 - 只保留设置和退出
+                let settings_text = crate::utils::to_wide_chars("设置");
+                let exit_text = crate::utils::to_wide_chars("退出");
+
+                let _ = AppendMenuW(hmenu, MF_STRING, 1004, PCWSTR(settings_text.as_ptr()));
+                let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(hmenu, MF_STRING, 1003, PCWSTR(exit_text.as_ptr()));
+
+                // 获取鼠标位置
+                let mut cursor_pos = POINT::default();
+                let _ = GetCursorPos(&mut cursor_pos);
+
+                // 显示菜单
+                let _ = SetForegroundWindow(hwnd);
+                let cmd = TrackPopupMenu(
+                    hmenu,
+                    TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                    cursor_pos.x,
+                    cursor_pos.y,
+                    Some(0),
+                    hwnd,
+                    None,
+                );
+
+                // 处理菜单选择
+                match cmd.0 {
                     1004 => {
-                        // 显示现代化设置窗口
-                        println!("🔧 打开现代化设置窗口...");
-                        let _ = crate::nwg_modern_settings::ModernSettingsApp::show();
+                        // 显示设置窗口
+                        if !crate::simple_settings::SimpleSettingsWindow::is_open() {
+                            let _ = crate::simple_settings::SimpleSettingsWindow::show(hwnd);
+                        }
                     }
                     1003 => {
                         // 退出程序
@@ -410,6 +598,30 @@ impl WindowState {
         }
     }
 
+    /// 从选择区域提取文本
+    pub fn extract_text_from_selection(&mut self, _hwnd: HWND) {
+        if !self.has_selection {
+            return;
+        }
+
+        // 直接在当前线程中执行 OCR，使用同步方式
+        let screenshot_dc = self.screenshot_dc;
+        let selection_rect = self.selection_rect;
+
+        // 创建 Tokio 运行时来执行异步 OCR
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_e) => {
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            crate::ocr::extract_text_from_selection(screenshot_dc, selection_rect, Some(_hwnd))
+                .await
+        });
+    }
+
     pub fn pin_selection(&mut self, hwnd: HWND) -> Result<()> {
         unsafe {
             let width = self.selection_rect.right - self.selection_rect.left;
@@ -419,13 +631,22 @@ impl WindowState {
                 return Ok(());
             }
 
-            // 保存当前窗口位置（如果还没保存的话）
-            if !self.is_pinned {
-                let mut current_rect = RECT::default();
-                let _ = GetWindowRect(hwnd, &mut current_rect);
-                self.original_window_pos = current_rect;
-            }
+            // 创建新的固钉窗口
+            self.create_pin_window(hwnd, width, height)?;
 
+            // 隐藏原始截屏窗口
+            let _ = ShowWindow(hwnd, SW_HIDE);
+
+            // 重置原始窗口状态，准备下次截屏
+            self.reset_to_initial_state();
+
+            Ok(())
+        }
+    }
+
+    /// 创建固钉窗口
+    fn create_pin_window(&self, parent_hwnd: HWND, width: i32, height: i32) -> Result<()> {
+        unsafe {
             // 获取选择区域的屏幕截图（包含绘图内容）
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
             let mem_dc = CreateCompatibleDC(Some(screen_dc));
@@ -445,72 +666,59 @@ impl WindowState {
                 SRCCOPY,
             );
 
-            // 从GDI位图创建新的D2D位图
-            if let Ok(new_d2d_bitmap) =
-                Self::create_d2d_bitmap_from_gdi(&self.render_target, mem_dc, width, height)
-            {
-                // 替换当前的截图位图
-                self.screenshot_bitmap = new_d2d_bitmap;
-            }
+            // 注册固钉窗口类
+            let class_name = crate::utils::to_wide_chars("PinWindow");
+            let hinstance = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
 
-            // 清理GDI资源
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteObject(bitmap.into());
-            let _ = DeleteDC(mem_dc);
-            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+            let wc = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(pin_window_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: hinstance,
+                hIcon: HICON::default(),
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                hbrBackground: HBRUSH::default(),
+                lpszMenuName: PCWSTR::null(),
+                lpszClassName: PCWSTR(class_name.as_ptr()),
+                hIconSm: HICON::default(),
+            };
 
-            // 调整窗口大小和位置到选择区域
-            let _ = SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
+            RegisterClassExW(&wc);
+
+            // 创建固钉窗口
+            let pin_hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                PCWSTR(class_name.as_ptr()),
+                w!("Pin Window"),
+                WS_POPUP | WS_VISIBLE,
                 self.selection_rect.left,
                 self.selection_rect.top,
                 width,
                 height,
-                SWP_SHOWWINDOW,
+                None,
+                None,
+                Some(hinstance),
+                None,
             );
 
-            // 更新内部状态
-            self.screen_width = width;
-            self.screen_height = height;
-
-            // 重置选择区域为整个新窗口
-            self.selection_rect = RECT {
-                left: 0,
-                top: 0,
-                right: width,
-                bottom: height,
-            };
-
-            // 清除所有绘图元素和选择状态
-            self.drawing_elements.clear();
-            self.current_element = None;
-            self.selected_element = None;
-            self.current_tool = DrawingTool::None;
-            self.has_selection = false;
-
-            // 隐藏工具栏
-            self.toolbar.hide();
-
-            // 标记为已pin
-            self.is_pinned = true;
-
-            // 重新创建渲染目标以适应新尺寸
-            if let Ok(new_render_target) = self.create_render_target_for_size(hwnd, width, height) {
-                self.render_target = new_render_target;
-
-                // 重新创建画刷（因为render_target改变了）
-                if let Ok(brushes) = self.recreate_brushes() {
-                    self.selection_border_brush = brushes.0;
-                    self.handle_fill_brush = brushes.1;
-                    self.handle_border_brush = brushes.2;
-                    self.toolbar_bg_brush = brushes.3;
-                    self.button_hover_brush = brushes.4;
-                    self.button_active_brush = brushes.5;
-                    self.text_brush = brushes.6;
-                    self.mask_brush = brushes.7;
-                }
+            let pin_hwnd = pin_hwnd?;
+            if pin_hwnd.0.is_null() {
+                return Err(Error::from_win32());
             }
+
+            // 将位图句柄存储到窗口数据中
+            SetWindowLongPtrW(pin_hwnd, GWLP_USERDATA, bitmap.0 as isize);
+
+            // 清理临时DC资源，但保留位图
+            SelectObject(mem_dc, old_bitmap);
+            let _ = DeleteDC(mem_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+            // 显示固钉窗口
+            let _ = ShowWindow(pin_hwnd, SW_SHOW);
+            let _ = UpdateWindow(pin_hwnd);
 
             Ok(())
         }
