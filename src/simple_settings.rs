@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::{ffi::c_void, fs};
 use std::path::PathBuf;
+use std::{ffi::c_void, fs};
 
 use windows::{
     Win32::{
@@ -185,8 +185,21 @@ impl Default for SimpleSettings {
 impl SimpleSettings {
     /// 获取设置文件路径
     fn get_settings_path() -> PathBuf {
-        // 首先尝试从现有配置文件读取路径设置
-        let default_path = {
+        // 优先使用用户配置目录（USERPROFILE）
+        let default_path = if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let mut path = PathBuf::from(user_profile);
+            path.push(".ocr_screenshot_tool");
+            // 确保目录存在
+            if let Err(_) = std::fs::create_dir_all(&path) {
+                // 如果创建失败，回退到程序目录
+                let mut fallback_path = std::env::current_exe().unwrap_or_default();
+                fallback_path.set_file_name("simple_settings.json");
+                return fallback_path;
+            }
+            path.push("simple_settings.json");
+            path
+        } else {
+            // 如果无法获取USERPROFILE，使用程序目录
             let mut path = std::env::current_exe().unwrap_or_default();
             path.set_file_name("simple_settings.json");
             path
@@ -393,8 +406,11 @@ impl SimpleSettingsWindow {
                         // 使用SetPropW存储原始文本指针
                         let text_box = Box::new(text_wide);
                         let text_ptr = Box::into_raw(text_box);
-                        let _ =
-                            SetPropW(hwnd, PCWSTR(prop_name.as_ptr()), Some(HANDLE(text_ptr as *mut c_void)));
+                        let _ = SetPropW(
+                            hwnd,
+                            PCWSTR(prop_name.as_ptr()),
+                            Some(HANDLE(text_ptr as *mut c_void)),
+                        );
                     }
 
                     // 当用户点击输入框时，清空内容并设置placeholder文本

@@ -360,6 +360,9 @@ impl WindowState {
             match key {
                 val if val == VK_ESCAPE.0 as u32 => {
                     // ESC键清除所有状态并隐藏窗口
+                    // 异步停止OCR引擎
+                    crate::ocr::PaddleOcrEngine::stop_ocr_engine_async();
+
                     self.reset_to_initial_state();
                     unsafe {
                         let _ = ShowWindow(hwnd, SW_HIDE);
@@ -426,6 +429,9 @@ impl WindowState {
         match key {
             val if val == VK_ESCAPE.0 as u32 => unsafe {
                 // ESC键直接清除所有状态并隐藏窗口
+                // 异步停止OCR引擎
+                crate::ocr::PaddleOcrEngine::stop_ocr_engine_async();
+
                 self.reset_to_initial_state();
                 let _ = ShowWindow(hwnd, SW_HIDE);
             },

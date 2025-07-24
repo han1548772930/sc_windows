@@ -8,16 +8,15 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// OCR 结果显示窗口
 pub struct OcrResultWindow {
     hwnd: HWND,
-    image_data: Vec<u8>,
+    text_edit: HWND, // 可选择的文本编辑控件
     ocr_results: Vec<OcrResult>,
     image_bitmap: Option<HBITMAP>,
     image_width: i32,
     image_height: i32,
     font: HFONT,
-    text_scroll_offset: i32, // 文字区域的滚动偏移
-    text_area_rect: RECT,    // 文字显示区域
-    window_width: i32,       // 窗口宽度
-    window_height: i32,      // 窗口高度
+    text_area_rect: RECT, // 文字显示区域
+    window_width: i32,    // 窗口宽度
+    window_height: i32,   // 窗口高度
 }
 
 impl OcrResultWindow {
@@ -162,16 +161,56 @@ impl OcrResultWindow {
                 bottom: window_height - text_padding_bottom,
             };
 
+            // 创建文本编辑控件（可选择的文本）
+            let text_edit = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                windows::core::w!("EDIT"),
+                windows::core::w!(""),
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WINDOW_STYLE(0x0004 | 0x0010), // ES_MULTILINE | ES_READONLY
+                text_area_rect.left,
+                text_area_rect.top,
+                text_area_rect.right - text_area_rect.left,
+                text_area_rect.bottom - text_area_rect.top,
+                Some(hwnd),
+                None,
+                Some(instance.into()),
+                None,
+            )?;
+
+            // 设置文本编辑控件的字体
+            SendMessageW(
+                text_edit,
+                WM_SETFONT,
+                Some(WPARAM(font.0 as usize)),
+                Some(LPARAM(1)),
+            );
+
+            // 合并所有OCR结果为文本
+            let mut all_text = String::new();
+            for (i, result) in ocr_results.iter().enumerate() {
+                if i > 0 {
+                    all_text.push_str("\r\n"); // Windows换行符
+                }
+                all_text.push_str(&result.text);
+            }
+
+            if all_text.trim().is_empty() {
+                all_text = "未识别到文本内容".to_string();
+            }
+
+            // 设置文本内容
+            let text_wide: Vec<u16> = all_text.encode_utf16().chain(std::iter::once(0)).collect();
+            SetWindowTextW(text_edit, windows::core::PCWSTR(text_wide.as_ptr()))?;
+
             // 创建窗口实例
             let window = Self {
                 hwnd,
-                image_data,
+                text_edit,
                 ocr_results,
                 image_bitmap: Some(bitmap),
                 image_width: width,
                 image_height: height,
                 font,
-                text_scroll_offset: 0,
                 text_area_rect,
                 window_width,
                 window_height,
@@ -372,8 +411,7 @@ impl OcrResultWindow {
                 );
             }
 
-            // 右半部分显示识别的文本内容（带滚动）
-            self.draw_text_area(hdc);
+            // 文本内容现在由Edit控件处理，无需手动绘制
 
             // 恢复原来的字体
             SelectObject(hdc, old_font);
@@ -382,72 +420,6 @@ impl OcrResultWindow {
             EndPaint(self.hwnd, &ps);
 
             Ok(())
-        }
-    }
-
-    /// 绘制文字区域（带滚动）
-    fn draw_text_area(&self, hdc: HDC) {
-        unsafe {
-            // 绘制文字区域边框
-            let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00DDDDDD));
-            let old_pen = SelectObject(hdc, border_pen.into());
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-            Rectangle(
-                hdc,
-                self.text_area_rect.left,
-                self.text_area_rect.top,
-                self.text_area_rect.right,
-                self.text_area_rect.bottom,
-            );
-
-            SelectObject(hdc, old_pen);
-            SelectObject(hdc, old_brush);
-            DeleteObject(border_pen.into());
-
-            // 设置裁剪区域，只在文字区域内绘制
-            let clip_region = CreateRectRgn(
-                self.text_area_rect.left + 1,
-                self.text_area_rect.top + 1,
-                self.text_area_rect.right - 1,
-                self.text_area_rect.bottom - 1,
-            );
-            SelectClipRgn(hdc, Some(clip_region));
-
-            // 将所有识别的文本按行合并，每行一个换行
-            let mut all_text = String::new();
-            for (i, result) in self.ocr_results.iter().enumerate() {
-                if i > 0 {
-                    all_text.push('\n'); // 每行之间用单换行分隔
-                }
-                all_text.push_str(&result.text);
-            }
-
-            // 如果没有识别到文本，显示提示
-            if all_text.trim().is_empty() {
-                all_text = "未识别到文本内容".to_string();
-            }
-
-            // 计算文字绘制区域（考虑滚动偏移）
-            let mut text_rect = RECT {
-                left: self.text_area_rect.left + 10,
-                top: self.text_area_rect.top + 10 - self.text_scroll_offset,
-                right: self.text_area_rect.right - 10,
-                bottom: self.text_area_rect.bottom + 1000, // 给足够的高度
-            };
-
-            let mut text_wide: Vec<u16> =
-                all_text.encode_utf16().chain(std::iter::once(0)).collect();
-            DrawTextW(
-                hdc,
-                &mut text_wide,
-                &mut text_rect,
-                DT_LEFT | DT_TOP | DT_WORDBREAK,
-            );
-
-            // 恢复裁剪区域
-            SelectClipRgn(hdc, None);
-            DeleteObject(clip_region.into());
         }
     }
 
@@ -487,24 +459,11 @@ impl OcrResultWindow {
                     LRESULT(0)
                 }
                 WM_MOUSEWHEEL => {
-                    // 处理鼠标滚轮事件
+                    // 将滚轮事件转发给文本编辑控件
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
-                        let scroll_amount = 30; // 每次滚动的像素数
-
-                        if delta > 0 {
-                            // 向上滚动
-                            window.text_scroll_offset =
-                                (window.text_scroll_offset - scroll_amount).max(0);
-                        } else {
-                            // 向下滚动
-                            window.text_scroll_offset += scroll_amount;
-                        }
-
-                        // 只重绘文字区域，避免图片闪烁
-                        InvalidateRect(Some(hwnd), Some(&window.text_area_rect), FALSE.into());
+                        let window = &*window_ptr;
+                        SendMessageW(window.text_edit, msg, Some(wparam), Some(lparam));
                     }
                     LRESULT(0)
                 }

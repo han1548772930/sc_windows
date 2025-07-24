@@ -555,26 +555,12 @@ impl WindowState {
 
     /// 从选择区域提取文本
     pub fn extract_text_from_selection(&mut self, _hwnd: HWND) {
-        if !self.has_selection {
-            return;
-        }
-
         // 直接在当前线程中执行 OCR，使用同步方式
         let screenshot_dc = self.screenshot_dc;
         let selection_rect = self.selection_rect;
 
-        // 创建 Tokio 运行时来执行异步 OCR
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(_e) => {
-                return;
-            }
-        };
-
-        rt.block_on(async {
-            crate::ocr::extract_text_from_selection(screenshot_dc, selection_rect, Some(_hwnd))
-                .await
-        });
+        // 直接调用同步 OCR 函数
+        let _ = crate::ocr::extract_text_from_selection(screenshot_dc, selection_rect, Some(_hwnd));
     }
 
     pub fn pin_selection(&mut self, hwnd: HWND) -> Result<()> {

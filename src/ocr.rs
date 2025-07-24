@@ -1,8 +1,21 @@
 use crate::ocr_result_window::OcrResultWindow;
 use anyhow::Result;
-use uni_ocr::{OcrEngine, OcrProvider};
+use base64::{Engine as _, engine::general_purpose};
+use paddleocr::{ImageData, Ppocr};
+use serde_json::Value;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+
+// 简化版本：只使用本地路径访问
+
+// 当前活跃的OCR引擎（按需启动和关闭）
+static CURRENT_OCR_ENGINE: OnceLock<Mutex<Option<Ppocr>>> = OnceLock::new();
 
 /// OCR 结果结构体，包含识别的文本和坐标信息
 #[derive(Debug, Clone)]
@@ -21,198 +34,438 @@ pub struct BoundingBox {
     pub height: i32,
 }
 
-/// UniOCR 引擎，使用 uni_ocr 库
-pub struct UniOcrEngine {
-    engine: OcrEngine,
-}
+/// PaddleOCR 引擎，使用全局单例避免重复启动进程
+pub struct PaddleOcrEngine;
 
-/// 清理 OCR 识别结果中的明显错误字符
-fn clean_ocr_text(text: &str) -> String {
-    let mut cleaned = text.to_string();
+impl PaddleOcrEngine {
+    /// 创建新的 OCR 引擎实例（按需启动）
+    pub fn new() -> Result<Self> {
+        Ok(Self)
+    }
 
-    // 移除明显的错误字符模式
-    cleaned = cleaned.replace("€", "e");
-    cleaned = cleaned.replace("！", "!");
-    cleaned = cleaned.replace("（", "(");
-    cleaned = cleaned.replace("）", ")");
-    cleaned = cleaned.replace("：", ":");
-    cleaned = cleaned.replace("。", ".");
-    cleaned = cleaned.replace("、", ",");
-    cleaned = cleaned.replace("「", "[");
-    cleaned = cleaned.replace("」", "]");
-    cleaned = cleaned.replace("且", "and");
+    /// 异步启动OCR引擎（截图开始时调用，不阻塞）
+    pub fn start_ocr_engine_async() {
+        // 在后台线程中异步启动OCR引擎
+        std::thread::spawn(|| {
+            if let Err(e) = Self::start_ocr_engine_sync() {
+                #[cfg(debug_assertions)]
+                eprintln!("异步启动OCR引擎失败: {}", e);
+            }
+        });
+    }
 
-    // 移除过多的特殊字符
-    let chars: Vec<char> = cleaned.chars().collect();
-    let mut result = String::new();
-    let mut special_count = 0;
+    /// 同步启动OCR引擎（内部使用）
+    fn start_ocr_engine_sync() -> Result<()> {
+        let engine_mutex = CURRENT_OCR_ENGINE.get_or_init(|| Mutex::new(None));
+        let mut engine_guard = engine_mutex.lock().unwrap();
 
-    for ch in chars {
-        if ch.is_alphanumeric() || ch.is_whitespace() || ".,!?:;()[]{}\"'-".contains(ch) {
-            result.push(ch);
-            special_count = 0;
-        } else {
-            special_count += 1;
-            if special_count < 3 {
-                // 允许少量特殊字符
-                result.push(ch);
+        if engine_guard.is_none() {
+            #[cfg(debug_assertions)]
+            println!("正在后台启动OCR引擎...");
+
+            let start_time = std::time::Instant::now();
+
+            // 获取 PaddleOCR-json.exe 的路径
+            let exe_path = Self::get_paddle_ocr_exe_path()?;
+
+            // 创建PaddleOCR引擎（已修改源代码支持隐藏窗口）
+            let engine = Ppocr::new(exe_path, None)
+                .map_err(|e| anyhow::anyhow!("创建 PaddleOCR 引擎失败: {}", e))?;
+
+            *engine_guard = Some(engine);
+
+            let elapsed = start_time.elapsed();
+            #[cfg(debug_assertions)]
+            println!("OCR引擎启动成功，耗时: {:?}", elapsed);
+        }
+
+        Ok(())
+    }
+
+    /// 异步停止OCR引擎（截图结束时调用，不阻塞）
+    pub fn stop_ocr_engine_async() {
+        // 在后台线程中异步停止OCR引擎
+        std::thread::spawn(|| {
+            Self::stop_ocr_engine_sync();
+        });
+    }
+
+    /// 同步停止OCR引擎（内部使用）
+    fn stop_ocr_engine_sync() {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
+            if let Ok(mut engine_guard) = engine_mutex.lock() {
+                if let Some(engine) = engine_guard.take() {
+                    #[cfg(debug_assertions)]
+                    println!("正在后台停止OCR引擎...");
+
+                    let start_time = std::time::Instant::now();
+
+                    // 正常关闭引擎
+                    drop(engine);
+
+                    // 等待进程退出
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+
+                    // 强制清理残留进程
+                    Self::force_kill_paddle_processes();
+
+                    let elapsed = start_time.elapsed();
+                    #[cfg(debug_assertions)]
+                    println!("OCR引擎已停止，耗时: {:?}", elapsed);
+                }
             }
         }
     }
 
-    // 清理多余的空格
-    result.split_whitespace().collect::<Vec<&str>>().join(" ")
-}
-
-impl UniOcrEngine {
-    /// 创建新的 OCR 引擎实例
-    pub fn new() -> Result<Self> {
-        // 尝试不同的 OCR 提供商
-        let engine = match OcrEngine::new(OcrProvider::Windows) {
-            Ok(engine) => engine,
-            Err(_) => OcrEngine::new(OcrProvider::Auto)?,
-        };
-
-        Ok(Self { engine })
+    /// 立即停止OCR引擎（程序退出时使用，同步）
+    pub fn stop_ocr_engine_immediate() {
+        Self::stop_ocr_engine_sync();
     }
 
-    /// 从文件路径识别文本（使用 uni_ocr）
-    pub async fn recognize_file(&self, path: &std::path::Path) -> Result<Vec<OcrResult>> {
+    /// 使用当前OCR引擎进行识别（支持等待引擎就绪）
+    fn call_global_ocr(image_data: ImageData) -> Result<String> {
+        // 等待OCR引擎就绪（最多等待10秒）
+        let max_wait_time = std::time::Duration::from_secs(10);
+        let start_time = std::time::Instant::now();
+        let mut last_status_time = start_time;
+
+        loop {
+            if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
+                if let Ok(mut engine_guard) = engine_mutex.lock() {
+                    if let Some(engine) = engine_guard.as_mut() {
+                        // 引擎已就绪，执行OCR
+                        #[cfg(debug_assertions)]
+                        println!("OCR引擎就绪，开始识别...");
+
+                        return engine
+                            .ocr(image_data)
+                            .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
+                    }
+                }
+            }
+
+            // 每秒输出一次状态（仅在debug模式）
+            #[cfg(debug_assertions)]
+            {
+                let now = std::time::Instant::now();
+                if now.duration_since(last_status_time) >= std::time::Duration::from_secs(1) {
+                    println!(
+                        "等待OCR引擎启动中... ({:.1}s)",
+                        start_time.elapsed().as_secs_f32()
+                    );
+                    last_status_time = now;
+                }
+            }
+
+            // 检查是否超时
+            if start_time.elapsed() > max_wait_time {
+                return Err(anyhow::anyhow!(
+                    "等待OCR引擎启动超时（{}秒）",
+                    max_wait_time.as_secs()
+                ));
+            }
+
+            // 等待100ms后重试
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// 预启动OCR引擎（已废弃，改为按需启动）
+    #[deprecated(note = "使用start_ocr_engine()代替")]
+    pub fn prestart_engine() {
+        // 不再预启动，改为按需启动
+    }
+
+    /// 检查OCR引擎是否已经准备就绪
+    pub fn is_engine_ready() -> bool {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
+            if let Ok(engine_guard) = engine_mutex.lock() {
+                return engine_guard.is_some();
+            }
+        }
+        false
+    }
+
+    /// 获取OCR引擎状态描述
+    pub fn get_engine_status() -> String {
+        if Self::is_engine_ready() {
+            "OCR引擎已就绪".to_string()
+        } else if CURRENT_OCR_ENGINE.get().is_some() {
+            "OCR引擎正在启动中...".to_string()
+        } else {
+            "OCR引擎未启动".to_string()
+        }
+    }
+
+    /// 清理OCR引擎（程序退出时调用）
+    pub fn cleanup_global_engine() {
+        // 程序退出时使用立即停止方法
+        Self::stop_ocr_engine_immediate();
+    }
+
+    /// 强制终止所有PaddleOCR进程
+    fn force_kill_paddle_processes() {
+        #[cfg(target_os = "windows")]
+        {
+            // 使用taskkill命令强制终止PaddleOCR进程
+            let result = Command::new("taskkill")
+                .args(&["/F", "/IM", "PaddleOCR-json.exe"])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output();
+
+            #[cfg(debug_assertions)]
+            match result {
+                Ok(output) => {
+                    if output.status.success() {
+                        println!("已强制终止所有PaddleOCR进程");
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        if !stderr.contains("找不到") && !stderr.contains("not found") {
+                            println!("终止PaddleOCR进程时出现警告: {}", stderr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("执行taskkill命令失败: {}", e);
+                }
+            }
+        }
+    }
+
+    /// 获取PaddleOCR-json.exe的路径
+    fn get_paddle_ocr_exe_path() -> Result<PathBuf> {
+        Self::find_paddle_exe()
+    }
+
+    /// 获取 PaddleOCR-json.exe 的固定路径
+    fn find_paddle_exe() -> Result<PathBuf> {
+        // 写死路径：当前目录下的 PaddleOCR-json_v1.4.exe 文件夹
+        let exe_path = PathBuf::from("PaddleOCR-json_v1.4.exe").join("PaddleOCR-json.exe");
+
+        if exe_path.exists() {
+            Ok(exe_path)
+        } else {
+            Err(anyhow::anyhow!(
+                "找不到 PaddleOCR-json.exe 文件。\n请确保 PaddleOCR-json_v1.4.exe 文件夹与程序在同一目录中。\n期望路径: {}",
+                exe_path.display()
+            ))
+        }
+    }
+
+    /// 从文件路径识别文本（使用 PaddleOCR）
+    pub fn recognize_file(&mut self, path: &std::path::Path) -> Result<Vec<OcrResult>> {
         // 检查文件是否存在
         if !path.exists() {
             return Err(anyhow::anyhow!("文件不存在: {:?}", path));
         }
 
-        // 使用 uni_ocr 进行文本识别
-        let path_str = path.to_string_lossy();
-        let (text, _words, confidence) = self.engine.recognize_file(&path_str).await?;
+        // 使用全局 PaddleOCR 引擎进行文本识别（隐藏窗口）
+        let ocr_result = Self::call_global_ocr(path.into())?;
 
-        let mut results = Vec::new();
-
-        if text.trim().is_empty() {
-            // 如果没有检测到文本
-            results.push(OcrResult {
-                text: "No text detected in the selected area".to_string(),
-                confidence: 0.0,
-                bounding_box: BoundingBox {
-                    x: 0,
-                    y: 0,
-                    width: 300,
-                    height: 25,
-                },
-            });
-        } else {
-            // 清理识别到的文本
-            let cleaned_text = clean_ocr_text(&text);
-
-            // 按行处理文本
-            let lines: Vec<&str> = cleaned_text.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                let line_text = line.trim();
-                if !line_text.is_empty() && line_text.len() > 2 {
-                    // 过滤太短的行
-                    // 进一步验证文本质量
-                    let alpha_count = line_text.chars().filter(|c| c.is_alphabetic()).count();
-                    let total_count = line_text.chars().count();
-                    let alpha_ratio = alpha_count as f32 / total_count as f32;
-
-                    // 只保留包含合理字母比例的文本
-                    if alpha_ratio > 0.3 || line_text.chars().any(|c| c.is_ascii_digit()) {
-                        results.push(OcrResult {
-                            text: line_text.to_string(),
-                            confidence: confidence.unwrap_or(0.8) as f32,
-                            bounding_box: BoundingBox {
-                                x: 10,
-                                y: 10 + (i as i32 * 30),
-                                width: line_text.len() as i32 * 12,
-                                height: 25,
-                            },
-                        });
-                    }
-                }
-            }
-
-            // 如果清理后没有有效文本，显示原始结果但标记为低质量
-            if results.is_empty() && !text.trim().is_empty() {
-                results.push(OcrResult {
-                    text: format!(
-                        "Low quality OCR result: {}",
-                        text.chars().take(100).collect::<String>()
-                    ),
-                    confidence: 0.2,
-                    bounding_box: BoundingBox {
-                        x: 10,
-                        y: 10,
-                        width: 500,
-                        height: 25,
-                    },
-                });
-            }
-        }
+        // 解析JSON结果
+        let results = self.parse_paddle_ocr_result(&ocr_result)?;
 
         Ok(results)
     }
 
     /// 从内存中的图像数据识别文本
-    pub async fn recognize_from_memory(&self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
-        // 将 BMP 数据保存到临时文件进行 OCR 识别
-        let temp_path = std::env::temp_dir().join("screenshot_ocr_temp.bmp");
-        std::fs::write(&temp_path, image_data)?;
+    pub fn recognize_from_memory(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
+        // 方法1: 使用位图临时文件方式（快速可靠）
+        match self.recognize_from_bitmap_file(image_data) {
+            Ok(results) => return Ok(results),
+            Err(_) => {} // 静默失败，尝试下一种方式
+        }
 
-        // 使用临时文件进行 OCR 识别
-        let results = self.recognize_file(&temp_path).await?;
+        // 方法2: 使用Base64方式（备用）
+        match self.recognize_from_base64(image_data) {
+            Ok(results) => return Ok(results),
+            Err(_) => {} // 静默失败
+        }
 
-        // 清理临时文件
+        Err(anyhow::anyhow!("OCR识别失败"))
+    }
+
+    /// 使用位图临时文件方式进行OCR识别
+    fn recognize_from_bitmap_file(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
+        let temp_path = self.create_simple_bitmap_file(image_data)?;
+        let results = self.recognize_file(&temp_path);
         let _ = std::fs::remove_file(&temp_path);
+        results
+    }
 
-        Ok(results)
+    /// 创建简单的位图临时文件
+    fn create_simple_bitmap_file(&self, image_data: &[u8]) -> Result<std::path::PathBuf> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        let temp_path = std::env::temp_dir().join(format!(
+            "paddle_ocr_{}_{}.bmp",
+            std::process::id(),
+            timestamp
+        ));
+
+        std::fs::write(&temp_path, image_data)?;
+        Ok(temp_path)
+    }
+
+    /// 使用Base64方式进行OCR识别（真正的内存识别）
+    fn recognize_from_base64(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
+        // 将图像数据编码为Base64
+        let base64_string = general_purpose::STANDARD.encode(image_data);
+
+        // 创建ImageData对象
+        let image_data_obj = ImageData::ImageBase64Dict {
+            image_base64: base64_string,
+        };
+
+        // 使用全局PaddleOCR引擎进行识别（隐藏窗口）
+        match Self::call_global_ocr(image_data_obj) {
+            Ok(result_json) => {
+                // 解析JSON结果
+                self.parse_paddle_ocr_result(&result_json)
+            }
+            Err(e) => Err(anyhow::anyhow!("Base64 OCR失败: {}", e)),
+        }
     }
 
     /// 批量识别多个图像数据
-    pub async fn recognize_batch_from_memory(
-        &self,
+    pub fn recognize_batch_from_memory(
+        &mut self,
         images_data: &[Vec<u8>],
     ) -> Result<Vec<(String, Option<f32>)>> {
-        // 为每个图像创建临时文件
-        let mut temp_files = Vec::new();
-        let mut file_paths = Vec::new();
+        let mut results = Vec::new();
 
+        // 为每个图像创建临时文件并逐个识别
         for (i, image_data) in images_data.iter().enumerate() {
             let temp_path = std::env::temp_dir().join(format!("screenshot_ocr_line_{}.bmp", i));
             std::fs::write(&temp_path, image_data)?;
-            temp_files.push(temp_path.clone());
-            file_paths.push(temp_path.to_string_lossy().to_string());
+
+            // 使用全局 PaddleOCR 引擎识别单个文件
+            match Self::call_global_ocr(temp_path.clone().into()) {
+                Ok(text) => {
+                    results.push((text, Some(0.8))); // 使用默认置信度
+                }
+                Err(_) => {
+                    results.push((String::new(), Some(0.0))); // 识别失败
+                }
+            }
+
+            // 清理临时文件
+            let _ = std::fs::remove_file(&temp_path);
         }
-
-        // 将 String 转换为 &str
-        let file_path_refs: Vec<&str> = file_paths.iter().map(|s| s.as_str()).collect();
-
-        // 使用 uni_ocr 的批量识别功能
-        let batch_results = self.engine.recognize_batch(file_path_refs).await?;
-
-        // 清理临时文件
-        for temp_file in temp_files {
-            let _ = std::fs::remove_file(&temp_file);
-        }
-
-        // 转换结果格式
-        let results: Vec<(String, Option<f32>)> = batch_results
-            .into_iter()
-            .map(|(text, _, confidence)| (text, confidence.map(|c| c as f32)))
-            .collect();
 
         Ok(results)
     }
 
-    /// 检查 OCR 引擎是否可用
-    pub fn is_available(&self) -> bool {
-        // 如果能创建实例，说明 uni_ocr 可用
-        true
+    /// 解析PaddleOCR的JSON结果
+    fn parse_paddle_ocr_result(&self, json_str: &str) -> Result<Vec<OcrResult>> {
+        let mut results = Vec::new();
+
+        // 解析JSON
+        let json_value: Value =
+            serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("JSON解析失败: {}", e))?;
+
+        // 检查返回码
+        if let Some(code) = json_value.get("code").and_then(|v| v.as_i64()) {
+            if code != 100 {
+                return Err(anyhow::anyhow!("PaddleOCR返回错误码: {}", code));
+            }
+        }
+
+        // 获取data数组
+        if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
+            if data_array.is_empty() {
+                // 没有检测到文本
+                results.push(OcrResult {
+                    text: "No text detected in the selected area".to_string(),
+                    confidence: 0.0,
+                    bounding_box: BoundingBox {
+                        x: 0,
+                        y: 0,
+                        width: 300,
+                        height: 25,
+                    },
+                });
+            } else {
+                // 处理每个识别结果
+                for item in data_array {
+                    if let (Some(text), Some(score), Some(box_coords)) = (
+                        item.get("text").and_then(|v| v.as_str()),
+                        item.get("score").and_then(|v| v.as_f64()),
+                        item.get("box").and_then(|v| v.as_array()),
+                    ) {
+                        // 解析边界框坐标
+                        let bounding_box = if box_coords.len() >= 4 {
+                            let coords: Vec<Vec<i32>> = box_coords
+                                .iter()
+                                .filter_map(|coord| {
+                                    coord.as_array().and_then(|arr| {
+                                        if arr.len() >= 2 {
+                                            Some(vec![
+                                                arr[0].as_i64().unwrap_or(0) as i32,
+                                                arr[1].as_i64().unwrap_or(0) as i32,
+                                            ])
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .collect();
+
+                            if coords.len() >= 4 {
+                                let min_x = coords.iter().map(|c| c[0]).min().unwrap_or(0);
+                                let max_x = coords.iter().map(|c| c[0]).max().unwrap_or(0);
+                                let min_y = coords.iter().map(|c| c[1]).min().unwrap_or(0);
+                                let max_y = coords.iter().map(|c| c[1]).max().unwrap_or(0);
+
+                                BoundingBox {
+                                    x: min_x,
+                                    y: min_y,
+                                    width: max_x - min_x,
+                                    height: max_y - min_y,
+                                }
+                            } else {
+                                BoundingBox {
+                                    x: 0,
+                                    y: 0,
+                                    width: 100,
+                                    height: 20,
+                                }
+                            }
+                        } else {
+                            BoundingBox {
+                                x: 0,
+                                y: 0,
+                                width: 100,
+                                height: 20,
+                            }
+                        };
+
+                        // 直接使用原始文本
+                        if !text.trim().is_empty() {
+                            results.push(OcrResult {
+                                text: text.to_string(),
+                                confidence: score as f32,
+                                bounding_box,
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            return Err(anyhow::anyhow!("JSON格式错误：缺少data字段"));
+        }
+
+        Ok(results)
     }
 }
 
 /// 从选择区域创建图像并进行 OCR 识别
-pub async fn extract_text_from_selection(
+pub fn extract_text_from_selection(
     screenshot_dc: HDC,
     selection_rect: RECT,
     current_window: Option<HWND>,
@@ -261,8 +514,8 @@ pub async fn extract_text_from_selection(
             return Err(anyhow::anyhow!("复制图像失败"));
         }
 
-        // 将位图保存为 PNG 数据
-        let image_data = bitmap_to_png_data(mem_dc, bitmap, width, height)?;
+        // 将位图转换为 BMP 数据
+        let image_data = bitmap_to_bmp_data(mem_dc, bitmap, width, height)?;
 
         // 清理 GDI 资源
         let _ = SelectObject(mem_dc, old_bitmap);
@@ -270,7 +523,7 @@ pub async fn extract_text_from_selection(
         let _ = DeleteDC(mem_dc);
 
         // 分行识别文本
-        let line_results = recognize_text_by_lines(&image_data, selection_rect).await?;
+        let line_results = recognize_text_by_lines(&image_data, selection_rect)?;
 
         // 显示 OCR 结果窗口
         let _ = OcrResultWindow::show(image_data, line_results.clone(), selection_rect);
@@ -287,13 +540,11 @@ pub async fn extract_text_from_selection(
 }
 
 /// 整体识别文本然后根据坐标换行
-async fn recognize_text_by_lines(
-    image_data: &[u8],
-    selection_rect: RECT,
-) -> Result<Vec<OcrResult>> {
+fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Result<Vec<OcrResult>> {
     // 使用整体识别
-    let ocr_engine = UniOcrEngine::new()?;
-    let all_results = ocr_engine.recognize_from_memory(image_data).await?;
+    let mut ocr_engine = PaddleOcrEngine::new()?;
+
+    let all_results = ocr_engine.recognize_from_memory(image_data)?;
 
     if all_results.is_empty() {
         return Ok(vec![]);
@@ -338,7 +589,7 @@ async fn recognize_text_by_lines(
     // 处理每一行：按 X 坐标排序并合并文本
     let mut final_results = Vec::new();
 
-    for (line_index, mut line_blocks) in text_lines.into_iter().enumerate() {
+    for (_line_index, mut line_blocks) in text_lines.into_iter().enumerate() {
         // 按 X 坐标排序
         line_blocks.sort_by(|a, b| a.bounding_box.x.cmp(&b.bounding_box.x));
 
@@ -388,86 +639,8 @@ async fn recognize_text_by_lines(
     Ok(final_results)
 }
 
-/// 基于图像尺寸检测文本行区域
-fn detect_text_lines(width: i32, height: i32) -> Vec<RECT> {
-    let mut line_rects = Vec::new();
-
-    // 更智能的行高估算
-    let estimated_line_height = if height <= 30 {
-        // 很小的图像，可能是单行
-        height
-    } else if height <= 60 {
-        // 中等高度，可能是1-2行
-        if height > 45 {
-            height / 2 // 分成2行
-        } else {
-            height // 单行
-        }
-    } else if height <= 120 {
-        // 较高图像，可能是2-3行
-        if height > 90 {
-            height / 3 // 分成3行
-        } else {
-            height / 2 // 分成2行
-        }
-    } else {
-        // 很高的图像，假设每行约40-50像素高
-        let typical_line_height = 45;
-        let estimated_lines = (height / typical_line_height).max(1);
-        height / estimated_lines
-    };
-
-    // 计算实际行数，但限制最大行数
-    let max_lines = (height / 25).min(10); // 每行至少25像素，最多10行
-    let line_count = (height / estimated_line_height).max(1).min(max_lines);
-
-    // 如果只有1行，直接返回整个图像
-    if line_count == 1 {
-        line_rects.push(RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        });
-        return line_rects;
-    }
-
-    // 创建文本行区域，使用更大的重叠区域
-    for i in 0..line_count {
-        let y_start = (i * height / line_count) as i32;
-        let y_end = (((i + 1) * height / line_count) as i32).min(height);
-
-        // 添加重叠区域，确保不会切断文字
-        let overlap = estimated_line_height / 4; // 25% 重叠
-        let adjusted_y_start = if i == 0 {
-            0
-        } else {
-            (y_start - overlap).max(0)
-        };
-        let adjusted_y_end = if i == line_count - 1 {
-            height
-        } else {
-            (y_end + overlap).min(height)
-        };
-
-        // 确保行高度合理
-        if adjusted_y_end - adjusted_y_start >= 20 {
-            // 至少20像素高
-            let line_rect = RECT {
-                left: 0,
-                top: adjusted_y_start,
-                right: width,
-                bottom: adjusted_y_end,
-            };
-
-            line_rects.push(line_rect);
-        }
-    }
-
-    line_rects
-}
-
 /// 从原图中提取指定区域的图片数据
+#[allow(dead_code)]
 fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Vec<u8>> {
     // 解析 BMP 头部信息
     if original_image_data.len() < 54 {
@@ -551,8 +724,8 @@ fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Ve
     Ok(new_bmp)
 }
 
-/// 将位图转换为 PNG 数据
-fn bitmap_to_png_data(mem_dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<Vec<u8>> {
+/// 将位图转换为 BMP 数据
+fn bitmap_to_bmp_data(mem_dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<Vec<u8>> {
     unsafe {
         // 获取位图信息
         let mut bitmap_info = BITMAPINFO {

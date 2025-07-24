@@ -122,6 +122,9 @@ unsafe extern "system" fn window_proc(
                 // 注销全局热键
                 let _ = UnregisterHotKey(Some(hwnd), 1001);
 
+                // 清理OCR引擎
+                sc_windows::ocr::PaddleOcrEngine::cleanup_global_engine();
+
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
                 if !state_ptr.is_null() {
                     let _state = Box::from_raw(state_ptr);
@@ -237,6 +240,9 @@ unsafe extern "system" fn window_proc(
 
             // 处理 OCR 完成后关闭截图的消息
             val if val == WM_USER + 2 => {
+                // 异步停止OCR引擎
+                sc_windows::ocr::PaddleOcrEngine::stop_ocr_engine_async();
+
                 // 隐藏截图窗口
                 let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
@@ -267,6 +273,9 @@ unsafe extern "system" fn window_proc(
                             let _ = ShowWindow(hwnd, SW_HIDE);
                             std::thread::sleep(std::time::Duration::from_millis(50));
                         }
+
+                        // 异步启动OCR引擎（不阻塞截图启动）
+                        sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
 
                         // 重置状态并截取屏幕
                         state.reset_to_initial_state();
