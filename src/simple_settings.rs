@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::{ffi::c_void, fs};
 use std::path::PathBuf;
 
 use windows::{
@@ -69,12 +69,6 @@ pub struct SimpleSettings {
     pub hotkey_modifiers: u32,
     #[serde(default = "default_hotkey_key")]
     pub hotkey_key: u32,
-
-    // 屏幕录制热键设置
-    #[serde(default = "default_record_hotkey_modifiers")]
-    pub record_hotkey_modifiers: u32,
-    #[serde(default = "default_record_hotkey_key")]
-    pub record_hotkey_key: u32,
 }
 
 // 默认值函数
@@ -114,14 +108,6 @@ fn default_hotkey_modifiers() -> u32 {
 }
 fn default_hotkey_key() -> u32 {
     'S' as u32
-}
-
-fn default_record_hotkey_modifiers() -> u32 {
-    use windows::Win32::UI::Input::KeyboardAndMouse::*;
-    (MOD_CONTROL | MOD_ALT).0
-}
-fn default_record_hotkey_key() -> u32 {
-    'P' as u32
 }
 
 // 字体默认值函数
@@ -185,11 +171,6 @@ impl Default for SimpleSettings {
                 (MOD_CONTROL | MOD_ALT).0
             },
             hotkey_key: 'S' as u32,
-            record_hotkey_modifiers: {
-                use windows::Win32::UI::Input::KeyboardAndMouse::*;
-                (MOD_CONTROL | MOD_ALT).0
-            },
-            record_hotkey_key: 'P' as u32,
             font_name: default_font_name(),
             font_weight: default_font_weight(),
             font_italic: default_font_italic(),
@@ -301,37 +282,6 @@ impl SimpleSettings {
         parts.join("+")
     }
 
-    /// 获取录制热键的字符串表示
-    pub fn get_record_hotkey_string(&self) -> String {
-        use windows::Win32::UI::Input::KeyboardAndMouse::*;
-
-        let mut parts = Vec::new();
-
-        if self.record_hotkey_modifiers & MOD_CONTROL.0 != 0 {
-            parts.push("Ctrl");
-        }
-        if self.record_hotkey_modifiers & MOD_ALT.0 != 0 {
-            parts.push("Alt");
-        }
-        if self.record_hotkey_modifiers & MOD_SHIFT.0 != 0 {
-            parts.push("Shift");
-        }
-
-        // 将虚拟键码转换为字符
-        let key_char = match self.record_hotkey_key {
-            key if key >= 'A' as u32 && key <= 'Z' as u32 => {
-                char::from_u32(key).unwrap_or('?').to_string()
-            }
-            key if key >= '0' as u32 && key <= '9' as u32 => {
-                char::from_u32(key).unwrap_or('?').to_string()
-            }
-            _ => format!("Key{}", self.record_hotkey_key),
-        };
-
-        parts.push(&key_char);
-        parts.join("+")
-    }
-
     /// 从热键字符串解析设置
     pub fn parse_hotkey_string(&mut self, hotkey_str: &str) -> bool {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -367,42 +317,6 @@ impl SimpleSettings {
         self.hotkey_key = key;
         true
     }
-
-    /// 从录制热键字符串解析设置
-    pub fn parse_record_hotkey_string(&mut self, hotkey_str: &str) -> bool {
-        use windows::Win32::UI::Input::KeyboardAndMouse::*;
-
-        let parts: Vec<&str> = hotkey_str.split('+').map(|s| s.trim()).collect();
-        if parts.is_empty() {
-            return false;
-        }
-
-        let mut modifiers = 0u32;
-        let mut key = 0u32;
-
-        for part in &parts {
-            match part.to_lowercase().as_str() {
-                "ctrl" | "control" => modifiers |= MOD_CONTROL.0,
-                "alt" => modifiers |= MOD_ALT.0,
-                "shift" => modifiers |= MOD_SHIFT.0,
-                key_str if key_str.len() == 1 => {
-                    let ch = key_str.chars().next().unwrap().to_ascii_uppercase();
-                    if ch.is_ascii_alphanumeric() {
-                        key = ch as u32;
-                    }
-                }
-                _ => return false,
-            }
-        }
-
-        if key == 0 || modifiers == 0 {
-            return false;
-        }
-
-        self.record_hotkey_modifiers = modifiers;
-        self.record_hotkey_key = key;
-        true
-    }
 }
 
 /// 全局设置窗口句柄，确保只能打开一个设置窗口
@@ -423,7 +337,6 @@ pub struct SimpleSettingsWindow {
     text_color_preview: HWND,
     // 热键控件
     hotkey_edit: HWND,
-    record_hotkey_edit: HWND,
     // 配置路径控件
     config_path_edit: HWND,
     config_path_browse_button: HWND,
@@ -441,7 +354,6 @@ const ID_FONT_CHOOSE_BUTTON: i32 = 1003;
 const ID_DRAWING_COLOR_BUTTON: i32 = 1006;
 const ID_TEXT_COLOR_BUTTON: i32 = 1007;
 const ID_HOTKEY_EDIT: i32 = 1008;
-const ID_RECORD_HOTKEY_EDIT: i32 = 1013;
 const ID_CONFIG_PATH_EDIT: i32 = 1011;
 const ID_CONFIG_PATH_BROWSE: i32 = 1012;
 const ID_OK: i32 = 1009;
@@ -471,6 +383,20 @@ impl SimpleSettingsWindow {
         unsafe {
             match msg {
                 WM_LBUTTONDOWN => {
+                    // 保存当前文本作为原始文本
+                    let mut buffer = [0u16; 64];
+                    let len = GetWindowTextW(hwnd, &mut buffer);
+                    if len > 0 {
+                        let current_text = String::from_utf16_lossy(&buffer[..len as usize]);
+                        let text_wide = to_wide_chars(&current_text);
+                        let prop_name = to_wide_chars("OriginalText");
+                        // 使用SetPropW存储原始文本指针
+                        let text_box = Box::new(text_wide);
+                        let text_ptr = Box::into_raw(text_box);
+                        let _ =
+                            SetPropW(hwnd, PCWSTR(prop_name.as_ptr()), Some(HANDLE(text_ptr as *mut c_void)));
+                    }
+
                     // 当用户点击输入框时，清空内容并设置placeholder文本
                     let placeholder_text = to_wide_chars("按下快捷键");
                     let _ = SetWindowTextW(hwnd, PCWSTR(placeholder_text.as_ptr()));
@@ -478,6 +404,55 @@ impl SimpleSettingsWindow {
                     // 设置焦点到输入框以便接收按键事件
                     let _ = SetFocus(Some(hwnd));
 
+                    return LRESULT(0);
+                }
+                WM_KILLFOCUS => {
+                    // 检查当前文本是否是有效的热键
+                    let mut buffer = [0u16; 64];
+                    let len = GetWindowTextW(hwnd, &mut buffer);
+                    let current_text = if len > 0 {
+                        String::from_utf16_lossy(&buffer[..len as usize])
+                    } else {
+                        String::new()
+                    };
+
+                    // 如果当前文本是placeholder或者空，则恢复原始文本
+                    if current_text.trim() == "按下快捷键" || current_text.trim().is_empty() {
+                        let prop_name = to_wide_chars("OriginalText");
+                        let text_handle = GetPropW(hwnd, PCWSTR(prop_name.as_ptr()));
+                        if !text_handle.is_invalid() {
+                            let text_ptr = text_handle.0 as *mut Vec<u16>;
+                            if !text_ptr.is_null() {
+                                let text_box = Box::from_raw(text_ptr);
+                                let _ = SetWindowTextW(hwnd, PCWSTR(text_box.as_ptr()));
+                                // 清理属性
+                                let _ = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr()));
+                            }
+                        }
+                    } else {
+                        // 如果是有效的热键文本，清理存储的原始文本
+                        let prop_name = to_wide_chars("OriginalText");
+                        let text_handle = GetPropW(hwnd, PCWSTR(prop_name.as_ptr()));
+                        if !text_handle.is_invalid() {
+                            let text_ptr = text_handle.0 as *mut Vec<u16>;
+                            if !text_ptr.is_null() {
+                                let _ = Box::from_raw(text_ptr); // 释放内存
+                            }
+                            let _ = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr()));
+                        }
+                    }
+
+                    // 调用原始窗口过程
+                    let original_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                    if original_proc != 0 {
+                        return CallWindowProcW(
+                            Some(std::mem::transmute(original_proc)),
+                            hwnd,
+                            msg,
+                            wparam,
+                            lparam,
+                        );
+                    }
                     return LRESULT(0);
                 }
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -672,7 +647,6 @@ impl SimpleSettingsWindow {
                         text_color_button: HWND::default(),
                         text_color_preview: HWND::default(),
                         hotkey_edit: HWND::default(),
-                        record_hotkey_edit: HWND::default(),
                         config_path_edit: HWND::default(),
                         config_path_browse_button: HWND::default(),
                         ok_button: HWND::default(),
@@ -1058,31 +1032,6 @@ impl SimpleSettingsWindow {
                 margin + 10 + label_width + 5,
                 current_y - 2,
                 hotkey_width,
-                edit_height,
-                SWP_NOZORDER,
-            );
-
-            current_y += item_spacing;
-
-            // 录制热键标签和输入框
-            if let Some(record_hotkey_label) = self.find_control_by_text("录制热键:") {
-                let _ = SetWindowPos(
-                    record_hotkey_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
-            }
-            let record_hotkey_width = window_width - margin * 2 - 20 - label_width - 10;
-            let _ = SetWindowPos(
-                self.record_hotkey_edit,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                record_hotkey_width,
                 edit_height,
                 SWP_NOZORDER,
             );
@@ -1540,64 +1489,6 @@ impl SimpleSettingsWindow {
             // 存储原始窗口过程
             SetWindowLongPtrW(self.hotkey_edit, GWLP_USERDATA, original_proc);
 
-            // 录制热键标签
-            let record_hotkey_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("录制热键:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                record_hotkey_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-            // 录制热键输入框
-            self.record_hotkey_edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("EDIT").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                Some(HMENU(ID_RECORD_HOTKEY_EDIT as *mut _)),
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                self.record_hotkey_edit,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-            // 设置录制热键输入框的现代主题
-            Self::set_modern_theme(self.record_hotkey_edit);
-
-            // 子类化录制热键输入框以处理按键事件
-            let record_original_proc = SetWindowLongPtrW(
-                self.record_hotkey_edit,
-                GWLP_WNDPROC,
-                Self::hotkey_edit_proc as isize,
-            );
-            // 存储原始窗口过程
-            SetWindowLongPtrW(self.record_hotkey_edit, GWLP_USERDATA, record_original_proc);
-
             // === 创建配置路径控件 ===
 
             // 配置路径输入框
@@ -1713,10 +1604,6 @@ impl SimpleSettingsWindow {
             // 加载热键设置
             let hotkey_text = to_wide_chars(&self.settings.get_hotkey_string());
             let _ = SetWindowTextW(self.hotkey_edit, PCWSTR(hotkey_text.as_ptr()));
-
-            // 加载录制热键设置
-            let record_hotkey_text = to_wide_chars(&self.settings.get_record_hotkey_string());
-            let _ = SetWindowTextW(self.record_hotkey_edit, PCWSTR(record_hotkey_text.as_ptr()));
 
             // 加载配置路径设置
             let config_path_text = to_wide_chars(&self.settings.config_path);
@@ -1953,15 +1840,6 @@ impl SimpleSettingsWindow {
                 let hotkey_text = hotkey_text.trim_end_matches('\0');
                 // 尝试解析热键字符串，如果失败则保持原值
                 let _ = self.settings.parse_hotkey_string(hotkey_text);
-            }
-
-            // 读取录制热键设置
-            let mut record_hotkey_buffer = [0u16; 64];
-            if GetWindowTextW(self.record_hotkey_edit, &mut record_hotkey_buffer) > 0 {
-                let record_hotkey_text = String::from_utf16_lossy(&record_hotkey_buffer);
-                let record_hotkey_text = record_hotkey_text.trim_end_matches('\0');
-                // 尝试解析录制热键字符串，如果失败则保持原值
-                let _ = self.settings.parse_record_hotkey_string(record_hotkey_text);
             }
 
             // 读取配置路径设置
