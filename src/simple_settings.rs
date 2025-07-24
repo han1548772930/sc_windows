@@ -378,9 +378,20 @@ impl SimpleSettingsWindow {
         lparam: LPARAM,
     ) -> LRESULT {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        use windows::Win32::UI::WindowsAndMessaging::*;
 
         unsafe {
             match msg {
+                WM_LBUTTONDOWN => {
+                    // 当用户点击输入框时，清空内容并设置placeholder文本
+                    let placeholder_text = to_wide_chars("按下快捷键");
+                    let _ = SetWindowTextW(hwnd, PCWSTR(placeholder_text.as_ptr()));
+
+                    // 设置焦点到输入框以便接收按键事件
+                    let _ = SetFocus(Some(hwnd));
+
+                    return LRESULT(0);
+                }
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
                     // 获取修饰键状态
                     let mut modifiers = 0u32;
@@ -428,6 +439,10 @@ impl SimpleSettingsWindow {
                     }
 
                     // 忽略其他按键
+                    return LRESULT(0);
+                }
+                WM_CHAR => {
+                    // 拦截所有字符输入，防止手动编辑
                     return LRESULT(0);
                 }
                 _ => {
