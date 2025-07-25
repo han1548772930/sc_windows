@@ -14,9 +14,10 @@ pub struct OcrResultWindow {
     image_width: i32,
     image_height: i32,
     font: HFONT,
-    text_area_rect: RECT, // 文字显示区域
-    window_width: i32,    // 窗口宽度
-    window_height: i32,   // 窗口高度
+    text_area_rect: RECT,      // 文字显示区域
+    window_width: i32,         // 窗口宽度
+    window_height: i32,        // 窗口高度
+    is_no_text_detected: bool, // 是否是"未识别到文字"状态
 }
 
 impl OcrResultWindow {
@@ -187,15 +188,25 @@ impl OcrResultWindow {
 
             // 合并所有OCR结果为文本
             let mut all_text = String::new();
+            let mut is_no_text_detected = false;
+
             for (i, result) in ocr_results.iter().enumerate() {
                 if i > 0 {
                     all_text.push_str("\r\n"); // Windows换行符
                 }
-                all_text.push_str(&result.text);
+
+                // 检查是否是"未识别到文字"的特殊情况
+                if result.text == "未识别到任何文字" && result.confidence == 0.0 {
+                    is_no_text_detected = true;
+                    all_text.push_str("未识别到任何文字");
+                } else {
+                    all_text.push_str(&result.text);
+                }
             }
 
             if all_text.trim().is_empty() {
                 all_text = "未识别到文本内容".to_string();
+                is_no_text_detected = true;
             }
 
             // 设置文本内容
@@ -214,6 +225,7 @@ impl OcrResultWindow {
                 text_area_rect,
                 window_width,
                 window_height,
+                is_no_text_detected,
             };
 
             // 将窗口实例指针存储到窗口数据中
@@ -457,6 +469,30 @@ impl OcrResultWindow {
                         PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                     }
                     LRESULT(0)
+                }
+                WM_CTLCOLOREDIT => {
+                    // 处理Edit控件的颜色
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+                        let hdc = HDC(wparam.0 as *mut _);
+                        let edit_hwnd = HWND(lparam.0 as *mut _);
+
+                        // 检查是否是我们的文本编辑控件
+                        if edit_hwnd == window.text_edit {
+                            if window.is_no_text_detected {
+                                // 设置灰色文本
+                                SetTextColor(hdc, COLORREF(0x00808080)); // 灰色
+                            } else {
+                                // 设置正常黑色文本
+                                SetTextColor(hdc, COLORREF(0x00000000)); // 黑色
+                            }
+                            SetBkMode(hdc, TRANSPARENT);
+                            // 返回透明画刷
+                            return LRESULT(GetStockObject(NULL_BRUSH).0 as isize);
+                        }
+                    }
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
                 WM_MOUSEWHEEL => {
                     // 将滚轮事件转发给文本编辑控件

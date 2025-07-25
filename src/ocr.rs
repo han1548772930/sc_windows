@@ -68,8 +68,11 @@ impl PaddleOcrEngine {
             // 获取 PaddleOCR-json.exe 的路径
             let exe_path = Self::get_paddle_ocr_exe_path()?;
 
+            // 获取语言配置路径（可以根据需要修改）
+            let config_path = Self::get_language_config_path();
+
             // 创建PaddleOCR引擎（已修改源代码支持隐藏窗口）
-            let engine = Ppocr::new(exe_path, None)
+            let engine = Ppocr::new(exe_path, config_path)
                 .map_err(|e| anyhow::anyhow!("创建 PaddleOCR 引擎失败: {}", e))?;
 
             *engine_guard = Some(engine);
@@ -285,6 +288,24 @@ impl PaddleOcrEngine {
         }
     }
 
+    /// 获取语言配置文件路径
+    /// 根据用户设置选择对应的OCR语言配置
+    fn get_language_config_path() -> Option<PathBuf> {
+        // 从设置中读取用户选择的语言
+        let settings = crate::simple_settings::SimpleSettings::load();
+        let language = &settings.ocr_language;
+
+        let config_path = match language.as_str() {
+            "english" => Some(PathBuf::from("models\\config_en.txt")),
+            "chinese_cht" => Some(PathBuf::from("models\\config_chinese_cht.txt")),
+            "japan" => Some(PathBuf::from("models\\config_japan.txt")),
+            "korean" => Some(PathBuf::from("models\\config_korean.txt")),
+            "chinese" | _ => None,
+        };
+
+        config_path
+    }
+
     /// 从文件路径识别文本（使用 PaddleOCR）
     pub fn recognize_file(&mut self, path: &std::path::Path) -> Result<Vec<OcrResult>> {
         // 检查文件是否存在
@@ -306,13 +327,13 @@ impl PaddleOcrEngine {
         // 方法1: 使用位图临时文件方式（快速可靠）
         match self.recognize_from_bitmap_file(image_data) {
             Ok(results) => return Ok(results),
-            Err(_) => {} // 静默失败，尝试下一种方式
+            Err(_) => {}
         }
 
         // 方法2: 使用Base64方式（备用）
         match self.recognize_from_base64(image_data) {
             Ok(results) => return Ok(results),
-            Err(_) => {} // 静默失败
+            Err(_) => {}
         }
 
         Err(anyhow::anyhow!("OCR识别失败"))
@@ -412,14 +433,16 @@ impl PaddleOcrEngine {
         // 获取data数组
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             if data_array.is_empty() {
-                // 没有检测到文本
+                // 没有检测到文本，添加提示信息
+                #[cfg(debug_assertions)]
+                println!("OCR未检测到任何文本");
                 results.push(OcrResult {
-                    text: "No text detected in the selected area".to_string(),
+                    text: "未识别到任何文字".to_string(),
                     confidence: 0.0,
                     bounding_box: BoundingBox {
                         x: 0,
                         y: 0,
-                        width: 300,
+                        width: 200,
                         height: 25,
                     },
                 });
@@ -556,7 +579,22 @@ pub fn extract_text_from_selection(
         let _ = DeleteDC(mem_dc);
 
         // 分行识别文本
-        let line_results = recognize_text_by_lines(&image_data, selection_rect)?;
+        let line_results = match recognize_text_by_lines(&image_data, selection_rect) {
+            Ok(results) => results,
+            Err(_) => {
+                // 即使识别失败，也要显示结果窗口
+                vec![OcrResult {
+                    text: "OCR识别失败".to_string(),
+                    confidence: 0.0,
+                    bounding_box: BoundingBox {
+                        x: 0,
+                        y: 0,
+                        width: 200,
+                        height: 25,
+                    },
+                }]
+            }
+        };
 
         // 显示 OCR 结果窗口
         let _ = OcrResultWindow::show(image_data, line_results.clone(), selection_rect);
@@ -579,9 +617,8 @@ fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Result<Ve
 
     let all_results = ocr_engine.recognize_from_memory(image_data)?;
 
-    if all_results.is_empty() {
-        return Ok(vec![]);
-    }
+    // 不要在这里检查空结果，让OCR引擎的parse_paddle_ocr_result方法处理
+    // 这样可以确保"未识别到任何文字"的提示能够正确显示
 
     // 调整坐标到原始屏幕坐标系
     let mut adjusted_results = Vec::new();

@@ -41,6 +41,10 @@ pub struct SimpleSettings {
     #[serde(default = "default_config_path")]
     pub config_path: String,
 
+    // OCR语言设置
+    #[serde(default = "default_ocr_language")]
+    pub ocr_language: String,
+
     // 颜色设置 - 保留旧字段以向后兼容
     #[serde(default = "default_color_red")]
     pub color_red: u8,
@@ -149,6 +153,10 @@ fn default_config_path() -> String {
         .to_string()
 }
 
+fn default_ocr_language() -> String {
+    "chinese".to_string() // 默认使用简体中文
+}
+
 impl Default for SimpleSettings {
     fn default() -> Self {
         Self {
@@ -178,6 +186,7 @@ impl Default for SimpleSettings {
             font_strikeout: default_font_strikeout(),
             font_color: default_font_color(),
             config_path: default_config_path(),
+            ocr_language: default_ocr_language(),
         }
     }
 }
@@ -353,6 +362,8 @@ pub struct SimpleSettingsWindow {
     // 配置路径控件
     config_path_edit: HWND,
     config_path_browse_button: HWND,
+    // OCR语言选择控件
+    ocr_language_combo: HWND,
     // 按钮
     ok_button: HWND,
     cancel_button: HWND,
@@ -369,6 +380,7 @@ const ID_TEXT_COLOR_BUTTON: i32 = 1007;
 const ID_HOTKEY_EDIT: i32 = 1008;
 const ID_CONFIG_PATH_EDIT: i32 = 1011;
 const ID_CONFIG_PATH_BROWSE: i32 = 1012;
+const ID_OCR_LANGUAGE_COMBO: i32 = 1013;
 const ID_OK: i32 = 1009;
 const ID_CANCEL: i32 = 1010;
 
@@ -665,6 +677,7 @@ impl SimpleSettingsWindow {
                         hotkey_edit: HWND::default(),
                         config_path_edit: HWND::default(),
                         config_path_browse_button: HWND::default(),
+                        ocr_language_combo: HWND::default(),
                         ok_button: HWND::default(),
                         cancel_button: HWND::default(),
                         font: HFONT::default(),
@@ -1105,6 +1118,36 @@ impl SimpleSettingsWindow {
                 button_height,
                 SWP_NOZORDER,
             );
+
+            current_y += item_spacing;
+
+            // === OCR语言设置 ===
+
+            // OCR语言标签
+            if let Some(ocr_label) = self.find_control_by_text("OCR识别语言:") {
+                let _ = SetWindowPos(
+                    ocr_label,
+                    None,
+                    margin + 10,
+                    current_y,
+                    label_width + 20, // 稍微宽一点以容纳中文
+                    label_height,
+                    SWP_NOZORDER,
+                );
+            }
+
+            // OCR语言下拉框
+            let _ = SetWindowPos(
+                self.ocr_language_combo,
+                None,
+                margin + 10 + label_width + 25,
+                current_y - 2,
+                150, // ComboBox宽度
+                200, // ComboBox高度（包含下拉部分）
+                SWP_NOZORDER,
+            );
+
+            current_y += item_spacing;
 
             // === 底部按钮 ===
             let button_spacing = 10;
@@ -1555,6 +1598,85 @@ impl SimpleSettingsWindow {
             );
             Self::set_modern_theme(self.config_path_browse_button);
 
+            // === 创建OCR语言选择控件 ===
+
+            // OCR语言标签
+            let ocr_language_label = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR(to_wide_chars("OCR识别语言:").as_ptr()),
+                WS_VISIBLE | WS_CHILD,
+                0,
+                0,
+                0,
+                0, // 位置将在layout_controls中设置
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                ocr_language_label,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+
+            // OCR语言选择下拉框
+            self.ocr_language_combo = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                PCWSTR(to_wide_chars("COMBOBOX").as_ptr()),
+                PCWSTR::null(),
+                WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003), // CBS_DROPDOWNLIST = 0x0003
+                0,
+                0,
+                0,
+                0, // 位置将在layout_controls中设置
+                Some(self.hwnd),
+                Some(HMENU(ID_OCR_LANGUAGE_COMBO as *mut _)),
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(
+                self.ocr_language_combo,
+                WM_SETFONT,
+                Some(WPARAM(self.font.0 as usize)),
+                None,
+            );
+            Self::set_modern_theme(self.ocr_language_combo);
+
+            // 添加语言选项
+            let languages = [
+                ("chinese", "简体中文 (默认)"),
+                ("english", "英文"),
+                ("chinese_cht", "繁体中文"),
+                ("japan", "日文"),
+                ("korean", "韩文"),
+            ];
+
+            for (value, display) in &languages {
+                let text = to_wide_chars(display);
+                let index = SendMessageW(
+                    self.ocr_language_combo,
+                    0x0143, // CB_ADDSTRING
+                    Some(WPARAM(0)),
+                    Some(LPARAM(text.as_ptr() as isize)),
+                );
+
+                // 存储语言值作为项目数据
+                let value_text = to_wide_chars(value);
+                let value_box = Box::new(value_text);
+                let value_ptr = Box::into_raw(value_box);
+                SendMessageW(
+                    self.ocr_language_combo,
+                    0x0151, // CB_SETITEMDATA
+                    Some(WPARAM(index.0 as usize)),
+                    Some(LPARAM(value_ptr as isize)),
+                );
+            }
+
             // === 创建按钮 ===
 
             // 确定按钮
@@ -1624,6 +1746,37 @@ impl SimpleSettingsWindow {
             // 加载配置路径设置
             let config_path_text = to_wide_chars(&self.settings.config_path);
             let _ = SetWindowTextW(self.config_path_edit, PCWSTR(config_path_text.as_ptr()));
+
+            // 加载OCR语言设置
+            let item_count = SendMessageW(self.ocr_language_combo, 0x0146, None, None); // CB_GETCOUNT
+            for i in 0..item_count.0 {
+                let data_ptr = SendMessageW(
+                    self.ocr_language_combo,
+                    0x0150, // CB_GETITEMDATA
+                    Some(WPARAM(i as usize)),
+                    None,
+                );
+
+                if data_ptr.0 != 0 {
+                    let value_ptr = data_ptr.0 as *const Vec<u16>;
+                    if !value_ptr.is_null() {
+                        let value_vec = &*value_ptr;
+                        let value = String::from_utf16_lossy(value_vec)
+                            .trim_end_matches('\0')
+                            .to_string();
+
+                        if value == self.settings.ocr_language {
+                            SendMessageW(
+                                self.ocr_language_combo,
+                                0x014E, // CB_SETCURSEL
+                                Some(WPARAM(i as usize)),
+                                None,
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
 
             // 更新颜色预览
             self.update_color_preview();
@@ -1865,6 +2018,28 @@ impl SimpleSettingsWindow {
                 let config_path_text = config_path_text.trim_end_matches('\0');
                 if !config_path_text.is_empty() {
                     self.settings.config_path = config_path_text.to_string();
+                }
+            }
+
+            // 读取OCR语言设置
+            let selected_index = SendMessageW(self.ocr_language_combo, 0x0147, None, None); // CB_GETCURSEL
+            if selected_index.0 != -1 {
+                let data_ptr = SendMessageW(
+                    self.ocr_language_combo,
+                    0x0150, // CB_GETITEMDATA
+                    Some(WPARAM(selected_index.0 as usize)),
+                    None,
+                );
+
+                if data_ptr.0 != 0 {
+                    let value_ptr = data_ptr.0 as *const Vec<u16>;
+                    if !value_ptr.is_null() {
+                        let value_vec = &*value_ptr;
+                        let value = String::from_utf16_lossy(value_vec)
+                            .trim_end_matches('\0')
+                            .to_string();
+                        self.settings.ocr_language = value;
+                    }
                 }
             }
         }
