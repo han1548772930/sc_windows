@@ -333,6 +333,9 @@ impl WindowState {
                 // 窗口检测相关字段初始化
                 window_detector: crate::window_detection::WindowDetector::new(),
                 auto_highlight_enabled: true, // 默认启用自动高亮
+
+                // OCR引擎状态初始化
+                ocr_engine_available: false, // 初始状态为不可用，稍后异步检查
             })
         }
     }
@@ -352,6 +355,49 @@ impl WindowState {
         self.system_tray = Some(tray);
 
         Ok(())
+    }
+
+    /// 启动异步OCR引擎状态检查
+    pub fn start_async_ocr_check(&mut self, hwnd: HWND) {
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        // 将HWND转换为原始指针以便在线程间传递
+        let hwnd_ptr = hwnd.0 as usize;
+
+        // 启动异步检查
+        crate::ocr::PaddleOcrEngine::check_engine_status_async(
+            move |exe_exists, engine_ready, _status| {
+                // 在后台线程中检查完成后，发送消息到主线程更新状态
+                let available = exe_exists && engine_ready;
+                unsafe {
+                    // 重新构造HWND
+                    let hwnd = HWND(hwnd_ptr as *mut std::ffi::c_void);
+
+                    // 使用自定义消息通知主线程更新OCR状态
+                    // WM_USER + 10 用于OCR状态更新
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        WM_USER + 10,
+                        WPARAM(if available { 1 } else { 0 }),
+                        LPARAM(0),
+                    );
+                }
+            },
+        );
+    }
+
+    /// 更新OCR引擎状态（由消息处理程序调用）
+    pub fn update_ocr_engine_status(&mut self, available: bool, hwnd: HWND) {
+        if self.ocr_engine_available != available {
+            self.ocr_engine_available = available;
+
+            // 如果有选择区域，重新绘制工具栏以更新按钮状态
+            if self.has_selection {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                }
+            }
+        }
     }
 
     /// 重新截取当前屏幕
@@ -555,6 +601,33 @@ impl WindowState {
 
     /// 从选择区域提取文本
     pub fn extract_text_from_selection(&mut self, _hwnd: HWND) {
+        // 检查OCR引擎是否可用
+        if !self.ocr_engine_available {
+            // 显示错误消息
+            let status = crate::ocr::PaddleOcrEngine::get_engine_status();
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::*;
+                let message = format!(
+                    "OCR功能不可用：{}\n\n请确保PaddleOCR-json_v1.4.exe文件夹与程序在同一目录中。",
+                    status
+                );
+                let message_w: Vec<u16> =
+                    message.encode_utf16().chain(std::iter::once(0)).collect();
+                let title_w: Vec<u16> = "OCR引擎错误"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+
+                MessageBoxW(
+                    Some(_hwnd),
+                    windows::core::PCWSTR(message_w.as_ptr()),
+                    windows::core::PCWSTR(title_w.as_ptr()),
+                    MB_OK | MB_ICONWARNING,
+                );
+            }
+            return;
+        }
+
         // 直接在当前线程中执行 OCR，使用同步方式
         let screenshot_dc = self.screenshot_dc;
         let selection_rect = self.selection_rect;
@@ -1363,6 +1436,7 @@ impl WindowState {
                 // 检查按钮是否应该被禁用
                 let is_disabled = match button_type {
                     ToolbarButton::Undo => !self.can_undo(), // 撤销按钮根据历史记录状态
+                    ToolbarButton::ExtractText => !self.ocr_engine_available, // OCR按钮根据异步检查的状态
                     // 可以添加其他按钮的禁用逻辑
                     _ => false,
                 };

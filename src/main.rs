@@ -101,6 +101,9 @@ unsafe extern "system" fn window_proc(
                         // 继续运行，不退出程序
                     }
 
+                    // 启动异步OCR引擎状态检查
+                    state.start_async_ocr_check(hwnd);
+
                     // 从设置中读取热键配置并注册全局热键
                     let settings = sc_windows::simple_settings::SimpleSettings::load();
                     let hotkey_id = 1001;
@@ -261,6 +264,17 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
+            // 处理OCR引擎状态更新消息
+            val if val == WM_USER + 10 => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let available = wparam.0 != 0; // wparam为1表示可用，0表示不可用
+                    state.update_ocr_engine_status(available, hwnd);
+                }
+                LRESULT(0)
+            }
+
             // 处理全局热键消息
             WM_HOTKEY => {
                 if wparam.0 == 1001 {
@@ -276,6 +290,9 @@ unsafe extern "system" fn window_proc(
 
                         // 异步启动OCR引擎（不阻塞截图启动）
                         sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
+
+                        // 重新检查OCR引擎状态
+                        state.start_async_ocr_check(hwnd);
 
                         // 重置状态并截取屏幕
                         state.reset_to_initial_state();

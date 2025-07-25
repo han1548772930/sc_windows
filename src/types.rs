@@ -143,6 +143,9 @@ pub struct WindowState {
     // 窗口检测
     pub window_detector: crate::window_detection::WindowDetector, // 窗口检测器
     pub auto_highlight_enabled: bool,                             // 是否启用自动高亮窗口
+
+    // OCR引擎状态
+    pub ocr_engine_available: bool, // OCR引擎是否可用
 }
 // IconData 结构体已移除，现在只使用 SVG 图标
 #[derive(Clone, Debug)]

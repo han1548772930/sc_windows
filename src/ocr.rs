@@ -4,7 +4,7 @@ use base64::{Engine as _, engine::general_purpose};
 use paddleocr::{ImageData, Ppocr};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "windows")]
@@ -122,52 +122,25 @@ impl PaddleOcrEngine {
         Self::stop_ocr_engine_sync();
     }
 
-    /// 使用当前OCR引擎进行识别（支持等待引擎就绪）
+    /// 使用当前OCR引擎进行识别（不等待，立即检查状态）
     fn call_global_ocr(image_data: ImageData) -> Result<String> {
-        // 等待OCR引擎就绪（最多等待10秒）
-        let max_wait_time = std::time::Duration::from_secs(10);
-        let start_time = std::time::Instant::now();
-        let mut last_status_time = start_time;
+        // 立即检查OCR引擎是否就绪
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
+            if let Ok(mut engine_guard) = engine_mutex.lock() {
+                if let Some(engine) = engine_guard.as_mut() {
+                    // 引擎已就绪，执行OCR
+                    #[cfg(debug_assertions)]
+                    println!("OCR引擎就绪，开始识别...");
 
-        loop {
-            if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
-                if let Ok(mut engine_guard) = engine_mutex.lock() {
-                    if let Some(engine) = engine_guard.as_mut() {
-                        // 引擎已就绪，执行OCR
-                        #[cfg(debug_assertions)]
-                        println!("OCR引擎就绪，开始识别...");
-
-                        return engine
-                            .ocr(image_data)
-                            .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
-                    }
+                    return engine
+                        .ocr(image_data)
+                        .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
                 }
             }
-
-            // 每秒输出一次状态（仅在debug模式）
-            #[cfg(debug_assertions)]
-            {
-                let now = std::time::Instant::now();
-                if now.duration_since(last_status_time) >= std::time::Duration::from_secs(1) {
-                    println!(
-                        "等待OCR引擎启动中... ({:.1}s)",
-                        start_time.elapsed().as_secs_f32()
-                    );
-                    last_status_time = now;
-                }
-            }
-
-            // 检查是否超时
-            if start_time.elapsed() > max_wait_time {
-                return Err(anyhow::anyhow!(
-                    "等待OCR引擎启动超时（{}秒）",
-                    max_wait_time.as_secs()
-                ));
-            }
-
-            // 等待100ms后重试
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
+
+        // 引擎未就绪，直接返回错误
+        Err(anyhow::anyhow!("OCR引擎未就绪，请等待引擎启动完成"))
     }
 
     /// 预启动OCR引擎（已废弃，改为按需启动）
@@ -186,8 +159,24 @@ impl PaddleOcrEngine {
         false
     }
 
+    /// 检查OCR引擎是否可用（包括检查可执行文件是否存在）
+    pub fn is_engine_available() -> bool {
+        // 首先检查PaddleOCR可执行文件是否存在
+        if Self::find_paddle_exe().is_err() {
+            return false;
+        }
+
+        // 然后检查引擎是否已启动并就绪
+        Self::is_engine_ready()
+    }
+
     /// 获取OCR引擎状态描述
     pub fn get_engine_status() -> String {
+        // 首先检查可执行文件是否存在
+        if Self::find_paddle_exe().is_err() {
+            return "PaddleOCR可执行文件未找到".to_string();
+        }
+
         if Self::is_engine_ready() {
             "OCR引擎已就绪".to_string()
         } else if CURRENT_OCR_ENGINE.get().is_some() {
@@ -195,6 +184,50 @@ impl PaddleOcrEngine {
         } else {
             "OCR引擎未启动".to_string()
         }
+    }
+
+    /// 异步检查OCR引擎是否可用（非阻塞）
+    pub fn check_engine_available_async<F>(callback: F)
+    where
+        F: Fn(bool) + Send + 'static,
+    {
+        std::thread::spawn(move || {
+            // 在后台线程中检查引擎状态
+            let available = Self::is_engine_available();
+            callback(available);
+        });
+    }
+
+    /// 异步检查OCR引擎状态并返回详细信息（非阻塞）
+    pub fn check_engine_status_async<F>(callback: F)
+    where
+        F: Fn(bool, bool, String) + Send + 'static,
+    {
+        std::thread::spawn(move || {
+            // 在后台线程中检查引擎状态
+            let exe_exists = Self::find_paddle_exe().is_ok();
+            let mut engine_ready = Self::is_engine_ready();
+
+            // 如果可执行文件存在但引擎未启动，则尝试启动引擎
+            if exe_exists && !engine_ready {
+                #[cfg(debug_assertions)]
+                println!("检测到PaddleOCR可执行文件，正在启动OCR引擎...");
+
+                // 尝试启动引擎
+                if let Err(e) = Self::start_ocr_engine_sync() {
+                    #[cfg(debug_assertions)]
+                    eprintln!("启动OCR引擎失败: {}", e);
+                } else {
+                    // 启动成功，重新检查状态
+                    engine_ready = Self::is_engine_ready();
+                    #[cfg(debug_assertions)]
+                    println!("OCR引擎启动成功，状态: {}", engine_ready);
+                }
+            }
+
+            let status = Self::get_engine_status();
+            callback(exe_exists, engine_ready, status);
+        });
     }
 
     /// 清理OCR引擎（程序退出时调用）

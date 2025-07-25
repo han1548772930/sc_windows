@@ -29,6 +29,7 @@ impl WindowState {
             if toolbar_button != ToolbarButton::None {
                 let is_button_disabled = match toolbar_button {
                     ToolbarButton::Undo => !self.can_undo(),
+                    ToolbarButton::ExtractText => !self.ocr_engine_available,
                     _ => false,
                 };
 
