@@ -175,7 +175,8 @@ impl WindowState {
                 // 尝试保存文件，只有成功保存时才退出程序
                 if let Ok(saved) = self.save_selection_to_file(hwnd) {
                     if saved {
-                        // 保存成功，退出程序
+                        // 保存成功，清理OCR引擎并退出程序
+                        crate::ocr::PaddleOcrEngine::stop_ocr_engine_immediate();
                         unsafe {
                             PostQuitMessage(0);
                         }

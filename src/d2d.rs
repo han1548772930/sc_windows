@@ -587,7 +587,8 @@ impl WindowState {
                         }
                     }
                     1003 => {
-                        // 退出程序
+                        // 退出程序前清理OCR引擎
+                        crate::ocr::PaddleOcrEngine::stop_ocr_engine_immediate();
                         PostQuitMessage(0);
                     }
                     _ => {}
@@ -650,6 +651,9 @@ impl WindowState {
 
             // 隐藏原始截屏窗口
             let _ = ShowWindow(hwnd, SW_HIDE);
+
+            // 清理OCR引擎
+            crate::ocr::PaddleOcrEngine::stop_ocr_engine_async();
 
             // 重置原始窗口状态，准备下次截屏
             self.reset_to_initial_state();
