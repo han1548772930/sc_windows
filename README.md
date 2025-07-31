@@ -139,7 +139,7 @@
 
 ```bash
 # 克隆项目
-git clone `https://github.com/han1548772930/sc_windows.git`
+git clone https://github.com/han1548772930/sc_windows.git
 cd sc_windows
 
 # 确保PaddleOCR引擎文件夹存在
