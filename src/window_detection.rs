@@ -14,8 +14,27 @@ pub struct WindowInfo {
     pub is_minimized: bool,
 }
 
+/// 子控件信息结构体
+#[derive(Debug, Clone)]
+pub struct ChildControlInfo {
+    pub hwnd: HWND,
+    pub rect: RECT,
+    pub title: String,
+    pub class_name: String,
+    pub is_visible: bool,
+    pub parent_hwnd: HWND,
+    pub control_id: i32,
+}
+
 impl WindowInfo {
     /// 检查点是否在窗口内
+    pub fn contains_point(&self, x: i32, y: i32) -> bool {
+        x >= self.rect.left && x <= self.rect.right && y >= self.rect.top && y <= self.rect.bottom
+    }
+}
+
+impl ChildControlInfo {
+    /// 检查点是否在子控件内
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
         x >= self.rect.left && x <= self.rect.right && y >= self.rect.top && y <= self.rect.bottom
     }
@@ -26,6 +45,8 @@ impl WindowInfo {
 pub struct WindowDetector {
     windows: Vec<WindowInfo>,
     current_highlighted_window: Option<usize>,
+    child_controls: Vec<ChildControlInfo>,
+    current_highlighted_control: Option<usize>,
 }
 
 impl WindowDetector {
@@ -33,6 +54,8 @@ impl WindowDetector {
         Self {
             windows: Vec::new(),
             current_highlighted_window: None,
+            child_controls: Vec::new(),
+            current_highlighted_control: None,
         }
     }
 
@@ -55,7 +78,7 @@ impl WindowDetector {
                 && !window.title.is_empty()
                 && window.rect.right > window.rect.left
                 && window.rect.bottom > window.rect.top
-                && !is_system_window(&window.class_name)
+            // && !is_system_window(&window.class_name)
         });
 
         Ok(())
@@ -132,6 +155,138 @@ impl WindowDetector {
     pub fn get_all_windows(&self) -> &Vec<WindowInfo> {
         &self.windows
     }
+
+    /// 刷新指定窗口的子控件
+    pub fn refresh_child_controls(&mut self, parent_hwnd: HWND) -> Result<()> {
+        self.child_controls.clear();
+
+        unsafe {
+            // 枚举子窗口
+            let result = EnumChildWindows(
+                Some(parent_hwnd),
+                Some(enum_child_windows_proc),
+                LPARAM(&mut self.child_controls as *mut _ as isize),
+            );
+            if !result.as_bool() {
+                return Err(Error::from_win32());
+            }
+        }
+
+        // 过滤掉不需要的子控件
+        self.child_controls.retain(|control| {
+            control.is_visible
+                && control.rect.right > control.rect.left
+                && control.rect.bottom > control.rect.top
+        });
+
+        Ok(())
+    }
+
+    /// 根据鼠标位置获取当前应该高亮的子控件
+    pub fn get_child_control_at_point(&mut self, x: i32, y: i32) -> Option<&ChildControlInfo> {
+        // 找到鼠标位置下的所有子控件
+        let mut matching_controls = Vec::new();
+        for (index, control) in self.child_controls.iter().enumerate() {
+            if control.contains_point(x, y) {
+                matching_controls.push((index, control));
+            }
+        }
+
+        if matching_controls.is_empty() {
+            self.current_highlighted_control = None;
+            return None;
+        }
+
+        // 使用ChildWindowFromPoint来获取最顶层的子控件
+        unsafe {
+            let point = POINT { x, y };
+            // 先找到父窗口
+            let parent_hwnd = WindowFromPoint(point);
+            if !parent_hwnd.0.is_null() {
+                let child_hwnd = ChildWindowFromPoint(parent_hwnd, point);
+                if !child_hwnd.0.is_null() && child_hwnd != parent_hwnd {
+                    // 在匹配的控件中查找对应的控件
+                    for (index, control) in &matching_controls {
+                        if control.hwnd == child_hwnd {
+                            self.current_highlighted_control = Some(*index);
+                            return Some(control);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 如果ChildWindowFromPoint失败，返回最小的匹配控件
+        if let Some((index, control)) = matching_controls
+            .iter()
+            .min_by_key(|(_, c)| (c.rect.right - c.rect.left) * (c.rect.bottom - c.rect.top))
+        {
+            self.current_highlighted_control = Some(*index);
+            Some(control)
+        } else {
+            self.current_highlighted_control = None;
+            None
+        }
+    }
+
+    /// 获取当前高亮的子控件
+    pub fn get_current_highlighted_control(&self) -> Option<&ChildControlInfo> {
+        if let Some(index) = self.current_highlighted_control {
+            self.child_controls.get(index)
+        } else {
+            None
+        }
+    }
+
+    /// 获取所有子控件
+    pub fn get_all_child_controls(&self) -> &Vec<ChildControlInfo> {
+        &self.child_controls
+    }
+
+    /// 清除子控件选择
+    pub fn clear_child_control_selection(&mut self) {
+        self.current_highlighted_control = None;
+    }
+
+    /// 综合检测：根据鼠标位置同时检测窗口和子控件
+    /// 返回 (窗口信息, 子控件信息)
+    pub fn detect_at_point(
+        &mut self,
+        x: i32,
+        y: i32,
+    ) -> (Option<WindowInfo>, Option<ChildControlInfo>) {
+        // 首先检测窗口
+        let window = self.get_window_at_point(x, y).cloned();
+
+        // 如果找到了窗口，再检测其子控件
+        let control = if let Some(ref window_info) = window {
+            // 刷新该窗口的子控件
+            if self.refresh_child_controls(window_info.hwnd).is_ok() {
+                self.get_child_control_at_point(x, y).cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        (window, control)
+    }
+
+    /// 检查是否应该过滤掉指定的子控件
+    pub fn should_filter_child_control(&self, control: &ChildControlInfo) -> bool {
+        // 过滤掉一些不需要的控件类型
+        matches!(
+            control.class_name.as_str(),
+            "ScrollBar"
+                | "Static"
+                | "#32770"
+                | "SysTabControl32"
+                | "msctls_progress32"
+                | "msctls_trackbar32"
+                | "ToolbarWindow32"
+        )
+    }
 }
 
 /// EnumWindows的回调函数
@@ -191,7 +346,64 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL 
     }
 }
 
+/// EnumChildWindows的回调函数
+unsafe extern "system" fn enum_child_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe {
+        let child_controls = &mut *(lparam.0 as *mut Vec<ChildControlInfo>);
+
+        // 获取子控件矩形（相对于屏幕坐标）
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return TRUE; // 继续枚举
+        }
+
+        // 获取父窗口句柄
+        let parent_hwnd = match GetParent(hwnd) {
+            Ok(parent) => parent,
+            Err(_) => return TRUE,
+        };
+
+        // 获取控件标题/文本
+        let mut title_buffer = [0u16; 256];
+        let title_len = GetWindowTextW(hwnd, &mut title_buffer);
+        let title = if title_len > 0 {
+            String::from_utf16_lossy(&title_buffer[..title_len as usize])
+        } else {
+            String::new()
+        };
+
+        // 获取控件类名
+        let mut class_buffer = [0u16; 256];
+        let class_len = GetClassNameW(hwnd, &mut class_buffer);
+        let class_name = if class_len > 0 {
+            String::from_utf16_lossy(&class_buffer[..class_len as usize])
+        } else {
+            String::new()
+        };
+
+        // 获取控件ID
+        let control_id = GetDlgCtrlID(hwnd);
+
+        // 检查控件是否可见
+        let is_visible = IsWindowVisible(hwnd).as_bool();
+
+        let control_info = ChildControlInfo {
+            hwnd,
+            rect,
+            title,
+            class_name,
+            is_visible,
+            parent_hwnd,
+            control_id,
+        };
+
+        child_controls.push(control_info);
+        TRUE // 继续枚举
+    }
+}
+
 /// 检查是否为系统窗口（需要过滤掉的窗口）
+#[allow(dead_code)]
 fn is_system_window(class_name: &str) -> bool {
     const SYSTEM_CLASSES: &[&str] = &[
         "Shell_TrayWnd",              // 任务栏

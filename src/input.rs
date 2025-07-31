@@ -495,9 +495,31 @@ impl WindowState {
 
         // 窗口自动高亮检测（仅在启用自动高亮且没有按下鼠标时）
         if self.auto_highlight_enabled && !self.mouse_pressed {
-            if let Some(window_info) = self.window_detector.get_window_at_point(x, y) {
-                // 如果检测到窗口，自动设置选择区域为窗口边界
-                self.selection_rect = window_info.rect;
+            // 同时检测窗口和子控件
+            let (window_info, control_info) = self.window_detector.detect_at_point(x, y);
+
+            if let Some(control) = control_info {
+                // 优先显示子控件高亮，并限制在屏幕范围内
+                self.selection_rect = RECT {
+                    left: control.rect.left.max(0),
+                    top: control.rect.top.max(0),
+                    right: control.rect.right.min(self.screen_width),
+                    bottom: control.rect.bottom.min(self.screen_height),
+                };
+                self.has_selection = true;
+
+                // 触发重绘以显示高亮框
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                }
+            } else if let Some(window) = window_info {
+                // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内
+                self.selection_rect = RECT {
+                    left: window.rect.left.max(0),
+                    top: window.rect.top.max(0),
+                    right: window.rect.right.min(self.screen_width),
+                    bottom: window.rect.bottom.min(self.screen_height),
+                };
                 self.has_selection = true;
 
                 // 触发重绘以显示高亮框
@@ -505,7 +527,7 @@ impl WindowState {
                     let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
                 }
             } else {
-                // 如果没有检测到窗口，清除自动高亮
+                // 如果没有检测到窗口或子控件，清除自动高亮
                 if self.has_selection {
                     self.has_selection = false;
                     unsafe {
