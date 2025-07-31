@@ -275,14 +275,14 @@ impl PaddleOcrEngine {
 
     /// 获取 PaddleOCR-json.exe 的固定路径
     fn find_paddle_exe() -> Result<PathBuf> {
-        // 写死路径：当前目录下的 PaddleOCR-json_v1.4.exe 文件夹
-        let exe_path = PathBuf::from("PaddleOCR-json_v1.4.exe").join("PaddleOCR-json.exe");
+        // 写死路径：当前目录下的 PaddleOCR-json_v1.4.1 文件夹
+        let exe_path = PathBuf::from("PaddleOCR-json_v1.4.1").join("PaddleOCR-json.exe");
 
         if exe_path.exists() {
             Ok(exe_path)
         } else {
             Err(anyhow::anyhow!(
-                "找不到 PaddleOCR-json.exe 文件。\n请确保 PaddleOCR-json_v1.4.exe 文件夹与程序在同一目录中。\n期望路径: {}",
+                "找不到 PaddleOCR-json.exe 文件。\n请确保 PaddleOCR-json_v1.4.1 文件夹与程序在同一目录中。\n期望路径: {}",
                 exe_path.display()
             ))
         }
