@@ -5,12 +5,12 @@ use windows::Win32::Foundation::*;
 /// 翻译请求结构体
 #[derive(Serialize)]
 pub struct TranslateRequest {
-    pub q: Vec<String>,  // 要翻译的文本数组
-    pub source: String,  // 源语言
-    pub target: String,  // 目标语言
-    pub format: String,  // 格式
+    pub q: Vec<String>,    // 要翻译的文本数组
+    pub source: String,    // 源语言
+    pub target: String,    // 目标语言
+    pub format: String,    // 格式
     pub alternatives: u32, // 备选翻译数量
-    pub api_key: String, // API密钥
+    pub api_key: String,   // API密钥
 }
 
 /// 翻译响应结构体
@@ -24,7 +24,7 @@ pub struct TranslateResponse {
 
 #[derive(Deserialize)]
 pub struct DetectedLanguage {
-    pub confidence: f32, // 置信度
+    pub confidence: f32,  // 置信度
     pub language: String, // 语言代码
 }
 
@@ -39,7 +39,7 @@ impl TranslationManager {
     /// 创建新的翻译管理器
     pub fn new() -> Self {
         Self {
-            api_endpoint: "http://154.201.82.175:5000/translate".to_string(),
+            api_endpoint: "".to_string(),
             source_language: "auto".to_string(),
             target_language: "en".to_string(),
         }
@@ -56,7 +56,10 @@ impl TranslationManager {
     }
 
     /// 批量翻译文本
-    pub async fn translate_texts(&self, texts: Vec<String>) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn translate_texts(
+        &self,
+        texts: Vec<String>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -91,8 +94,11 @@ impl TranslationManager {
         println!("响应内容: {}", response_text);
 
         let translate_response: TranslateResponse = serde_json::from_str(&response_text)?;
-        
-        println!("解析成功，翻译结果数量: {}", translate_response.translated_text.len());
+
+        println!(
+            "解析成功，翻译结果数量: {}",
+            translate_response.translated_text.len()
+        );
         for (i, translation) in translate_response.translated_text.iter().enumerate() {
             println!("翻译结果[{}]: '{}'", i, translation);
         }
