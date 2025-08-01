@@ -883,11 +883,7 @@ impl SimpleSettingsWindow {
         }
     }
 
-    /// 枚举子窗口的回调函数
-    unsafe extern "system" fn enum_child_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // 这里可以实现更复杂的查找逻辑
-        TRUE.into()
-    }
+ 
 
     /// 专业的Windows标准布局 - 参考标准控件演示
     fn layout_controls(&mut self) {
