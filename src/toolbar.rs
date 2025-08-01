@@ -172,14 +172,14 @@ impl WindowState {
                 // TODO: 实现语言功能
             }
             ToolbarButton::Save => {
-                // 尝试保存文件，只有成功保存时才退出程序
+                // 尝试保存文件，保存成功后退出截图模式而不是整个程序
                 if let Ok(saved) = self.save_selection_to_file(hwnd) {
                     if saved {
-                        // 保存成功，清理OCR引擎并退出程序
-                        crate::ocr::PaddleOcrEngine::stop_ocr_engine_immediate();
+                        // 保存成功，隐藏窗口并重置状态
                         unsafe {
-                            PostQuitMessage(0);
+                            let _ = ShowWindow(hwnd, SW_HIDE);
                         }
+                        self.reset_to_initial_state();
                     }
                     // 如果用户取消了保存，程序继续运行
                 }
