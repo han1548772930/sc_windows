@@ -279,7 +279,7 @@ impl WindowState {
         }
 
         // 其他情况保存选择
-        let _ = self.save_selection();
+        let _ = self.save_selection(hwnd);
     }
 
     pub fn handle_left_button_up(&mut self, hwnd: HWND, x: i32, y: i32) {
@@ -437,7 +437,7 @@ impl WindowState {
                 let _ = ShowWindow(hwnd, SW_HIDE);
             },
             val if val == VK_RETURN.0 as u32 => {
-                let _ = self.save_selection();
+                let _ = self.save_selection(hwnd);
                 unsafe {
                     // Enter键保存后隐藏窗口而不是退出程序
                     let _ = ShowWindow(hwnd, SW_HIDE);

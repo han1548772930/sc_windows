@@ -188,7 +188,7 @@ impl WindowState {
                 let _ = self.pin_selection(hwnd);
             }
             ToolbarButton::Confirm => {
-                let _ = self.save_selection();
+                let _ = self.save_selection(hwnd);
                 unsafe {
                     // Confirm按钮保存后隐藏窗口
                     let _ = ShowWindow(hwnd, SW_HIDE);

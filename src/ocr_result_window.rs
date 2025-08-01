@@ -1,9 +1,10 @@
 use crate::ocr::OcrResult;
 use anyhow::Result;
-use std::sync::OnceLock;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE;
+use windows::Win32::UI::HiDpi::SetProcessDpiAwareness;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -11,7 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const LEFTEXTENDWIDTH: i32 = 0;
 const RIGHTEXTENDWIDTH: i32 = 0;
 const BOTTOMEXTENDWIDTH: i32 = 0;
-const TOPEXTENDWIDTH: i32 = 60; // 增加标题栏高度
+const TOPEXTENDWIDTH: i32 = 50; // 增加标题栏高度
 
 // SVG 图标常量
 const ICON_SIZE: i32 = 24; // 图标大小
@@ -20,7 +21,7 @@ const ICON_START_X: i32 = 12; // 图标起始位置 - 左对齐
 const ICON_HOVER_PADDING: i32 = 8; // 图标悬停背景padding
 const ICON_CLICK_PADDING: i32 = 16; // 图标点击检测区域padding
 const ICON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE1, 0xF3, 0xFF); // 悬停背景颜色（浅蓝色）
-const ICON_HOVER_RADIUS: f32 = 4.0; // 悬停背景圆角半径
+const ICON_HOVER_RADIUS: f32 = 6.0; // 悬停背景圆角半径
 
 // 标题栏按钮常量
 const TITLE_BAR_BUTTON_WIDTH: i32 = 70; // 标题栏按钮宽度
@@ -62,9 +63,260 @@ pub struct OcrResultWindow {
     is_no_text_detected: bool, // 是否是"未识别到文字"状态
     is_maximized: bool,        // 是否最大化
     svg_icons: Vec<SvgIcon>,   // SVG 图标列表（包括左侧图标和标题栏按钮）
+
+    // 简化的缓冲相关字段
+    content_buffer: Option<HBITMAP>, // 内容区域缓冲位图
+    buffer_width: i32,               // 缓冲区宽度
+    buffer_height: i32,              // 缓冲区高度
+    buffer_valid: bool,              // 缓冲区是否有效（只有第一次创建后就一直有效）
+
+    // 图标缓存 - 避免重复创建相同图标
+    left_icons_cache: Option<Vec<SvgIcon>>, // 左侧图标缓存（只创建一次）
 }
 
 impl OcrResultWindow {
+    /// 清理所有资源
+    fn cleanup_all_resources(&mut self) {
+        unsafe {
+            // 清理内容缓冲区
+            self.cleanup_content_buffer();
+
+            // 清理图像位图
+            if let Some(bitmap) = self.image_bitmap.take() {
+                let _ = DeleteObject(bitmap.into());
+            }
+
+            // 清理字体
+            if !self.font.is_invalid() {
+                let _ = DeleteObject(self.font.into());
+            }
+
+            // 清理SVG图标
+            for icon in &self.svg_icons {
+                let _ = DeleteObject(icon.bitmap.into());
+                let _ = DeleteObject(icon.hover_bitmap.into());
+            }
+            self.svg_icons.clear();
+
+            // 清理缓存的左侧图标
+            if let Some(ref cached_icons) = self.left_icons_cache {
+                for icon in cached_icons {
+                    let _ = DeleteObject(icon.bitmap.into());
+                    let _ = DeleteObject(icon.hover_bitmap.into());
+                }
+            }
+            self.left_icons_cache = None;
+
+            println!("已清理所有窗口资源");
+        }
+    }
+    /// 检查并创建内容缓冲区（仅在尺寸变化时重建）
+    fn ensure_content_buffer(&mut self, width: i32, height: i32) -> Result<()> {
+        unsafe {
+            // 只有在缓冲区不存在或尺寸确实变化时才重新创建
+            if self.content_buffer.is_none()
+                || self.buffer_width != width
+                || self.buffer_height != height
+            {
+                // 清理旧缓冲区
+                self.cleanup_content_buffer();
+
+                // 创建新缓冲区
+                let screen_dc = GetDC(None);
+                if screen_dc.is_invalid() {
+                    return Err(anyhow::anyhow!("获取屏幕DC失败"));
+                }
+
+                let new_buffer = CreateCompatibleBitmap(screen_dc, width, height);
+                let _ = ReleaseDC(None, screen_dc);
+
+                if new_buffer.is_invalid() {
+                    return Err(anyhow::anyhow!("创建内容缓冲区失败"));
+                }
+
+                self.content_buffer = Some(new_buffer);
+                self.buffer_width = width;
+                self.buffer_height = height;
+                self.buffer_valid = false; // 标记需要重绘
+
+             
+            }
+
+            Ok(())
+        }
+    }
+
+    /// 清理内容缓冲区
+    fn cleanup_content_buffer(&mut self) {
+        unsafe {
+            if let Some(old_buffer) = self.content_buffer.take() {
+                let result = DeleteObject(old_buffer.into());
+                if !result.as_bool() {
+                    println!("警告: 删除缓冲区失败");
+                }
+            }
+            self.buffer_width = 0;
+            self.buffer_height = 0;
+            self.buffer_valid = false;
+        }
+    }
+
+    /// 使缓冲区无效，强制下次重绘
+    fn invalidate_content_buffer(&mut self) {
+        self.buffer_valid = false;
+    }
+
+    /// 渲染内容到缓冲区
+    fn render_to_buffer(&mut self, screen_hdc: HDC) -> Result<()> {
+        unsafe {
+            if let Some(buffer_bitmap) = self.content_buffer {
+                let buffer_dc = CreateCompatibleDC(Some(screen_hdc));
+                let old_bitmap = SelectObject(buffer_dc, buffer_bitmap.into());
+
+                // 渲染内容到缓冲区
+                let result = self.paint_content_to_dc(buffer_dc);
+
+                SelectObject(buffer_dc, old_bitmap);
+                let _ = DeleteDC(buffer_dc);
+
+                if result.is_ok() {
+                    self.buffer_valid = true;
+                }
+
+                result
+            } else {
+                Err(anyhow::anyhow!("缓冲区不存在"))
+            }
+        }
+    }
+
+    /// 将内容绘制到指定的DC（用于缓冲和直接绘制）
+    fn paint_content_to_dc(&self, hdc: HDC) -> Result<()> {
+        unsafe {
+            let rect = RECT {
+                left: 0,
+                top: 0,
+                right: self.buffer_width,
+                bottom: self.buffer_height,
+            };
+
+            // 设置背景色为白色（仅内容区域）
+            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
+            FillRect(hdc, &rect, white_brush);
+
+            // 绘制窗口边框
+            let border_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00CCCCCC));
+            let old_pen = SelectObject(hdc, border_pen.into());
+            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+            let _ = Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+
+            SelectObject(hdc, old_pen);
+            SelectObject(hdc, old_brush);
+            let _ = DeleteObject(border_pen.into());
+
+            // 设置文本颜色为黑色
+            SetTextColor(hdc, COLORREF(0x00000000));
+            SetBkMode(hdc, TRANSPARENT);
+
+            // 选择微软雅黑字体
+            let old_font = SelectObject(hdc, self.font.into());
+
+            // 使用预计算的布局
+            let image_area_width = self.text_area_rect.left - 10;
+
+            // 绘制图像区域边框
+            let image_rect = RECT {
+                left: 10,
+                top: 10,
+                right: image_area_width - 10,
+                bottom: self.buffer_height - 10,
+            };
+
+            let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00CCCCCC));
+            let old_pen = SelectObject(hdc, border_pen.into());
+            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+            let _ = Rectangle(
+                hdc,
+                image_rect.left,
+                image_rect.top,
+                image_rect.right,
+                image_rect.bottom,
+            );
+
+            SelectObject(hdc, old_pen);
+            SelectObject(hdc, old_brush);
+            let _ = DeleteObject(border_pen.into());
+
+            // 绘制实际的截图图像
+            if let Some(bitmap) = self.image_bitmap {
+                // 创建内存 DC 来绘制位图
+                let mem_dc = CreateCompatibleDC(Some(hdc));
+                let old_bitmap = SelectObject(mem_dc, bitmap.into());
+
+                // 计算图像显示区域（保持宽高比，居中显示）
+                let available_width = image_area_width - 40;
+                let available_height = self.buffer_height - 60;
+
+                let scale_x = available_width as f32 / self.image_width as f32;
+                let scale_y = available_height as f32 / self.image_height as f32;
+                let scale = scale_x.min(scale_y).min(1.0); // 不放大
+
+                let scaled_width = (self.image_width as f32 * scale) as i32;
+                let scaled_height = (self.image_height as f32 * scale) as i32;
+
+                let x_offset = 20 + (available_width - scaled_width) / 2;
+                let y_offset = 30 + (available_height - scaled_height) / 2;
+
+                // 使用 StretchBlt 绘制缩放的图像
+                let _ = StretchBlt(
+                    hdc,
+                    x_offset,
+                    y_offset,
+                    scaled_width,
+                    scaled_height,
+                    Some(mem_dc),
+                    0,
+                    0,
+                    self.image_width,
+                    self.image_height,
+                    SRCCOPY,
+                );
+
+                SelectObject(mem_dc, old_bitmap);
+                let _ = DeleteDC(mem_dc);
+            } else {
+                // 如果没有位图，显示提示文字
+                let image_text = "截图图像\n(加载失败)";
+                let mut image_text_rect = RECT {
+                    left: 20,
+                    top: 30,
+                    right: image_area_width - 20,
+                    bottom: 100,
+                };
+
+                let mut image_text_wide: Vec<u16> = image_text
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                DrawTextW(
+                    hdc,
+                    &mut image_text_wide,
+                    &mut image_text_rect,
+                    DT_LEFT | DT_TOP | DT_WORDBREAK,
+                );
+            }
+
+            // 恢复原来的字体
+            SelectObject(hdc, old_font);
+
+            let _ = DeleteObject(white_brush.into());
+
+            Ok(())
+        }
+    }
+
     /// 加载所有SVG图标并转换为位图
     fn load_all_svg_icons() -> Vec<SvgIcon> {
         let svg_files = vec![
@@ -113,8 +365,41 @@ impl OcrResultWindow {
     fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
 
-        // 移除旧的标题栏按钮
+        // 先释放旧的标题栏按钮的位图资源，避免内存泄漏
+        unsafe {
+            for icon in &self.svg_icons {
+                if icon.is_title_bar_button {
+                    let _ = DeleteObject(icon.bitmap.into());
+                    let _ = DeleteObject(icon.hover_bitmap.into());
+                }
+            }
+        }
+
+        // 移除旧的标题栏按钮，保留左侧图标
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
+
+        // 确保有左侧图标（使用缓存）
+        let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
+        if !has_left_icons {
+            // 获取缓存的左侧图标并克隆到svg_icons中
+            if self.left_icons_cache.is_none() {
+                self.left_icons_cache = Some(Self::load_all_svg_icons());
+                println!("首次创建左侧图标缓存");
+            }
+
+            if let Some(ref left_icons) = self.left_icons_cache {
+                for icon in left_icons {
+                    self.svg_icons.push(SvgIcon {
+                        name: icon.name.clone(),
+                        bitmap: icon.bitmap,
+                        hover_bitmap: icon.hover_bitmap,
+                        rect: icon.rect,
+                        hovered: false, // 重置悬停状态
+                        is_title_bar_button: false,
+                    });
+                }
+            }
+        }
 
         // 创建新的标题栏按钮
         let mut title_bar_buttons = if self.is_maximized {
@@ -210,6 +495,69 @@ impl OcrResultWindow {
         buttons
     }
 
+    /// 重新计算窗口布局
+    fn recalculate_layout(&mut self) {
+        unsafe {
+            // 右边文字区域宽度（固定350像素）
+            let text_area_width = 350;
+
+            // 左边图像区域宽度
+            let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
+
+            // 计算文字显示区域
+            let title_bar_height = TOPEXTENDWIDTH;
+            let text_padding_left = 20;
+            let text_padding_right = 20;
+            let text_padding_top = title_bar_height + 15;
+            let text_padding_bottom = 15;
+
+            let new_text_area_rect = RECT {
+                left: image_area_width + text_padding_left,
+                top: text_padding_top,
+                right: self.window_width - text_padding_right,
+                bottom: self.window_height - text_padding_bottom,
+            };
+
+            // 只有在文本区域真正改变时才重新定位文本编辑控件，减少闪烁
+            if new_text_area_rect.left != self.text_area_rect.left
+                || new_text_area_rect.top != self.text_area_rect.top
+                || new_text_area_rect.right != self.text_area_rect.right
+                || new_text_area_rect.bottom != self.text_area_rect.bottom
+            {
+                self.text_area_rect = new_text_area_rect;
+
+                // 使用 BeginDeferWindowPos 和 EndDeferWindowPos 进行批量窗口操作，减少闪烁
+                if let Ok(hdwp) = BeginDeferWindowPos(1) {
+                    if let Ok(hdwp) = DeferWindowPos(
+                        hdwp,
+                        self.text_edit,
+                        None,
+                        self.text_area_rect.left,
+                        self.text_area_rect.top,
+                        self.text_area_rect.right - self.text_area_rect.left,
+                        self.text_area_rect.bottom - self.text_area_rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    ) {
+                        let _ = EndDeferWindowPos(hdwp);
+                    }
+                } else {
+                    // 如果批量操作失败，回退到单个操作
+                    let _ = SetWindowPos(
+                        self.text_edit,
+                        None,
+                        self.text_area_rect.left,
+                        self.text_area_rect.top,
+                        self.text_area_rect.right - self.text_area_rect.left,
+                        self.text_area_rect.bottom - self.text_area_rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+
+          
+            }
+        }
+    }
+
     /// 从文件加载标题栏按钮，创建专门的悬停效果
     fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP)> {
         unsafe {
@@ -220,7 +568,7 @@ impl OcrResultWindow {
                 Err(_) => return None,
             };
 
-            // 解析SVG
+            // 解析SVG - 使用默认选项
             let tree = match usvg::Tree::from_str(&svg_data, &usvg::Options::default()) {
                 Ok(tree) => tree,
                 Err(_) => return None,
@@ -335,7 +683,7 @@ impl OcrResultWindow {
                 }
             }
 
-            // 在中心绘制图标（白色，以确保在彩色背景上可见）
+            // 在中心绘制图标（保持原始颜色）
             let icon_x_offset = (button_width - ICON_SIZE) / 2;
             let icon_y_offset = (button_height - ICON_SIZE) / 2;
 
@@ -348,13 +696,14 @@ impl OcrResultWindow {
 
                     if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
                         let alpha = pixel_data[src_idx + 3];
-                        if alpha > 0 {
-                            // 有内容的像素，设置为白色（以在彩色背景上更清晰）
-                            bits_slice[dst_idx] = 255; // B - 白色
-                            bits_slice[dst_idx + 1] = 255; // G - 白色
-                            bits_slice[dst_idx + 2] = 255; // R - 白色
+                        if alpha > 128 {
+                            // 只处理足够不透明的像素，保持原始颜色（黑色）
+                            bits_slice[dst_idx] = 0; // B - 黑色
+                            bits_slice[dst_idx + 1] = 0; // G - 黑色
+                            bits_slice[dst_idx + 2] = 0; // R - 黑色
                             bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
                         }
+                        // alpha <= 128 的像素保持背景色，不绘制图标内容
                     }
                 }
             }
@@ -373,13 +722,13 @@ impl OcrResultWindow {
                 Err(_) => return None,
             };
 
-            // 解析SVG
+            // 解析SVG - 使用默认选项
             let tree = match usvg::Tree::from_str(&svg_data, &usvg::Options::default()) {
                 Ok(tree) => tree,
                 Err(_) => return None,
             };
 
-            // 创建pixmap，初始化为完全透明
+            // 创建pixmap
             let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
 
@@ -637,6 +986,7 @@ impl OcrResultWindow {
         selection_rect: RECT,
     ) -> Result<()> {
         unsafe {
+            let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
             // 注册窗口类
             let class_name = windows::core::w!("OcrResultWindow");
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
@@ -652,7 +1002,7 @@ impl OcrResultWindow {
                 hInstance: instance.into(),
                 lpszClassName: class_name,
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
-                hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0 as *mut _), // 使用黑色背景让扩展框架可见
+                hbrBackground: HBRUSH::default(), // 不使用背景画刷，让我们自己控制绘制
                 style: CS_HREDRAW | CS_VREDRAW,
                 hIcon: HICON::default(), // 不使用图标
                 ..Default::default()
@@ -852,11 +1202,35 @@ impl OcrResultWindow {
                 is_no_text_detected,
                 is_maximized: false,
                 svg_icons,
+
+                // 初始化缓冲相关字段
+                content_buffer: None,
+                buffer_width: 0,
+                buffer_height: 0,
+                buffer_valid: false,
+
+                // 初始化图标缓存
+                left_icons_cache: None,
             };
 
             // 将窗口实例指针存储到窗口数据中
             let window_ptr = Box::into_raw(Box::new(window));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_ptr as isize);
+
+            // 获取窗口的实际客户端区域尺寸，重新计算布局
+            let window = &mut *window_ptr;
+            let mut client_rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client_rect);
+            let actual_width = client_rect.right - client_rect.left;
+            let actual_height = client_rect.bottom - client_rect.top;
+
+            // 更新窗口尺寸并重新计算标题栏按钮位置
+            window.window_width = actual_width;
+            window.window_height = actual_height;
+            window.recalculate_layout();
+            window.update_title_bar_buttons();
+
+       
 
             // 显示窗口
             let _ = ShowWindow(hwnd, SW_SHOW);
@@ -873,32 +1247,44 @@ impl OcrResultWindow {
                 return Err(anyhow::anyhow!("BMP 数据太小"));
             }
 
+            // 检查BMP文件签名
+            if bmp_data[0] != b'B' || bmp_data[1] != b'M' {
+                return Err(anyhow::anyhow!("不是有效的BMP文件"));
+            }
+
+            // 读取数据偏移量（像素数据开始位置）
+            let data_offset =
+                u32::from_le_bytes([bmp_data[10], bmp_data[11], bmp_data[12], bmp_data[13]])
+                    as usize;
+
             // 解析 BMP 头部获取尺寸信息
             let width =
                 i32::from_le_bytes([bmp_data[18], bmp_data[19], bmp_data[20], bmp_data[21]]);
-            let height =
-                i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]).abs(); // 取绝对值，因为可能是负数
+            let height_raw =
+                i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]);
+            let height = height_raw.abs(); // 取绝对值
+            let is_top_down = height_raw < 0; // 负值表示自顶向下
+
+            // 读取位深度
+            let bit_count = u16::from_le_bytes([bmp_data[28], bmp_data[29]]);
+
+
+            // 检查数据偏移量是否有效
+            if data_offset >= bmp_data.len() {
+                return Err(anyhow::anyhow!("BMP数据偏移量无效"));
+            }
 
             // 获取屏幕 DC
             let screen_dc = GetDC(None);
 
-            // 创建兼容的内存 DC
-            let mem_dc = CreateCompatibleDC(Some(screen_dc));
-
-            // 创建兼容的位图
-            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-
-            // 选择位图到内存 DC
-            let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-            // 创建 BITMAPINFO 结构
+            // 创建DIB段位图以支持更好的像素数据处理
             let bitmap_info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: width,
                     biHeight: -height, // 负值表示自顶向下
                     biPlanes: 1,
-                    biBitCount: 32,
+                    biBitCount: 32, // 强制使用32位以确保兼容性
                     biCompression: BI_RGB.0,
                     biSizeImage: 0,
                     biXPelsPerMeter: 0,
@@ -909,160 +1295,156 @@ impl OcrResultWindow {
                 bmiColors: [RGBQUAD::default(); 1],
             };
 
-            // 获取像素数据（跳过 BMP 文件头）
-            let pixel_data = &bmp_data[54..];
-
-            // 将像素数据设置到位图
-            SetDIBits(
-                Some(mem_dc),
-                bitmap,
-                0,
-                height as u32,
-                pixel_data.as_ptr() as *const _,
+            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(
+                Some(screen_dc),
                 &bitmap_info,
                 DIB_RGB_COLORS,
-            );
+                &mut bits_ptr,
+                None,
+                0,
+            )
+            .map_err(|e| anyhow::anyhow!("创建DIB段失败: {:?}", e))?;
 
-            // 清理
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteDC(mem_dc);
+            // 获取像素数据（使用正确的偏移量）
+            let pixel_data = &bmp_data[data_offset..];
+
+            // 计算每行的字节数（考虑4字节对齐）
+            let bytes_per_pixel = (bit_count / 8) as usize;
+            let row_size = ((width as usize * bytes_per_pixel + 3) / 4) * 4; // 4字节对齐
+
+            if !bits_ptr.is_null() {
+                let bits_slice = std::slice::from_raw_parts_mut(
+                    bits_ptr as *mut u8,
+                    (width * height * 4) as usize, // 输出总是32位
+                );
+
+                // 逐行复制和转换像素数据
+                for y in 0..height {
+                    // 计算源数据中的实际行索引
+                    let src_y = if is_top_down {
+                        y // 自顶向下，行索引不变
+                    } else {
+                        height - 1 - y // 自底向上，需要翻转行索引
+                    };
+
+                    let src_row_start = src_y as usize * row_size;
+
+                    for x in 0..width {
+                        let src_idx = src_row_start + x as usize * bytes_per_pixel;
+                        let dst_idx = (y * width + x) as usize * 4;
+
+                        if src_idx + bytes_per_pixel <= pixel_data.len()
+                            && dst_idx + 3 < bits_slice.len()
+                        {
+                            match bit_count {
+                                24 => {
+                                    // 24位BMP: BGR -> BGRA
+                                    bits_slice[dst_idx] = pixel_data[src_idx]; // B
+                                    bits_slice[dst_idx + 1] = pixel_data[src_idx + 1]; // G
+                                    bits_slice[dst_idx + 2] = pixel_data[src_idx + 2]; // R
+                                    bits_slice[dst_idx + 3] = 255; // A - 不透明
+                                }
+                                32 => {
+                                    // 32位BMP: BGRA -> BGRA，确保Alpha通道不透明
+                                    bits_slice[dst_idx] = pixel_data[src_idx]; // B
+                                    bits_slice[dst_idx + 1] = pixel_data[src_idx + 1]; // G
+                                    bits_slice[dst_idx + 2] = pixel_data[src_idx + 2]; // R
+                                    bits_slice[dst_idx + 3] = 255; // A - 强制设置为不透明
+                                }
+                                _ => {
+                                    // 其他格式，设置为白色
+                                    bits_slice[dst_idx] = 255; // B
+                                    bits_slice[dst_idx + 1] = 255; // G
+                                    bits_slice[dst_idx + 2] = 255; // R
+                                    bits_slice[dst_idx + 3] = 255; // A
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let _ = ReleaseDC(None, screen_dc);
 
+       
             Ok((bitmap, width, height))
         }
     }
 
-    /// 绘制窗口内容
-    fn paint(&self) -> Result<()> {
+    /// 绘制窗口内容（不包含BeginPaint/EndPaint调用）- 使用静态缓冲机制
+    fn paint_content_only(&mut self, hdc: HDC) -> Result<()> {
         unsafe {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(self.hwnd, &mut ps);
-
             let mut rect = RECT::default();
             GetClientRect(self.hwnd, &mut rect)?;
 
-            // 设置背景色为白色
-            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
-            FillRect(hdc, &rect, white_brush);
+            // 计算内容区域尺寸（去除标题栏）
+            let content_width = rect.right - rect.left;
+            let content_height = rect.bottom - TOPEXTENDWIDTH;
 
-            // 不在这里绘制标题栏，因为已经在DWM的paint_custom_caption中处理了
+            // 检查尺寸是否合理
+            if content_width <= 0 || content_height <= 0 {
+                return Ok(()); // 无效尺寸，跳过绘制
+            }
 
-            // 绘制窗口边框
-            let border_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00CCCCCC));
-            let old_pen = SelectObject(hdc, border_pen.into());
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            // 确保缓冲区存在且尺寸正确
+            self.ensure_content_buffer(content_width, content_height)?;
 
-            let _ = Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
+            // 如果缓冲区无效（第一次创建或尺寸变化），重新渲染静态内容
+            if !self.buffer_valid {
+                self.render_to_buffer(hdc)?;
+            }
 
-            SelectObject(hdc, old_pen);
-            SelectObject(hdc, old_brush);
-            let _ = DeleteObject(border_pen.into());
+            // 将缓冲区内容复制到屏幕（这是唯一每次都要做的操作）
+            if let Some(buffer_bitmap) = self.content_buffer {
+                let buffer_dc = CreateCompatibleDC(Some(hdc));
+                if buffer_dc.is_invalid() {
+                    return Err(anyhow::anyhow!("创建缓冲DC失败"));
+                }
 
-            // 设置文本颜色为黑色
-            SetTextColor(hdc, COLORREF(0x00000000));
-            SetBkMode(hdc, TRANSPARENT);
+                let old_bitmap = SelectObject(buffer_dc, buffer_bitmap.into());
 
-            // 选择微软雅黑字体
-            let old_font = SelectObject(hdc, self.font.into());
-
-            // 使用预计算的布局
-            let image_area_width = self.text_area_rect.left - 10;
-
-            // 绘制图像区域边框（考虑标题栏高度）
-            let title_bar_height = TOPEXTENDWIDTH; // 使用实际的标题栏高度
-            let image_rect = RECT {
-                left: 10,
-                top: title_bar_height + 10, // 标题栏下方
-                right: image_area_width - 10,
-                bottom: self.window_height - 10,
-            };
-
-            let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00CCCCCC));
-            let old_pen = SelectObject(hdc, border_pen.into());
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-            let _ = Rectangle(
-                hdc,
-                image_rect.left,
-                image_rect.top,
-                image_rect.right,
-                image_rect.bottom,
-            );
-
-            SelectObject(hdc, old_pen);
-            SelectObject(hdc, old_brush);
-            let _ = DeleteObject(border_pen.into());
-
-            // 绘制实际的截图图像
-            if let Some(bitmap) = self.image_bitmap {
-                // 创建内存 DC 来绘制位图
-                let mem_dc = CreateCompatibleDC(Some(hdc));
-                let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                // 计算图像显示区域（保持宽高比，居中显示）
-                let available_width = image_area_width - 40;
-                let available_height = self.window_height - 40;
-
-                let scale_x = available_width as f32 / self.image_width as f32;
-                let scale_y = available_height as f32 / self.image_height as f32;
-                let scale = scale_x.min(scale_y).min(1.0); // 不放大
-
-                let scaled_width = (self.image_width as f32 * scale) as i32;
-                let scaled_height = (self.image_height as f32 * scale) as i32;
-
-                let x_offset = 20 + (available_width - scaled_width) / 2;
-                let y_offset = 20 + (available_height - scaled_height) / 2;
-
-                // 使用 StretchBlt 绘制缩放的图像
-                let _ = StretchBlt(
+                // 只绘制内容区域，避开标题栏
+                let _ = BitBlt(
                     hdc,
-                    x_offset,
-                    y_offset,
-                    scaled_width,
-                    scaled_height,
-                    Some(mem_dc),
+                    0,
+                    TOPEXTENDWIDTH, // 从标题栏下方开始
+                    content_width,
+                    content_height,
+                    Some(buffer_dc),
                     0,
                     0,
-                    self.image_width,
-                    self.image_height,
                     SRCCOPY,
                 );
 
-                SelectObject(mem_dc, old_bitmap);
-                let _ = DeleteDC(mem_dc);
-            } else {
-                // 如果没有位图，显示提示文字
-                let image_text = "截图图像\n(加载失败)";
-                let mut image_text_rect = RECT {
-                    left: 20,
-                    top: 30,
-                    right: image_area_width - 20,
-                    bottom: 100,
-                };
-
-                let mut image_text_wide: Vec<u16> = image_text
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
-                DrawTextW(
-                    hdc,
-                    &mut image_text_wide,
-                    &mut image_text_rect,
-                    DT_LEFT | DT_TOP | DT_WORDBREAK,
-                );
+                SelectObject(buffer_dc, old_bitmap);
+                let _ = DeleteDC(buffer_dc);
             }
-
-            // 文本内容现在由Edit控件处理，无需手动绘制
-
-            // 恢复原来的字体
-            SelectObject(hdc, old_font);
-
-            let _ = DeleteObject(white_brush.into());
-            let _ = EndPaint(self.hwnd, &ps);
 
             Ok(())
         }
     }
+
+    /// 处理窗口大小变化，使用缓冲机制减少闪烁
+    fn handle_size_change(&mut self, new_width: i32, new_height: i32) {
+        // 直接更新窗口尺寸
+        self.window_width = new_width;
+        self.window_height = new_height;
+
+        // 重新计算布局（包括文本编辑控件的重新定位）
+        self.recalculate_layout();
+
+        // 计算缓冲区变化幅度，只有在尺寸变化较大时才重建缓冲区
+        let buffer_width_diff = (self.buffer_width - new_width).abs();
+        let buffer_height_diff = (self.buffer_height - new_height).abs();
+
+        // 如果缓冲区尺寸变化较大，则使其无效
+        if buffer_width_diff >= 20 || buffer_height_diff >= 20 {
+            self.buffer_valid = false;
+   
+        }
+    }
+
 
     /// 自定义标题栏处理函数（根据官方文档重构）
     fn custom_caption_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1104,6 +1486,13 @@ impl OcrResultWindow {
 
                     // 绘制自定义标题栏
                     Self::paint_custom_caption(hwnd, hdc);
+
+                    // 同时绘制窗口内容，避免重复绘制
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        let _ = window.paint_content_only(hdc);
+                    }
 
                     let _ = EndPaint(hwnd, &ps);
                     LRESULT(0)
@@ -1153,8 +1542,8 @@ impl OcrResultWindow {
                 let window = &*window_ptr;
 
                 // 在内存DC中绘制标题栏内容
-                // 设置背景为现代深色标题栏（类似Windows 11）
-                let bg_brush = CreateSolidBrush(COLORREF(0x00202020));
+                // 设置背景为浅灰色标题栏 (#EDEDED)
+                let bg_brush = CreateSolidBrush(COLORREF(0x00EDEDED));
                 let title_bar_rect = RECT {
                     left: 0,
                     top: 0,
@@ -1164,7 +1553,7 @@ impl OcrResultWindow {
                 FillRect(mem_dc, &title_bar_rect, bg_brush);
 
                 // 绘制标题文字
-                SetTextColor(mem_dc, COLORREF(0x00FFFFFF)); // 白色文字
+                SetTextColor(mem_dc, COLORREF(0x00000000)); // 黑色文字适配浅色背景
                 SetBkMode(mem_dc, TRANSPARENT);
 
                 let title_font = CreateFontW(
@@ -1259,26 +1648,17 @@ impl OcrResultWindow {
                             SRCCOPY,
                         );
                     } else {
-                        // 普通状态：使用 AlphaBlend 绘制透明背景的图标
-                        let blend_func = BLENDFUNCTION {
-                            BlendOp: 0, // AC_SRC_OVER
-                            BlendFlags: 0,
-                            SourceConstantAlpha: 255,
-                            AlphaFormat: 1, // AC_SRC_ALPHA
-                        };
-
-                        let _ = AlphaBlend(
+                        // 普通状态：使用 BitBlt 绘制以保持清晰度
+                        let _ = BitBlt(
                             mem_dc,
                             icon.rect.left,
                             icon.rect.top,
                             icon_size,
                             icon_size,
-                            icon_mem_dc,
+                            Some(icon_mem_dc),
                             0,
                             0,
-                            icon_size,
-                            icon_size,
-                            blend_func,
+                            SRCCOPY,
                         );
                     }
 
@@ -1324,11 +1704,6 @@ impl OcrResultWindow {
             let client_x = pt_mouse_x - rc_window.left;
             let client_y = pt_mouse_y - rc_window.top;
 
-            println!(
-                "hit_test_nca: 屏幕坐标 ({}, {}), 客户端坐标 ({}, {})",
-                pt_mouse_x, pt_mouse_y, client_x, client_y
-            );
-
             // 获取窗口实例来检查按钮和图标区域
             let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
             if !window_ptr.is_null() {
@@ -1356,7 +1731,7 @@ impl OcrResultWindow {
                         };
 
                         if in_click_area {
-                            println!("点击测试: 鼠标在SVG图标 {} 区域", icon.name);
+                            // println!("点击测试: 鼠标在SVG图标 {} 区域", icon.name);
                             return LRESULT(HTCLIENT as isize); // 让图标可以响应点击和悬停
                         }
                     }
@@ -1414,7 +1789,7 @@ impl OcrResultWindow {
             ];
 
             let result = hit_tests[u_row][u_col];
-            println!("点击测试结果: {}", result);
+
             LRESULT(result)
         }
     }
@@ -1427,8 +1802,6 @@ impl OcrResultWindow {
         lparam: LPARAM,
     ) -> LRESULT {
         unsafe {
-            println!("收到消息: {}", msg);
-
             // 检查DWM是否启用
             let dwm_enabled = DwmIsCompositionEnabled().unwrap_or(FALSE);
 
@@ -1453,6 +1826,16 @@ impl OcrResultWindow {
     fn app_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
             match msg {
+                WM_GETMINMAXINFO => {
+                    // 设置窗口最小尺寸为800*500
+                    let minmax_info = lparam.0 as *mut MINMAXINFO;
+                    if !minmax_info.is_null() {
+                        let info = &mut *minmax_info;
+                        info.ptMinTrackSize.x = 800;
+                        info.ptMinTrackSize.y = 500;
+                    }
+                    LRESULT(0)
+                }
                 WM_LBUTTONDOWN => {
                     // 处理标题栏按钮和图标点击
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
@@ -1669,18 +2052,6 @@ impl OcrResultWindow {
                     }
                     LRESULT(0)
                 }
-                WM_PAINT => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &*window_ptr;
-                        let _ = window.paint();
-                    } else {
-                        let mut ps = PAINTSTRUCT::default();
-                        let _hdc = BeginPaint(hwnd, &mut ps);
-                        let _ = EndPaint(hwnd, &ps);
-                    }
-                    LRESULT(0)
-                }
                 WM_RBUTTONUP => {
                     // 右键点击关闭窗口
                     let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
@@ -1711,9 +2082,14 @@ impl OcrResultWindow {
                                 // 设置正常黑色文本
                                 SetTextColor(hdc, COLORREF(0x00000000)); // 黑色
                             }
-                            SetBkMode(hdc, TRANSPARENT);
-                            // 返回透明画刷
-                            return LRESULT(GetStockObject(NULL_BRUSH).0 as isize);
+
+                            // 设置白色背景
+                            SetBkColor(hdc, COLORREF(0x00FFFFFF)); // 白色背景
+                            SetBkMode(hdc, OPAQUE);
+
+                            // 创建白色画刷作为背景
+                            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
+                            return LRESULT(white_brush.0 as isize);
                         }
                     }
                     DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1730,18 +2106,9 @@ impl OcrResultWindow {
                 WM_CLOSE => {
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
-                        let window = Box::from_raw(window_ptr);
-                        // 清理字体资源
-                        let _ = DeleteObject(window.font.into());
-                        // 清理位图资源
-                        if let Some(bitmap) = window.image_bitmap {
-                            let _ = DeleteObject(bitmap.into());
-                        }
-                        // 清理SVG图标资源
-                        for icon in &window.svg_icons {
-                            let _ = DeleteObject(icon.bitmap.into());
-                            let _ = DeleteObject(icon.hover_bitmap.into());
-                        }
+                        let mut window = Box::from_raw(window_ptr);
+                        // 使用统一的清理方法
+                        window.cleanup_all_resources();
                         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     }
                     let _ = DestroyWindow(hwnd);
@@ -1754,17 +2121,29 @@ impl OcrResultWindow {
                         let window = &mut *window_ptr;
                         let state = wparam.0 as u32;
                         let new_width = (lparam.0 as i16) as i32;
-                        let _new_height = ((lparam.0 >> 16) as i16) as i32;
+                        let new_height = ((lparam.0 >> 16) as i16) as i32;
 
                         let new_maximized = state == 2; // SIZE_MAXIMIZED
-                        let size_changed = window.window_width != new_width;
+                        let size_changed =
+                            window.window_width != new_width || window.window_height != new_height;
+                        let maximized_changed = window.is_maximized != new_maximized;
 
-                        if window.is_maximized != new_maximized || size_changed {
+                        if maximized_changed || size_changed {
+                            let old_width = window.window_width;
                             window.is_maximized = new_maximized;
-                            window.window_width = new_width;
 
-                            // 更新标题栏按钮状态
-                            window.update_title_bar_buttons();
+                            // 使用新的方法处理大小变化
+                            window.handle_size_change(new_width, new_height);
+
+                            // 当最大化状态改变或窗口宽度发生任何变化时都要更新标题栏按钮
+                            // 因为标题栏按钮的位置依赖于窗口宽度
+                            if maximized_changed || old_width != new_width {
+                                window.update_title_bar_buttons();
+                                println!(
+                                    "标题栏按钮已更新: 宽度从 {} 变为 {}",
+                                    old_width, new_width
+                                );
+                            }
 
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         }

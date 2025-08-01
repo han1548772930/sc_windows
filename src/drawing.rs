@@ -141,8 +141,34 @@ impl WindowState {
         self.mouse_pressed = false;
         self.drag_mode = DragMode::None;
     }
-    pub fn save_selection(&self) -> Result<()> {
+
+    /// 临时隐藏UI元素进行截图
+    pub fn hide_ui_for_capture(&mut self, hwnd: HWND) {
+        self.hide_ui_for_capture = true;
         unsafe {
+            // 强制重绘以隐藏UI元素
+            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+            let _ = UpdateWindow(hwnd);
+            // 等待重绘完成
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// 恢复UI元素显示
+    pub fn show_ui_after_capture(&mut self, hwnd: HWND) {
+        self.hide_ui_for_capture = false;
+        unsafe {
+            // 强制重绘以显示UI元素
+            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+            let _ = UpdateWindow(hwnd);
+        }
+    }
+
+    pub fn save_selection(&mut self, hwnd: HWND) -> Result<()> {
+        // 临时隐藏UI元素
+        self.hide_ui_for_capture(hwnd);
+
+        let result = unsafe {
             let width = self.selection_rect.right - self.selection_rect.left;
             let height = self.selection_rect.bottom - self.selection_rect.top;
 
@@ -150,13 +176,13 @@ impl WindowState {
                 return Ok(());
             }
 
-            // 🎯 最简单：直接截屏当前窗口的选择区域
+            // 截取屏幕的完整选择区域（包含所有内容但不包含UI元素）
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
             let mem_dc = CreateCompatibleDC(Some(screen_dc));
             let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
             let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
-            // 直接从屏幕复制选择区域（包含窗口内容和绘图）
+            // 从屏幕复制选择区域
             let _ = BitBlt(
                 mem_dc,
                 0,
@@ -184,11 +210,16 @@ impl WindowState {
             let _ = DeleteDC(mem_dc);
 
             Ok(())
-        }
+        };
+
+        // 恢复UI元素显示
+        self.show_ui_after_capture(hwnd);
+
+        result
     }
 
     // 新增：保存选择区域到文件（让用户选择保存路径）
-    pub fn save_selection_to_file(&self, hwnd: HWND) -> Result<bool> {
+    pub fn save_selection_to_file(&mut self, hwnd: HWND) -> Result<bool> {
         let width = self.selection_rect.right - self.selection_rect.left;
         let height = self.selection_rect.bottom - self.selection_rect.top;
 
@@ -202,7 +233,10 @@ impl WindowState {
             None => return Ok(false), // 用户取消了对话框
         };
 
-        unsafe {
+        // 临时隐藏UI元素
+        self.hide_ui_for_capture(hwnd);
+
+        let result = unsafe {
             // 截取屏幕选择区域
             let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
             let mem_dc = CreateCompatibleDC(Some(screen_dc));
@@ -223,16 +257,21 @@ impl WindowState {
             );
 
             // 保存位图到文件
-            self.save_bitmap_to_file(bitmap, &file_path, width, height)?;
+            let save_result = self.save_bitmap_to_file(bitmap, &file_path, width, height);
 
             // 清理资源
             SelectObject(mem_dc, old_bitmap);
             let _ = DeleteDC(mem_dc);
             ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
             let _ = DeleteObject(bitmap.into());
-        }
 
-        Ok(true) // 成功保存文件
+            save_result.map(|_| true)
+        };
+
+        // 恢复UI元素显示
+        self.show_ui_after_capture(hwnd);
+
+        result
     }
 
     /// 保存位图到文件

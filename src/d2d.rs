@@ -336,6 +336,9 @@ impl WindowState {
 
                 // OCR引擎状态初始化
                 ocr_engine_available: false, // 初始状态为不可用，稍后异步检查
+
+                // UI显示控制初始化
+                hide_ui_for_capture: false, // 默认显示UI元素
             })
         }
     }
@@ -646,8 +649,18 @@ impl WindowState {
                 return Ok(());
             }
 
+            // 临时隐藏UI元素进行截图
+            self.hide_ui_for_capture = true;
+            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+            let _ = UpdateWindow(hwnd);
+            // 等待重绘完成
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
             // 创建新的固钉窗口
-            self.create_pin_window(hwnd, width, height)?;
+            let result = self.create_pin_window(hwnd, width, height);
+
+            // 恢复UI元素显示（虽然窗口即将隐藏，但保持一致性）
+            self.hide_ui_for_capture = false;
 
             // 隐藏原始截屏窗口
             let _ = ShowWindow(hwnd, SW_HIDE);
@@ -658,7 +671,7 @@ impl WindowState {
             // 重置原始窗口状态，准备下次截屏
             self.reset_to_initial_state();
 
-            Ok(())
+            result
         }
     }
 
@@ -985,7 +998,7 @@ impl WindowState {
                     self.draw_element_selection();
 
                     // 绘制工具栏（不被裁剪）
-                    if self.toolbar.visible {
+                    if self.toolbar.visible && !self.hide_ui_for_capture {
                         self.draw_toolbar();
                     }
                 } else {
@@ -1054,6 +1067,11 @@ impl WindowState {
     }
 
     pub fn draw_selection_border(&self) {
+        // 截图时隐藏选择框边框
+        if self.hide_ui_for_capture {
+            return;
+        }
+
         unsafe {
             let rect = d2d_rect(
                 self.selection_rect.left,
@@ -1068,6 +1086,11 @@ impl WindowState {
     }
 
     pub fn draw_handles(&self) {
+        // 截图时隐藏选择框手柄
+        if self.hide_ui_for_capture {
+            return;
+        }
+
         unsafe {
             let center_x = (self.selection_rect.left + self.selection_rect.right) / 2;
             let center_y = (self.selection_rect.top + self.selection_rect.bottom) / 2;
@@ -1258,6 +1281,11 @@ impl WindowState {
     }
 
     pub fn draw_element_selection(&self) {
+        // 截图时隐藏元素选择框和手柄
+        if self.hide_ui_for_capture {
+            return;
+        }
+
         if let Some(element_index) = self.selected_element {
             if element_index < self.drawing_elements.len() {
                 let element = &self.drawing_elements[element_index];

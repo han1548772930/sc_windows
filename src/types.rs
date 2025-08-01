@@ -146,6 +146,9 @@ pub struct WindowState {
 
     // OCR引擎状态
     pub ocr_engine_available: bool, // OCR引擎是否可用
+
+    // UI显示控制
+    pub hide_ui_for_capture: bool, // 截图时隐藏UI元素（边框、手柄等）
 }
 // IconData 结构体已移除，现在只使用 SVG 图标
 #[derive(Clone, Debug)]
