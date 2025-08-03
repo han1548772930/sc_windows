@@ -143,7 +143,7 @@ git clone https://github.com/han1548772930/sc_windows.git
 cd sc_windows
 
 # 确保PaddleOCR引擎文件夹存在
-# 下载PaddleOCR-json_v1.4.exe文件夹并放置在项目根目录
+# 下载PaddleOCR-json_v1.4.1文件夹并放置在项目根目录
 
 # 编译发布版本
 cargo build --release
@@ -153,7 +153,7 @@ cargo build --release
 ```
 
 ### 获取PaddleOCR引擎
-1. 下载 PaddleOCR-json_v1.4.exe 文件夹
+1. 下载 PaddleOCR-json_v1.4.1 文件夹
 2. 将整个文件夹放置在与 `sc_windows.exe` 相同的目录中
 3. 确保文件夹结构完整，包含所有 `.dll` 文件和 `models/` 目录
 
