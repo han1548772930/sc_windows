@@ -52,13 +52,13 @@
 ### 安装要求
 - Windows 10/11
 - 支持Direct2D的显卡
-- **PaddleOCR引擎**: 需要 `PaddleOCR-json_v1.4.exe` 文件夹与主程序在同一目录
+- **PaddleOCR引擎**: 需要 `PaddleOCR-json_v1.4.1` 文件夹与主程序在同一目录
 
 ### 文件结构
 ```
 截图工具/
 ├── sc_windows.exe                    # 主程序
-├── PaddleOCR-json_v1.4.exe/        # OCR引擎文件夹
+├── PaddleOCR-json_v1.4.1/        # OCR引擎文件夹
 │   ├── PaddleOCR-json.exe          # OCR主程序
 │   ├── models/                      # 识别模型文件
 │   │   ├── config_en.txt           # 英文识别配置
@@ -74,7 +74,7 @@
 ├── paddleocr/                       # 本地PaddleOCR库
 │   ├── src/lib.rs                   # PaddleOCR Rust封装
 │   └── Cargo.toml                   # 本地库配置
-├── PaddleOCR-json_v1.4.exe/        # OCR引擎文件夹
+├── PaddleOCR-json_v1.4.1/        # OCR引擎文件夹
 ├── Cargo.toml                       # 项目配置
 └── README.md                        # 说明文档
 ```
@@ -175,7 +175,7 @@ cargo build --release
 
 ### 故障排除
 如果OCR功能无法使用，请检查：
-1. `PaddleOCR-json_v1.4.exe` 文件夹是否存在
+1. `PaddleOCR-json_v1.4.1` 文件夹是否存在
 2. 文件夹内的 `PaddleOCR-json.exe` 是否完整
 3. 所有 `.dll` 文件是否齐全
 4. `models/` 目录是否包含模型文件
