@@ -3,6 +3,8 @@ use anyhow::Result;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::DataExchange::*;
+use windows::Win32::System::Memory::*;
 use windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE;
 use windows::Win32::UI::HiDpi::SetProcessDpiAwareness;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -12,7 +14,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const LEFTEXTENDWIDTH: i32 = 0;
 const RIGHTEXTENDWIDTH: i32 = 0;
 const BOTTOMEXTENDWIDTH: i32 = 0;
-const TOPEXTENDWIDTH: i32 = 50; // 增加标题栏高度
+const TOPEXTENDWIDTH: i32 = 60; // 标准标题栏高度
+const TOPEXTENDWIDTHMAX: i32 = 70; // 最大化时的标题栏高度（更大以补偿偏移）
+const MAXIMIZE_OFFSET: i32 = 15; // 最大化时的偏移量
 
 // SVG 图标常量
 const ICON_SIZE: i32 = 24; // 图标大小
@@ -25,13 +29,17 @@ const ICON_HOVER_RADIUS: f32 = 6.0; // 悬停背景圆角半径
 
 // 标题栏按钮常量
 const TITLE_BAR_BUTTON_WIDTH: i32 = 70; // 标题栏按钮宽度
+const TITLE_BAR_BUTTON_HOVER_PADDING: i32 = 20; // 标题栏按钮悬停背景的padding
+const TITLE_BAR_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE0, 0xE0, 0xE0); // 标题栏按钮悬停背景颜色（灰色）
+const CLOSE_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE8, 0x11, 0x23); // 关闭按钮悬停背景颜色（红色）
 
 // SVG 图标结构
 #[derive(Clone)]
 struct SvgIcon {
     name: String,
     bitmap: HBITMAP,
-    hover_bitmap: HBITMAP, // 悬停状态的位图
+    hover_bitmap: HBITMAP,                   // 悬停状态的位图（普通状态）
+    hover_bitmap_maximized: Option<HBITMAP>, // 悬停状态的位图（最大化状态）
     rect: RECT,
     hovered: bool,
     is_title_bar_button: bool, // 是否是标题栏按钮
@@ -51,7 +59,6 @@ struct MARGINS {
 /// OCR 结果显示窗口
 pub struct OcrResultWindow {
     hwnd: HWND,
-    text_edit: HWND, // 可选择的文本编辑控件
     ocr_results: Vec<OcrResult>,
     image_bitmap: Option<HBITMAP>,
     image_width: i32,
@@ -72,6 +79,22 @@ pub struct OcrResultWindow {
 
     // 图标缓存 - 避免重复创建相同图标
     left_icons_cache: Option<Vec<SvgIcon>>, // 左侧图标缓存（只创建一次）
+
+    // 自绘文本相关
+    text_content: String,    // 文本内容
+    scroll_offset: i32,      // 垂直滚动偏移量
+    line_height: i32,        // 行高
+    text_lines: Vec<String>, // 分行后的文本
+
+    // 文本选择相关
+    is_selecting: bool,                        // 是否正在选择文本
+    selection_start: Option<(usize, usize)>,   // 选择开始位置 (行号, 字符位置)
+    selection_end: Option<(usize, usize)>,     // 选择结束位置 (行号, 字符位置)
+    selection_start_pixel: Option<(i32, i32)>, // 选择开始的像素位置
+    selection_end_pixel: Option<(i32, i32)>,   // 选择结束的像素位置
+    last_click_time: std::time::Instant,       // 上次点击时间，用于双击检测
+    last_click_pos: Option<(i32, i32)>,        // 上次点击位置
+    hovered_icon: Option<String>,              // 当前悬停的图标名称
 }
 
 impl OcrResultWindow {
@@ -95,6 +118,9 @@ impl OcrResultWindow {
             for icon in &self.svg_icons {
                 let _ = DeleteObject(icon.bitmap.into());
                 let _ = DeleteObject(icon.hover_bitmap.into());
+                if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
+                    let _ = DeleteObject(hover_bitmap_maximized.into());
+                }
             }
             self.svg_icons.clear();
 
@@ -103,11 +129,12 @@ impl OcrResultWindow {
                 for icon in cached_icons {
                     let _ = DeleteObject(icon.bitmap.into());
                     let _ = DeleteObject(icon.hover_bitmap.into());
+                    if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
+                        let _ = DeleteObject(hover_bitmap_maximized.into());
+                    }
                 }
             }
             self.left_icons_cache = None;
-
-            println!("已清理所有窗口资源");
         }
     }
     /// 检查并创建内容缓冲区（仅在尺寸变化时重建）
@@ -138,8 +165,6 @@ impl OcrResultWindow {
                 self.buffer_width = width;
                 self.buffer_height = height;
                 self.buffer_valid = false; // 标记需要重绘
-
-             
             }
 
             Ok(())
@@ -150,20 +175,12 @@ impl OcrResultWindow {
     fn cleanup_content_buffer(&mut self) {
         unsafe {
             if let Some(old_buffer) = self.content_buffer.take() {
-                let result = DeleteObject(old_buffer.into());
-                if !result.as_bool() {
-                    println!("警告: 删除缓冲区失败");
-                }
+                let _ = DeleteObject(old_buffer.into());
             }
             self.buffer_width = 0;
             self.buffer_height = 0;
             self.buffer_valid = false;
         }
-    }
-
-    /// 使缓冲区无效，强制下次重绘
-    fn invalidate_content_buffer(&mut self) {
-        self.buffer_valid = false;
     }
 
     /// 渲染内容到缓冲区
@@ -308,6 +325,9 @@ impl OcrResultWindow {
                 );
             }
 
+            // 绘制文本区域
+            self.draw_text_area_to_dc(hdc);
+
             // 恢复原来的字体
             SelectObject(hdc, old_font);
 
@@ -346,6 +366,7 @@ impl OcrResultWindow {
                     name: filename.replace(".svg", "").to_string(),
                     bitmap: normal_bitmap,
                     hover_bitmap,
+                    hover_bitmap_maximized: None, // 普通图标不需要最大化状态的hover位图
                     rect: RECT {
                         left: icon_x,
                         top: icon_y,
@@ -361,9 +382,44 @@ impl OcrResultWindow {
         icons
     }
 
+    /// 调整图标位置使其居中（特别是最大化后）
+    fn center_icons(&mut self) {
+        // 重新计算图标位置，确保在标题栏中居中
+        for icon in &mut self.svg_icons {
+            if !icon.is_title_bar_button {
+                // 对于左侧图标，重新计算Y位置使其居中
+                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_height = icon.rect.bottom - icon.rect.top;
+                icon.rect.top = icon_y;
+                icon.rect.bottom = icon.rect.top + icon_height;
+            } else {
+                // 对于标题栏按钮，也重新计算Y位置
+                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_height = icon.rect.bottom - icon.rect.top;
+                icon.rect.top = icon_y;
+                icon.rect.bottom = icon.rect.top + icon_height;
+            }
+        }
+    }
+
     /// 更新标题栏按钮状态
     fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
+
+        // 检查是否全屏
+        let is_fullscreen = unsafe {
+            let mut window_rect = RECT::default();
+            let _ = GetWindowRect(self.hwnd, &mut window_rect);
+            let screen_width = GetSystemMetrics(SM_CXSCREEN);
+            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+            window_rect.left <= 0
+                && window_rect.top <= 0
+                && window_rect.right >= screen_width
+                && window_rect.bottom >= screen_height
+        };
+
+        let title_bar_top_offset = 0; // 不再使用偏移量
 
         // 先释放旧的标题栏按钮的位图资源，避免内存泄漏
         unsafe {
@@ -371,6 +427,9 @@ impl OcrResultWindow {
                 if icon.is_title_bar_button {
                     let _ = DeleteObject(icon.bitmap.into());
                     let _ = DeleteObject(icon.hover_bitmap.into());
+                    if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
+                        let _ = DeleteObject(hover_bitmap_maximized.into());
+                    }
                 }
             }
         }
@@ -378,13 +437,12 @@ impl OcrResultWindow {
         // 移除旧的标题栏按钮，保留左侧图标
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
 
-        // 确保有左侧图标（使用缓存）
+        // 确保有左侧图标（使用缓存）并更新它们的位置
         let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
         if !has_left_icons {
             // 获取缓存的左侧图标并克隆到svg_icons中
             if self.left_icons_cache.is_none() {
                 self.left_icons_cache = Some(Self::load_all_svg_icons());
-                println!("首次创建左侧图标缓存");
             }
 
             if let Some(ref left_icons) = self.left_icons_cache {
@@ -393,6 +451,7 @@ impl OcrResultWindow {
                         name: icon.name.clone(),
                         bitmap: icon.bitmap,
                         hover_bitmap: icon.hover_bitmap,
+                        hover_bitmap_maximized: icon.hover_bitmap_maximized,
                         rect: icon.rect,
                         hovered: false, // 重置悬停状态
                         is_title_bar_button: false,
@@ -401,18 +460,33 @@ impl OcrResultWindow {
             }
         }
 
-        // 创建新的标题栏按钮
+        // 更新所有左侧图标的位置（使用相对坐标）
+        for icon in &mut self.svg_icons {
+            if !icon.is_title_bar_button {
+                // 左侧图标在标题栏内垂直居中（相对坐标）
+                let new_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_height = icon.rect.bottom - icon.rect.top;
+                icon.rect.top = new_y;
+                icon.rect.bottom = new_y + icon_height;
+            }
+        }
+
+        // 创建新的标题栏按钮，最大化和普通状态使用相同的位置
         let mut title_bar_buttons = if self.is_maximized {
-            Self::create_title_bar_buttons_maximized(window_width)
+            // 最大化时使用还原按钮而不是最大化按钮
+            Self::create_title_bar_buttons_maximized(window_width, title_bar_top_offset)
         } else {
-            Self::create_title_bar_buttons(window_width)
+            Self::create_title_bar_buttons(window_width, title_bar_top_offset)
         };
 
         self.svg_icons.append(&mut title_bar_buttons);
     }
 
     /// 创建最大化状态的标题栏按钮
-    fn create_title_bar_buttons_maximized(window_width: i32) -> Vec<SvgIcon> {
+    fn create_title_bar_buttons_maximized(
+        window_width: i32,
+        _title_bar_top_offset: i32,
+    ) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
         // 标题栏按钮列表：关闭、还原、最小化（从右到左的正确顺序）
@@ -424,20 +498,22 @@ impl OcrResultWindow {
 
         // 从右到左创建按钮
         for (i, filename) in button_files.iter().enumerate() {
-            if let Some((normal_bitmap, hover_bitmap)) =
+            if let Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized)) =
                 Self::load_title_bar_button_from_file(filename)
             {
-                // 按钮位置计算（从右边开始，关闭按钮贴边）
+                // 按钮位置计算（从右边开始，关闭按钮贴边）- 和普通状态一样，不偏移
                 let button_x = window_width - (i as i32 + 1) * TITLE_BAR_BUTTON_WIDTH;
 
-                // 图标在按钮中心
+                // 图标在按钮中心，相对于标题栏的坐标系
                 let icon_x = button_x + (TITLE_BAR_BUTTON_WIDTH - ICON_SIZE) / 2;
+                // 在标题栏内垂直居中（相对坐标，不包含屏幕偏移）
                 let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
 
                 buttons.push(SvgIcon {
                     name: filename.replace(".svg", "").to_string(),
                     bitmap: normal_bitmap,
                     hover_bitmap,
+                    hover_bitmap_maximized: Some(hover_bitmap_maximized),
                     rect: RECT {
                         left: icon_x,
                         top: icon_y,
@@ -454,7 +530,7 @@ impl OcrResultWindow {
     }
 
     /// 创建标题栏按钮
-    fn create_title_bar_buttons(window_width: i32) -> Vec<SvgIcon> {
+    fn create_title_bar_buttons(window_width: i32, _title_bar_top_offset: i32) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
         // 标题栏按钮列表：关闭、最大化、最小化（从右到左的正确顺序）
@@ -466,20 +542,22 @@ impl OcrResultWindow {
 
         // 从右到左创建按钮
         for (i, filename) in button_files.iter().enumerate() {
-            if let Some((normal_bitmap, hover_bitmap)) =
+            if let Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized)) =
                 Self::load_title_bar_button_from_file(filename)
             {
                 // 按钮位置计算（从右边开始，关闭按钮贴边）
                 let button_x = window_width - (i as i32 + 1) * TITLE_BAR_BUTTON_WIDTH;
 
-                // 图标在按钮中心
+                // 图标在按钮中心，相对于标题栏的坐标系
                 let icon_x = button_x + (TITLE_BAR_BUTTON_WIDTH - ICON_SIZE) / 2;
+                // 在标题栏内垂直居中（相对坐标，不包含屏幕偏移）
                 let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
 
                 buttons.push(SvgIcon {
                     name: filename.replace(".svg", "").to_string(),
                     bitmap: normal_bitmap,
                     hover_bitmap,
+                    hover_bitmap_maximized: Some(hover_bitmap_maximized),
                     rect: RECT {
                         left: icon_x,
                         top: icon_y,
@@ -495,6 +573,55 @@ impl OcrResultWindow {
         buttons
     }
 
+    /// 文本换行处理
+    fn wrap_text_lines(text: &str, text_rect: &RECT, font: HFONT, hwnd: HWND) -> Vec<String> {
+        unsafe {
+            let hdc = GetDC(Some(hwnd));
+            let old_font = SelectObject(hdc, font.into());
+
+            let text_width = text_rect.right - text_rect.left - 20; // 减去左右边距
+            let mut lines = Vec::new();
+
+            for paragraph in text.split('\n') {
+                if paragraph.trim().is_empty() {
+                    lines.push(String::new());
+                    continue;
+                }
+
+                let words: Vec<&str> = paragraph.split_whitespace().collect();
+                let mut current_line = String::new();
+
+                for word in words {
+                    let test_line = if current_line.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{} {}", current_line, word)
+                    };
+
+                    // 测量文本宽度
+                    let test_wide: Vec<u16> = test_line.encode_utf16().collect();
+                    let mut size = SIZE::default();
+                    let _ = GetTextExtentPoint32W(hdc, &test_wide, &mut size);
+
+                    if size.cx <= text_width || current_line.is_empty() {
+                        current_line = test_line;
+                    } else {
+                        lines.push(current_line);
+                        current_line = word.to_string();
+                    }
+                }
+
+                if !current_line.is_empty() {
+                    lines.push(current_line);
+                }
+            }
+
+            let _ = SelectObject(hdc, old_font);
+            let _ = ReleaseDC(Some(hwnd), hdc);
+            lines
+        }
+    }
+
     /// 重新计算窗口布局
     fn recalculate_layout(&mut self) {
         unsafe {
@@ -504,8 +631,12 @@ impl OcrResultWindow {
             // 左边图像区域宽度
             let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
 
-            // 计算文字显示区域
-            let title_bar_height = TOPEXTENDWIDTH;
+            // 计算文字显示区域，最大化时使用更大的标题栏高度
+            let title_bar_height = if self.is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
             let text_padding_left = 20;
             let text_padding_right = 20;
             let text_padding_top = title_bar_height + 15;
@@ -518,7 +649,7 @@ impl OcrResultWindow {
                 bottom: self.window_height - text_padding_bottom,
             };
 
-            // 只有在文本区域真正改变时才重新定位文本编辑控件，减少闪烁
+            // 只有在文本区域真正改变时才重新计算文本布局
             if new_text_area_rect.left != self.text_area_rect.left
                 || new_text_area_rect.top != self.text_area_rect.top
                 || new_text_area_rect.right != self.text_area_rect.right
@@ -526,40 +657,31 @@ impl OcrResultWindow {
             {
                 self.text_area_rect = new_text_area_rect;
 
-                // 使用 BeginDeferWindowPos 和 EndDeferWindowPos 进行批量窗口操作，减少闪烁
-                if let Ok(hdwp) = BeginDeferWindowPos(1) {
-                    if let Ok(hdwp) = DeferWindowPos(
-                        hdwp,
-                        self.text_edit,
-                        None,
-                        self.text_area_rect.left,
-                        self.text_area_rect.top,
-                        self.text_area_rect.right - self.text_area_rect.left,
-                        self.text_area_rect.bottom - self.text_area_rect.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    ) {
-                        let _ = EndDeferWindowPos(hdwp);
-                    }
-                } else {
-                    // 如果批量操作失败，回退到单个操作
-                    let _ = SetWindowPos(
-                        self.text_edit,
-                        None,
-                        self.text_area_rect.left,
-                        self.text_area_rect.top,
-                        self.text_area_rect.right - self.text_area_rect.left,
-                        self.text_area_rect.bottom - self.text_area_rect.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
+                // 重新计算文本换行
+                self.text_lines = Self::wrap_text_lines(
+                    &self.text_content,
+                    &self.text_area_rect,
+                    self.font,
+                    self.hwnd,
+                );
+
+                // 调整滚动偏移量，确保不超出范围
+                let max_scroll = (self.text_lines.len() as i32 * self.line_height)
+                    - (self.text_area_rect.bottom - self.text_area_rect.top);
+                if self.scroll_offset > max_scroll.max(0) {
+                    self.scroll_offset = max_scroll.max(0);
                 }
 
-          
+                // 标记需要重绘
+                unsafe {
+                    let _ = InvalidateRect(Some(self.hwnd), Some(&self.text_area_rect), false);
+                }
             }
         }
     }
 
     /// 从文件加载标题栏按钮，创建专门的悬停效果
-    fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP)> {
+    fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP, HBITMAP)> {
         unsafe {
             // 读取SVG文件
             let svg_path = format!("icons/{}", filename);
@@ -596,43 +718,53 @@ impl OcrResultWindow {
             let normal_bitmap =
                 Self::create_transparent_icon_bitmap(&screen_dc, &pixmap, ICON_SIZE)?;
 
-            // 创建悬停状态的位图（根据按钮类型选择背景色）
+            // 创建悬停状态的位图（矩形背景，铺满标题栏高度）
             let hover_bitmap = if filename == "x.svg" {
-                // 关闭按钮使用红色背景
-                Self::create_title_bar_button_bitmap_with_color(
+                // 关闭按钮：红色背景，矩形，铺满高度
+                Self::create_title_bar_button_rect_hover_bitmap(
                     &screen_dc,
                     &pixmap,
-                    (0xE8, 0x4A, 0x4A),
+                    ICON_SIZE,
+                    CLOSE_BUTTON_HOVER_BG_COLOR,
+                    true, // 是关闭按钮
                 )?
             } else {
-                // 其他按钮使用默认灰色背景
-                Self::create_title_bar_button_bitmap(&screen_dc, &pixmap)?
+                // 其他按钮：灰色背景，矩形，铺满高度
+                Self::create_title_bar_button_rect_hover_bitmap(
+                    &screen_dc,
+                    &pixmap,
+                    ICON_SIZE,
+                    TITLE_BAR_BUTTON_HOVER_BG_COLOR,
+                    false, // 不是关闭按钮
+                )?
             };
+
+            // 最大化状态下的悬停位图（使用相同的hover位图）
+            let hover_bitmap_maximized = hover_bitmap;
 
             let _ = ReleaseDC(None, screen_dc);
 
-            Some((normal_bitmap, hover_bitmap))
+            Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized))
         }
     }
 
-    /// 创建标题栏按钮悬停位图（满宽背景）
-    fn create_title_bar_button_bitmap(
+    /// 创建标题栏按钮的矩形hover背景（撑满标题栏高度）
+    fn create_title_bar_button_rect_hover_bitmap(
         screen_dc: &HDC,
         pixmap: &tiny_skia::Pixmap,
-    ) -> Option<HBITMAP> {
-        Self::create_title_bar_button_bitmap_with_color(screen_dc, pixmap, (0xE0, 0xE0, 0xE0))
-    }
-
-    /// 创建带自定义颜色的标题栏按钮悬停位图
-    fn create_title_bar_button_bitmap_with_color(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        hover_color: (u8, u8, u8),
+        size: i32,
+        bg_color: (u8, u8, u8),
+        is_close_button: bool,
     ) -> Option<HBITMAP> {
         unsafe {
-            // 创建按钮宽度的位图
-            let button_width = TITLE_BAR_BUTTON_WIDTH;
-            let button_height = TOPEXTENDWIDTH;
+            // 使用标题栏按钮的实际宽度和标题栏高度，撑满标题栏
+            // 关闭按钮使用更宽的宽度以便延伸到窗口右边缘
+            let button_width = if is_close_button {
+                TITLE_BAR_BUTTON_WIDTH * 2 // 关闭按钮使用更宽的位图
+            } else {
+                TITLE_BAR_BUTTON_WIDTH
+            };
+            let button_height = TOPEXTENDWIDTH; // 使用标题栏高度
 
             // 创建DIB段位图以支持Alpha通道
             let bitmap_info = BITMAPINFO {
@@ -670,40 +802,62 @@ impl OcrResultWindow {
                 (button_width * button_height * 4) as usize,
             );
 
-            // 填充悬停背景色（使用传入的颜色）
+            // 填充整个区域为背景色（矩形，撑满标题栏高度）
             for y in 0..button_height {
                 for x in 0..button_width {
                     let dst_idx = (y * button_width + x) as usize * 4;
                     if dst_idx + 3 < bits_slice.len() {
-                        bits_slice[dst_idx] = hover_color.2; // B
-                        bits_slice[dst_idx + 1] = hover_color.1; // G
-                        bits_slice[dst_idx + 2] = hover_color.0; // R
+                        bits_slice[dst_idx] = bg_color.2; // B
+                        bits_slice[dst_idx + 1] = bg_color.1; // G
+                        bits_slice[dst_idx + 2] = bg_color.0; // R
                         bits_slice[dst_idx + 3] = 255; // A
                     }
                 }
             }
 
-            // 在中心绘制图标（保持原始颜色）
-            let icon_x_offset = (button_width - ICON_SIZE) / 2;
-            let icon_y_offset = (button_height - ICON_SIZE) / 2;
+            // 绘制图标：居中显示
+            let icon_x_offset = if is_close_button {
+                // 关闭按钮：在左边部分居中（因为位图比按钮宽）
+                (TITLE_BAR_BUTTON_WIDTH - size) / 2
+            } else {
+                // 其他按钮：正常居中
+                (button_width - size) / 2
+            };
+            let icon_y_offset = (button_height - size) / 2; // 在标题栏高度中垂直居中
 
-            for y in 0..ICON_SIZE {
-                for x in 0..ICON_SIZE {
-                    let src_idx = (y * ICON_SIZE + x) as usize * 4;
+            for y in 0..size {
+                for x in 0..size {
+                    let src_idx = (y * size + x) as usize * 4;
                     let dst_x = x + icon_x_offset;
                     let dst_y = y + icon_y_offset;
                     let dst_idx = (dst_y * button_width + dst_x) as usize * 4;
 
                     if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
+                        let src_r = pixel_data[src_idx + 2];
+                        let src_g = pixel_data[src_idx + 1];
+                        let src_b = pixel_data[src_idx];
                         let alpha = pixel_data[src_idx + 3];
+
                         if alpha > 128 {
-                            // 只处理足够不透明的像素，保持原始颜色（黑色）
-                            bits_slice[dst_idx] = 0; // B - 黑色
-                            bits_slice[dst_idx + 1] = 0; // G - 黑色
-                            bits_slice[dst_idx + 2] = 0; // R - 黑色
-                            bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
+                            if is_close_button {
+                                // 关闭按钮：检查是否为白色或接近白色的像素（描边）
+                                let is_white_ish = src_r > 200 && src_g > 200 && src_b > 200;
+
+                                if !is_white_ish {
+                                    // 非白色像素设置为白色
+                                    bits_slice[dst_idx] = 255; // B - 白色
+                                    bits_slice[dst_idx + 1] = 255; // G - 白色
+                                    bits_slice[dst_idx + 2] = 255; // R - 白色
+                                    bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
+                                }
+                            } else {
+                                // 其他按钮：保持原始颜色
+                                bits_slice[dst_idx] = src_b;
+                                bits_slice[dst_idx + 1] = src_g;
+                                bits_slice[dst_idx + 2] = src_r;
+                                bits_slice[dst_idx + 3] = alpha;
+                            }
                         }
-                        // alpha <= 128 的像素保持背景色，不绘制图标内容
                     }
                 }
             }
@@ -876,11 +1030,16 @@ impl OcrResultWindow {
                             bits_slice[dst_idx + 2] = bg_color.0; // R
                             bits_slice[dst_idx + 3] = 255; // A
                         } else {
-                            // 圆角外的区域保持透明
-                            bits_slice[dst_idx] = 0;
-                            bits_slice[dst_idx + 1] = 0;
-                            bits_slice[dst_idx + 2] = 0;
-                            bits_slice[dst_idx + 3] = 0; // 透明
+                            // 圆角外的区域使用标题栏背景色，避免白色边缘
+                            let title_bg_r = 0xED;
+                            let title_bg_g = 0xED;
+                            let title_bg_b = 0xED;
+                            let title_bg_a = 255;
+                            let alpha_factor = title_bg_a as f32 / 255.0;
+                            bits_slice[dst_idx] = (title_bg_b as f32 * alpha_factor) as u8; // B
+                            bits_slice[dst_idx + 1] = (title_bg_g as f32 * alpha_factor) as u8; // G
+                            bits_slice[dst_idx + 2] = (title_bg_r as f32 * alpha_factor) as u8; // R
+                            bits_slice[dst_idx + 3] = title_bg_a; // A
                         }
                     }
                 }
@@ -911,7 +1070,7 @@ impl OcrResultWindow {
         }
     }
 
-    /// 创建带完全透明背景的图标位图
+    /// 创建带标题栏背景色的图标位图
     fn create_transparent_icon_bitmap(
         screen_dc: &HDC,
         pixmap: &tiny_skia::Pixmap,
@@ -947,10 +1106,16 @@ impl OcrResultWindow {
             )
             .ok()?;
 
-            // 处理像素数据，图标部分为黑色，背景完全透明
+            // 处理像素数据，图标部分为黑色，背景使用标题栏背景色
             let pixel_data = pixmap.data();
             let bits_slice =
                 std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
+
+            // 标题栏背景色 - 与 paint_custom_caption 中的颜色保持一致
+            let bg_r = 0xED;
+            let bg_g = 0xED;
+            let bg_b = 0xED;
+            let bg_a = 255;
 
             for i in 0..(size * size) as usize {
                 let src_idx = i * 4;
@@ -960,11 +1125,12 @@ impl OcrResultWindow {
                     let alpha = pixel_data[src_idx + 3];
 
                     if alpha == 0 {
-                        // 完全透明的像素，保持完全透明（不设置任何背景色）
-                        bits_slice[dst_idx] = 0; // B
-                        bits_slice[dst_idx + 1] = 0; // G  
-                        bits_slice[dst_idx + 2] = 0; // R
-                        bits_slice[dst_idx + 3] = 0; // A - 完全透明
+                        // 透明的像素，使用标题栏背景色
+                        let alpha_factor = bg_a as f32 / 255.0;
+                        bits_slice[dst_idx] = (bg_b as f32 * alpha_factor) as u8; // B
+                        bits_slice[dst_idx + 1] = (bg_g as f32 * alpha_factor) as u8; // G
+                        bits_slice[dst_idx + 2] = (bg_r as f32 * alpha_factor) as u8; // R
+                        bits_slice[dst_idx + 3] = bg_a; // A
                     } else {
                         // 有内容的像素，设置为黑色
                         bits_slice[dst_idx] = 0; // B - 黑色
@@ -1002,9 +1168,9 @@ impl OcrResultWindow {
                 hInstance: instance.into(),
                 lpszClassName: class_name,
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
-                hbrBackground: HBRUSH::default(), // 不使用背景画刷，让我们自己控制绘制
-                style: CS_HREDRAW | CS_VREDRAW,
-                hIcon: HICON::default(), // 不使用图标
+                hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0), // 使用黑色背景以支持DWM扩展
+                style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,          // 添加双缓冲支持
+                hIcon: HICON::default(),                              // 不使用图标
                 ..Default::default()
             };
 
@@ -1070,8 +1236,8 @@ impl OcrResultWindow {
             let hwnd = CreateWindowExW(
                 WS_EX_APPWINDOW, // 显示在任务栏
                 class_name,
-                windows::core::w!("识别结果"),              // 窗口标题
-                WS_OVERLAPPED | WS_THICKFRAME | WS_VISIBLE, // 完全移除 WS_SYSMENU 来禁用所有原生标题栏按钮
+                windows::core::w!("识别结果"), // 窗口标题
+                WS_OVERLAPPED | WS_THICKFRAME | WS_VISIBLE | WS_MAXIMIZEBOX | WS_MINIMIZEBOX, // 允许最大化和最小化
                 window_x,
                 window_y,
                 window_width,
@@ -1082,11 +1248,30 @@ impl OcrResultWindow {
                 None,
             )?;
 
-            // 立即扩展DWM框架到客户端区域
+            // 检查窗口是否最大化
+            let is_maximized = {
+                let placement = {
+                    let mut placement = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    let _ = GetWindowPlacement(hwnd, &mut placement);
+                    placement
+                };
+                placement.showCmd == SW_SHOWMAXIMIZED.0 as u32
+            };
+
+            // 最大化时使用更大的标题栏高度
+            let top_height = if is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
+
             let margins = MARGINS {
                 cxLeftWidth: LEFTEXTENDWIDTH,
                 cxRightWidth: RIGHTEXTENDWIDTH,
-                cyTopHeight: TOPEXTENDWIDTH,
+                cyTopHeight: top_height,
                 cyBottomHeight: BOTTOMEXTENDWIDTH,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
@@ -1131,29 +1316,17 @@ impl OcrResultWindow {
                 bottom: window_height - text_padding_bottom,
             };
 
-            // 创建文本编辑控件（可选择的文本）
-            let text_edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                windows::core::w!("EDIT"),
-                windows::core::w!(""),
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WINDOW_STYLE(0x0004 | 0x0010), // ES_MULTILINE | ES_READONLY
-                text_area_rect.left,
-                text_area_rect.top,
-                text_area_rect.right - text_area_rect.left,
-                text_area_rect.bottom - text_area_rect.top,
-                Some(hwnd),
-                None,
-                Some(instance.into()),
-                None,
-            )?;
-
-            // 设置文本编辑控件的字体
-            SendMessageW(
-                text_edit,
-                WM_SETFONT,
-                Some(WPARAM(font.0 as usize)),
-                Some(LPARAM(1)),
-            );
+            // 计算行高（基于字体）
+            let line_height = unsafe {
+                let hdc = GetDC(Some(hwnd));
+                let old_font = SelectObject(hdc, font.into());
+                let mut tm = TEXTMETRICW::default();
+                let _ = GetTextMetricsW(hdc, &mut tm);
+                let height = tm.tmHeight + tm.tmExternalLeading + 4; // 添加行间距
+                let _ = SelectObject(hdc, old_font);
+                let _ = ReleaseDC(Some(hwnd), hdc);
+                height
+            };
 
             // 合并所有OCR结果为文本
             let mut all_text = String::new();
@@ -1178,19 +1351,17 @@ impl OcrResultWindow {
                 is_no_text_detected = true;
             }
 
-            // 设置文本内容
-            let text_wide: Vec<u16> = all_text.encode_utf16().chain(std::iter::once(0)).collect();
-            SetWindowTextW(text_edit, windows::core::PCWSTR(text_wide.as_ptr()))?;
+            // 分行处理文本
+            let text_lines = Self::wrap_text_lines(&all_text, &text_area_rect, font, hwnd);
 
             // 加载所有SVG图标（普通图标 + 标题栏按钮）
             let mut svg_icons = Self::load_all_svg_icons();
-            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width);
+            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, 0); // 初始化时不是全屏
             svg_icons.append(&mut title_bar_buttons);
 
             // 创建窗口实例
             let window = Self {
                 hwnd,
-                text_edit,
                 ocr_results,
                 image_bitmap: Some(bitmap),
                 image_width: width,
@@ -1211,6 +1382,22 @@ impl OcrResultWindow {
 
                 // 初始化图标缓存
                 left_icons_cache: None,
+
+                // 初始化自绘文本字段
+                text_content: all_text,
+                scroll_offset: 0,
+                line_height,
+                text_lines,
+
+                // 初始化文本选择字段
+                is_selecting: false,
+                selection_start: None,
+                selection_end: None,
+                selection_start_pixel: None,
+                selection_end_pixel: None,
+                last_click_time: std::time::Instant::now(),
+                last_click_pos: None,
+                hovered_icon: None,
             };
 
             // 将窗口实例指针存储到窗口数据中
@@ -1229,8 +1416,6 @@ impl OcrResultWindow {
             window.window_height = actual_height;
             window.recalculate_layout();
             window.update_title_bar_buttons();
-
-       
 
             // 显示窗口
             let _ = ShowWindow(hwnd, SW_SHOW);
@@ -1267,7 +1452,6 @@ impl OcrResultWindow {
 
             // 读取位深度
             let bit_count = u16::from_le_bytes([bmp_data[28], bmp_data[29]]);
-
 
             // 检查数据偏移量是否有效
             if data_offset >= bmp_data.len() {
@@ -1367,7 +1551,6 @@ impl OcrResultWindow {
 
             let _ = ReleaseDC(None, screen_dc);
 
-       
             Ok((bitmap, width, height))
         }
     }
@@ -1378,9 +1561,44 @@ impl OcrResultWindow {
             let mut rect = RECT::default();
             GetClientRect(self.hwnd, &mut rect)?;
 
-            // 计算内容区域尺寸（去除标题栏）
+            // 检查是否全屏，计算实际的内容开始位置
+            let is_fullscreen = {
+                let mut window_rect = RECT::default();
+                let _ = GetWindowRect(self.hwnd, &mut window_rect);
+                let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                window_rect.left <= 0
+                    && window_rect.top <= 0
+                    && window_rect.right >= screen_width
+                    && window_rect.bottom >= screen_height
+            };
+
+            let title_bar_offset = if is_fullscreen { 10 } else { 0 };
+            // 最大化时使用正确的标题栏高度
+            let title_bar_height = if self.is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
+            let actual_content_start = title_bar_height + title_bar_offset;
+
+            // 在全屏模式下，填充标题栏和内容区域之间的间隙
+            if is_fullscreen && title_bar_offset > 0 {
+                let gap_brush = CreateSolidBrush(COLORREF(0x00EDEDED)); // 使用标题栏相同的背景色
+                let gap_rect = RECT {
+                    left: 0,
+                    top: TOPEXTENDWIDTH,
+                    right: rect.right,
+                    bottom: actual_content_start,
+                };
+                let _ = FillRect(hdc, &gap_rect, gap_brush);
+                let _ = DeleteObject(gap_brush.into());
+            }
+
+            // 计算内容区域尺寸（去除标题栏和偏移量）
             let content_width = rect.right - rect.left;
-            let content_height = rect.bottom - TOPEXTENDWIDTH;
+            let content_height = rect.bottom - actual_content_start;
 
             // 检查尺寸是否合理
             if content_width <= 0 || content_height <= 0 {
@@ -1404,11 +1622,11 @@ impl OcrResultWindow {
 
                 let old_bitmap = SelectObject(buffer_dc, buffer_bitmap.into());
 
-                // 只绘制内容区域，避开标题栏
+                // 从实际的内容开始位置绘制
                 let _ = BitBlt(
                     hdc,
                     0,
-                    TOPEXTENDWIDTH, // 从标题栏下方开始
+                    actual_content_start, // 考虑全屏偏移量
                     content_width,
                     content_height,
                     Some(buffer_dc),
@@ -1441,14 +1659,62 @@ impl OcrResultWindow {
         // 如果缓冲区尺寸变化较大，则使其无效
         if buffer_width_diff >= 20 || buffer_height_diff >= 20 {
             self.buffer_valid = false;
-   
         }
     }
-
 
     /// 自定义标题栏处理函数（根据官方文档重构）
     fn custom_caption_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
+            // 记录鼠标事件
+            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE {
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+
+                if msg == WM_LBUTTONDOWN {
+                    // 获取窗口信息
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OcrResultWindow;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+
+                        // 检查点击是否在文本区域内
+                        if x >= window.text_area_rect.left
+                            && x <= window.text_area_rect.right
+                            && y >= window.text_area_rect.top
+                            && y <= window.text_area_rect.bottom
+                        {
+                            // 尝试直接处理文本选择
+                            let window_mut = &mut *(window_ptr as *mut OcrResultWindow);
+                            window_mut.start_text_selection(x, y);
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            return LRESULT(0);
+                        }
+                    }
+                } else if msg == WM_MOUSEMOVE {
+                    // 检查鼠标是否在文本区域内移动
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OcrResultWindow;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+                        if x >= window.text_area_rect.left
+                            && x <= window.text_area_rect.right
+                            && y >= window.text_area_rect.top
+                            && y <= window.text_area_rect.bottom
+                        {
+                            // 设置文本选择鼠标指针
+                            if let Ok(cursor) = LoadCursorW(None, IDC_IBEAM) {
+                                SetCursor(Some(cursor));
+                            }
+                        } else {
+                            // 恢复默认鼠标指针
+                            if let Ok(cursor) = LoadCursorW(None, IDC_ARROW) {
+                                SetCursor(Some(cursor));
+                            }
+                        }
+                    }
+                }
+            }
+
             match msg {
                 WM_CREATE => {
                     let mut rect = RECT::default();
@@ -1480,21 +1746,32 @@ impl OcrResultWindow {
                         DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
                     LRESULT(0)
                 }
+                WM_ERASEBKGND => {
+                    // 阻止默认的背景擦除，减少闪烁
+                    // 我们在 WM_PAINT 中自己处理背景绘制
+                    LRESULT(1) // 返回非零值表示已处理
+                }
                 WM_PAINT => {
-                    let mut ps = PAINTSTRUCT::default();
-                    let hdc = BeginPaint(hwnd, &mut ps);
+                    // 使用 GetDC 替代 BeginPaint 以避免最大化时的绘制限制
+                    let hdc = GetDC(Some(hwnd));
 
-                    // 绘制自定义标题栏
-                    Self::paint_custom_caption(hwnd, hdc);
+                    if !hdc.is_invalid() {
+                        // 绘制自定义标题栏
+                        Self::paint_custom_caption(hwnd, hdc);
 
-                    // 同时绘制窗口内容，避免重复绘制
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let _ = window.paint_content_only(hdc);
+                        // 同时绘制窗口内容，避免重复绘制
+                        let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                        if !window_ptr.is_null() {
+                            let window = &mut *window_ptr;
+                            let _ = window.paint_content_only(hdc);
+                        }
+
+                        let _ = ReleaseDC(Some(hwnd), hdc);
+
+                        // 手动验证更新区域，防止无限重绘
+                        let _ = ValidateRect(Some(hwnd), None);
                     }
 
-                    let _ = EndPaint(hwnd, &ps);
                     LRESULT(0)
                 }
                 WM_NCCALCSIZE => {
@@ -1531,9 +1808,75 @@ impl OcrResultWindow {
             let mut rect = RECT::default();
             let _ = GetClientRect(hwnd, &mut rect);
 
-            // 创建双缓冲：内存DC和兼容位图
+            // 获取窗口实例来检查最大化状态
+            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+            let is_maximized = if !window_ptr.is_null() {
+                let window = &*window_ptr;
+                window.is_maximized
+            } else {
+                false
+            };
+
+            // 计算标题栏的实际绘制位置
+            // 全屏时也从顶部开始绘制，不留空白
+            let _title_bar_top_offset = 0; // 始终从顶部开始
+            // 最大化时使用更大的标题栏高度
+            let actual_title_bar_height = if is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
+
+            // 创建支持Alpha通道的DIB位图，最大化时需要额外的边距
+            let buffer_width = if is_maximized {
+                rect.right + MAXIMIZE_OFFSET * 2
+            } else {
+                rect.right
+            };
+            let buffer_height = if is_maximized {
+                actual_title_bar_height + MAXIMIZE_OFFSET * 2
+            } else {
+                actual_title_bar_height
+            };
+
+            let bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: buffer_width,
+                    biHeight: -buffer_height, // 使用调整后的高度
+                    biPlanes: 1,
+                    biBitCount: 32, // 32位支持Alpha通道
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
+
+            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let buffer_bitmap = CreateDIBSection(
+                Some(hdc),
+                &bitmap_info,
+                DIB_RGB_COLORS,
+                &mut bits_ptr,
+                None,
+                0,
+            );
+
+            let buffer_bitmap = match buffer_bitmap {
+                Ok(bitmap) => {
+                    if bitmap.is_invalid() || bits_ptr.is_null() {
+                        return; // 创建失败，直接返回
+                    }
+                    bitmap
+                }
+                Err(_) => return, // 创建失败，直接返回
+            };
+
             let mem_dc = CreateCompatibleDC(Some(hdc));
-            let buffer_bitmap = CreateCompatibleBitmap(hdc, rect.right, TOPEXTENDWIDTH);
             let old_bitmap = SelectObject(mem_dc, buffer_bitmap.into());
 
             // 获取窗口实例来访问标题栏按钮和图标
@@ -1541,66 +1884,31 @@ impl OcrResultWindow {
             if !window_ptr.is_null() {
                 let window = &*window_ptr;
 
-                // 在内存DC中绘制标题栏内容
-                // 设置背景为浅灰色标题栏 (#EDEDED)
-                let bg_brush = CreateSolidBrush(COLORREF(0x00EDEDED));
-                let title_bar_rect = RECT {
-                    left: 0,
-                    top: 0,
-                    right: rect.right,
-                    bottom: TOPEXTENDWIDTH,
-                };
-                FillRect(mem_dc, &title_bar_rect, bg_brush);
+                // 手动填充像素数据，使用预乘Alpha格式
+                let pixel_count = (buffer_width * buffer_height) as usize;
+                let bits_slice =
+                    std::slice::from_raw_parts_mut(bits_ptr as *mut u8, pixel_count * 4);
 
-                // 绘制标题文字
-                SetTextColor(mem_dc, COLORREF(0x00000000)); // 黑色文字适配浅色背景
-                SetBkMode(mem_dc, TRANSPARENT);
+                // 填充自定义标题栏背景色，使用预乘Alpha格式
+                // 使用浅灰色 (#EDEDED) 作为标题栏背景
+                let bg_r = 0xED;
+                let bg_g = 0xED;
+                let bg_b = 0xED;
+                let bg_a = 255; // 完全不透明
 
-                let title_font = CreateFontW(
-                    16,
-                    0,
-                    0,
-                    0,
-                    FW_NORMAL.0 as i32,
-                    0,
-                    0,
-                    0,
-                    DEFAULT_CHARSET,
-                    OUT_DEFAULT_PRECIS,
-                    CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY,
-                    (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-                    windows::core::PCWSTR(
-                        "微软雅黑\0".encode_utf16().collect::<Vec<u16>>().as_ptr(),
-                    ),
-                );
-                let old_font = SelectObject(mem_dc, title_font.into());
+                for i in 0..pixel_count {
+                    let idx = i * 4;
+                    if idx + 3 < bits_slice.len() {
+                        // 使用预乘Alpha格式：RGB值需要乘以Alpha值
+                        let alpha_factor = bg_a as f32 / 255.0;
+                        bits_slice[idx] = (bg_b as f32 * alpha_factor) as u8; // B
+                        bits_slice[idx + 1] = (bg_g as f32 * alpha_factor) as u8; // G
+                        bits_slice[idx + 2] = (bg_r as f32 * alpha_factor) as u8; // R
+                        bits_slice[idx + 3] = bg_a; // A
+                    }
+                }
 
-                // 计算图标占用的总宽度
-                let icon_count = window.svg_icons.len() as i32;
-                let total_icon_width = icon_count * (ICON_SIZE + ICON_SPACING) - ICON_SPACING;
-                let title_start_x = ICON_START_X + total_icon_width + 20; // 图标后面留20像素间距
-
-                // 为标题栏按钮留出空间
-                let button_area_width = TITLE_BAR_BUTTON_WIDTH * 3; // 三个按钮的宽度，无间距
-
-                let mut title_rect = RECT {
-                    left: title_start_x,
-                    top: 8,
-                    right: rect.right - button_area_width - 10, // 为按钮留出空间
-                    bottom: TOPEXTENDWIDTH - 8,
-                };
-
-                let mut title_text = "OCR识别结果\0".encode_utf16().collect::<Vec<u16>>();
-                DrawTextW(
-                    mem_dc,
-                    &mut title_text,
-                    &mut title_rect,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                );
-
-                SelectObject(mem_dc, old_font);
-                let _ = DeleteObject(title_font.into());
+                // 标题文字已移除，保持简洁的标题栏
 
                 // 绘制所有SVG图标到内存DC（包括标题栏按钮）
                 for icon in &window.svg_icons {
@@ -1618,28 +1926,53 @@ impl OcrResultWindow {
                     let old_icon_bitmap = SelectObject(icon_mem_dc, bitmap_to_use.into());
 
                     if icon.hovered && icon.is_title_bar_button {
-                        // 标题栏按钮悬停状态：绘制满高背景
+                        // 标题栏按钮hover状态：直接绘制hover位图（包含背景和图标）
                         let button_width = TITLE_BAR_BUTTON_WIDTH;
-                        let button_x = icon.rect.left - (button_width - icon_size) / 2;
+                        let button_height = if is_maximized {
+                            TOPEXTENDWIDTHMAX
+                        } else {
+                            TOPEXTENDWIDTH
+                        };
+
+                        // 计算按钮区域的左边界
+                        let button_left = icon.rect.left - (button_width - icon_size) / 2;
+
+                        // 关闭按钮延伸到窗口右边缘，去掉右边间隙
+                        let (draw_x, draw_width) = if icon.name == "x" {
+                            // 关闭按钮：从按钮左边界延伸到窗口右边缘
+                            let window_right = window.window_width;
+                            (button_left, window_right - button_left)
+                        } else {
+                            // 其他按钮：正常的按钮宽度
+                            (button_left, button_width)
+                        };
+
+                        // 应用最大化时的偏移（与普通状态保持一致）
+                        let offset_x = if is_maximized { -MAXIMIZE_OFFSET } else { 0 }; // 标题栏按钮往左偏移
+                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
+
+                        // 绘制hover位图（已包含背景和图标）
                         let _ = BitBlt(
                             mem_dc,
-                            button_x,
-                            0, // 从顶部开始
-                            button_width,
-                            TOPEXTENDWIDTH, // 满高
+                            draw_x + offset_x,
+                            offset_y, // 从偏移位置开始绘制
+                            draw_width,
+                            button_height - offset_y, // 高度需要减去偏移
                             Some(icon_mem_dc),
                             0,
                             0,
                             SRCCOPY,
                         );
                     } else if icon.hovered && !icon.is_title_bar_button {
-                        // 普通图标悬停状态：绘制圆角背景
+                        // 普通图标悬停状态：绘制圆角背景，最大化时保留偏移
                         let padding = ICON_HOVER_PADDING;
                         let total_size = icon_size + padding * 2;
+                        let offset_x = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 左边图标往右偏移
+                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
                         let _ = BitBlt(
                             mem_dc,
-                            icon.rect.left - padding,
-                            icon.rect.top - padding,
+                            icon.rect.left - padding + offset_x,
+                            icon.rect.top - padding + offset_y,
                             total_size,
                             total_size,
                             Some(icon_mem_dc),
@@ -1648,11 +1981,21 @@ impl OcrResultWindow {
                             SRCCOPY,
                         );
                     } else {
-                        // 普通状态：使用 BitBlt 绘制以保持清晰度
+                        // 普通状态：最大化时保留必要的偏移（往下和往中间）
+                        let offset_x = if is_maximized {
+                            if icon.is_title_bar_button {
+                                -MAXIMIZE_OFFSET // 右边标题栏按钮往左偏移
+                            } else {
+                                MAXIMIZE_OFFSET // 左边图标往右偏移
+                            }
+                        } else {
+                            0
+                        };
+                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
                         let _ = BitBlt(
                             mem_dc,
-                            icon.rect.left,
-                            icon.rect.top,
+                            icon.rect.left + offset_x,
+                            icon.rect.top + offset_y,
                             icon_size,
                             icon_size,
                             Some(icon_mem_dc),
@@ -1665,19 +2008,31 @@ impl OcrResultWindow {
                     SelectObject(icon_mem_dc, old_icon_bitmap);
                     let _ = DeleteDC(icon_mem_dc);
                 }
-
-                let _ = DeleteObject(bg_brush.into());
             }
+
+            // 最大化时使用更大的绘制高度，但不能超过客户端区域
+            let max_draw_height = if is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
+            // 确保绘制高度不超过客户端区域高度
+            let draw_height = std::cmp::min(max_draw_height, rect.bottom);
+
+            // 标题栏整个不偏移，始终填满整个宽度
+            let draw_x = 0;
+            let draw_y = 0;
+            let draw_width = rect.right;
 
             // 一次性将整个缓冲区复制到屏幕DC，减少闪烁
             let _ = BitBlt(
                 hdc,
-                0,
-                0,
-                rect.right,
-                TOPEXTENDWIDTH,
+                draw_x,
+                draw_y,
+                draw_width,
+                draw_height,
                 Some(mem_dc),
-                0,
+                0, // 源位图从顶部开始
                 0,
                 SRCCOPY,
             );
@@ -1686,6 +2041,476 @@ impl OcrResultWindow {
             SelectObject(mem_dc, old_bitmap);
             let _ = DeleteObject(buffer_bitmap.into());
             let _ = DeleteDC(mem_dc);
+
+            // 文本绘制已移到 paint_content_to_dc 中
+        }
+    }
+
+    /// 检查点是否在文本区域内
+    fn is_point_in_text_area(&self, x: i32, y: i32) -> bool {
+        x >= self.text_area_rect.left
+            && x <= self.text_area_rect.right
+            && y >= self.text_area_rect.top
+            && y <= self.text_area_rect.bottom
+    }
+
+    /// 获取调整后的文本区域重绘矩形，避免全屏时的闪烁
+    fn get_adjusted_text_rect_for_redraw(&self) -> RECT {
+        unsafe {
+            // 检查是否全屏
+            let is_fullscreen = {
+                let mut window_rect = RECT::default();
+                let _ = GetWindowRect(self.hwnd, &mut window_rect);
+                let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                window_rect.left <= 0
+                    && window_rect.top <= 0
+                    && window_rect.right >= screen_width
+                    && window_rect.bottom >= screen_height
+            };
+
+            let title_bar_offset = if is_fullscreen { 10 } else { 0 };
+            let actual_content_start = TOPEXTENDWIDTH + title_bar_offset;
+
+            // 调整重绘区域，确保从实际内容开始位置开始，避免包含标题栏和间隙区域
+            RECT {
+                left: self.text_area_rect.left,
+                top: self.text_area_rect.top.max(actual_content_start),
+                right: self.text_area_rect.right,
+                bottom: self.text_area_rect.bottom,
+            }
+        }
+    }
+
+    /// 检测是否为双击
+    fn is_double_click(&mut self, x: i32, y: i32) -> bool {
+        let now = std::time::Instant::now();
+        let double_click_time = std::time::Duration::from_millis(500); // 500ms内算双击
+        let double_click_distance = 5; // 5像素内算同一位置
+
+        if let Some((last_x, last_y)) = self.last_click_pos {
+            let time_diff = now.duration_since(self.last_click_time);
+            let distance = ((x - last_x).pow(2) + (y - last_y).pow(2)) as f32;
+            let distance = distance.sqrt() as i32;
+
+            if time_diff <= double_click_time && distance <= double_click_distance {
+                return true;
+            }
+        }
+
+        self.last_click_time = now;
+        self.last_click_pos = Some((x, y));
+        false
+    }
+
+    /// 全选所有文本
+    fn select_all_text(&mut self) {
+        if self.text_lines.is_empty() {
+            return;
+        }
+
+        // 选择从第一行第一个字符到最后一行最后一个字符
+        self.selection_start = Some((0, 0));
+        let last_line_idx = self.text_lines.len() - 1;
+        let last_char_idx = self.text_lines[last_line_idx].chars().count();
+        self.selection_end = Some((last_line_idx, last_char_idx));
+
+        // 设置像素坐标（可选，主要用于显示）
+        self.selection_start_pixel = Some((self.text_area_rect.left, self.text_area_rect.top));
+        self.selection_end_pixel = Some((self.text_area_rect.right, self.text_area_rect.bottom));
+
+        // 使缓冲区失效并重绘
+        self.buffer_valid = false;
+        unsafe {
+            let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
+            let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
+            let _ = UpdateWindow(self.hwnd);
+        }
+    }
+
+    /// 开始文本选择
+    fn start_text_selection(&mut self, x: i32, y: i32) {
+        // 检测双击
+        if self.is_double_click(x, y) {
+            self.select_all_text();
+            return;
+        }
+
+        // 清除之前的选择
+        self.selection_start = None;
+        self.selection_end = None;
+        self.selection_start_pixel = Some((x, y));
+        self.selection_end_pixel = Some((x, y));
+        self.is_selecting = true;
+
+        // 将像素坐标转换为文本位置
+        if let Some(text_pos) = self.pixel_to_text_position(x, y) {
+            self.selection_start = Some(text_pos);
+            self.selection_end = Some(text_pos);
+
+            // 使缓冲区失效并立即触发重绘以显示选择高亮
+            self.buffer_valid = false; // 强制重新渲染缓冲区
+            unsafe {
+                let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
+                let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
+                let _ = UpdateWindow(self.hwnd); // 强制立即重绘
+            }
+        }
+    }
+
+    /// 更新文本选择
+    fn update_text_selection(&mut self, x: i32, y: i32) {
+        if !self.is_selecting {
+            return;
+        }
+
+        self.selection_end_pixel = Some((x, y));
+
+        // 将像素坐标转换为文本位置
+        if let Some(text_pos) = self.pixel_to_text_position(x, y) {
+            // 只有当选择位置真正改变时才更新和重绘
+            if self.selection_end != Some(text_pos) {
+                self.selection_end = Some(text_pos);
+
+                // 使缓冲区失效并立即重绘文本区域以显示选择更新
+                self.buffer_valid = false; // 强制重新渲染缓冲区
+                unsafe {
+                    let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
+                    let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
+                    let _ = UpdateWindow(self.hwnd); // 强制立即重绘
+                }
+            }
+        }
+    }
+
+    /// 复制选中的文本到剪贴板
+    fn copy_selected_text_to_clipboard(&self) {
+        let selected_text = match self.get_selected_text() {
+            Some(text) if !text.is_empty() => text,
+            _ => return,
+        };
+
+        unsafe {
+            // 打开剪贴板
+            if OpenClipboard(Some(self.hwnd)).is_ok() {
+                // 清空剪贴板
+                let _ = EmptyClipboard();
+
+                // 将文本转换为UTF-16
+                let wide_text: Vec<u16> = selected_text
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+
+                // 分配全局内存
+                if let Ok(h_mem) = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), wide_text.len() * 2) {
+                    let p_mem = GlobalLock(h_mem);
+                    if !p_mem.is_null() {
+                        // 复制文本到全局内存
+                        std::ptr::copy_nonoverlapping(
+                            wide_text.as_ptr(),
+                            p_mem as *mut u16,
+                            wide_text.len(),
+                        );
+                        let _ = GlobalUnlock(h_mem);
+
+                        // 设置剪贴板数据
+                        let _ = SetClipboardData(13u32, Some(HANDLE(h_mem.0))); // CF_UNICODETEXT = 13
+                    }
+                }
+
+                // 关闭剪贴板
+                let _ = CloseClipboard();
+            }
+        }
+    }
+
+    /// 结束文本选择
+    fn end_text_selection(&mut self) {
+        self.is_selecting = false;
+
+        // 自动复制选中的文本到剪贴板
+        self.copy_selected_text_to_clipboard();
+
+        // 使缓冲区失效并重绘以清除选择高亮
+        self.buffer_valid = false;
+        unsafe {
+            let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
+            let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
+            let _ = UpdateWindow(self.hwnd);
+        }
+    }
+
+    /// 将像素坐标转换为文本位置 (行号, 字符位置)
+    fn pixel_to_text_position(&self, x: i32, y: i32) -> Option<(usize, usize)> {
+        unsafe {
+            // 计算相对于文本区域的坐标，使用与绘制时相同的坐标系
+            let relative_x = x - self.text_area_rect.left - 10; // 减去左边距
+            let relative_y = y - self.text_area_rect.top + self.scroll_offset - 10; // 减去上边距，加上滚动偏移
+
+            // 计算行号
+            let line_index = (relative_y / self.line_height).max(0) as usize;
+
+            if line_index >= self.text_lines.len() {
+                // 超出文本范围，返回最后一行的末尾
+                if let Some(last_line) = self.text_lines.last() {
+                    return Some((self.text_lines.len() - 1, last_line.chars().count()));
+                }
+                return None;
+            }
+
+            // 获取当前行的文本
+            let line = &self.text_lines[line_index];
+            if line.is_empty() {
+                return Some((line_index, 0));
+            }
+
+            // 使用实际的字体度量来计算字符位置
+            let hdc = GetDC(Some(self.hwnd));
+            let old_font = SelectObject(hdc, self.font.into());
+
+            let chars: Vec<char> = line.chars().collect();
+            let mut best_char_index = 0;
+            let mut min_distance = i32::MAX;
+
+            // 逐个字符测量，找到最接近点击位置的字符
+            for i in 0..=chars.len() {
+                let text_to_measure: String = chars.iter().take(i).collect();
+                let text_wide: Vec<u16> = text_to_measure.encode_utf16().collect();
+
+                let mut size = SIZE::default();
+                let _ = GetTextExtentPoint32W(hdc, &text_wide, &mut size);
+
+                let char_x = size.cx;
+                let distance = (char_x - relative_x).abs();
+
+                if distance < min_distance {
+                    min_distance = distance;
+                    best_char_index = i;
+                }
+
+                // 如果已经超过了点击位置，可以提前退出
+                if char_x > relative_x {
+                    break;
+                }
+            }
+
+            let _ = SelectObject(hdc, old_font);
+            let _ = ReleaseDC(Some(self.hwnd), hdc);
+
+            Some((line_index, best_char_index))
+        }
+    }
+
+    /// 获取选中的文本
+    fn get_selected_text(&self) -> Option<String> {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            let (start_line, start_char) = start;
+            let (end_line, end_char) = end;
+
+            // 确保开始位置在结束位置之前
+            let (start_line, start_char, end_line, end_char) =
+                if start_line > end_line || (start_line == end_line && start_char > end_char) {
+                    (end_line, end_char, start_line, start_char)
+                } else {
+                    (start_line, start_char, end_line, end_char)
+                };
+
+            let mut selected_text = String::new();
+
+            if start_line == end_line {
+                // 同一行内的选择
+                if let Some(line) = self.text_lines.get(start_line) {
+                    let chars: Vec<char> = line.chars().collect();
+                    let start_idx = start_char.min(chars.len());
+                    let end_idx = end_char.min(chars.len());
+                    selected_text = chars[start_idx..end_idx].iter().collect();
+                }
+            } else {
+                // 跨行选择
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = self.text_lines.get(line_idx) {
+                        let chars: Vec<char> = line.chars().collect();
+
+                        if line_idx == start_line {
+                            // 第一行：从开始字符到行尾
+                            let start_idx = start_char.min(chars.len());
+                            let line_part: String = chars[start_idx..].iter().collect();
+                            selected_text.push_str(&line_part);
+                        } else if line_idx == end_line {
+                            // 最后一行：从行首到结束字符
+                            let end_idx = end_char.min(chars.len());
+                            let line_part: String = chars[..end_idx].iter().collect();
+                            selected_text.push_str(&line_part);
+                        } else {
+                            // 中间行：整行
+                            selected_text.push_str(line);
+                        }
+
+                        // 除了最后一行，都添加换行符
+                        if line_idx < end_line {
+                            selected_text.push('\n');
+                        }
+                    }
+                }
+            }
+
+            if !selected_text.is_empty() {
+                Some(selected_text)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 绘制选择高亮背景
+    fn draw_selection_highlight(
+        &self,
+        hdc: HDC,
+        line_index: usize,
+        text_rect: &RECT,
+        y: i32,
+        line_height: i32,
+    ) {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            let (start_line, start_char) = start;
+            let (end_line, end_char) = end;
+
+            // 确保开始位置在结束位置之前
+            let (start_line, start_char, end_line, end_char) =
+                if start_line > end_line || (start_line == end_line && start_char > end_char) {
+                    (end_line, end_char, start_line, start_char)
+                } else {
+                    (start_line, start_char, end_line, end_char)
+                };
+
+            // 检查当前行是否在选择范围内
+            if line_index >= start_line && line_index <= end_line {
+                unsafe {
+                    let selection_brush = CreateSolidBrush(COLORREF(0x00C8F7C5)); // 淡绿色高亮
+
+                    let line_text = &self.text_lines[line_index];
+
+                    let (highlight_start_char, highlight_end_char) =
+                        if line_index == start_line && line_index == end_line {
+                            // 同一行内的选择
+                            (start_char, end_char)
+                        } else if line_index == start_line {
+                            // 选择的第一行
+                            (start_char, line_text.chars().count())
+                        } else if line_index == end_line {
+                            // 选择的最后一行
+                            (0, end_char)
+                        } else {
+                            // 中间行，全选
+                            (0, line_text.chars().count())
+                        };
+
+                    // 计算实际的字符位置
+                    let chars: Vec<char> = line_text.chars().collect();
+
+                    // 测量到开始字符的宽度
+                    let start_text: String = chars.iter().take(highlight_start_char).collect();
+                    let start_text_wide: Vec<u16> = start_text.encode_utf16().collect();
+                    let mut start_size = SIZE { cx: 0, cy: 0 };
+                    let _ = GetTextExtentPoint32W(hdc, &start_text_wide, &mut start_size);
+
+                    // 测量到结束字符的宽度
+                    let end_text: String = chars.iter().take(highlight_end_char).collect();
+                    let end_text_wide: Vec<u16> = end_text.encode_utf16().collect();
+                    let mut end_size = SIZE { cx: 0, cy: 0 };
+                    let _ = GetTextExtentPoint32W(hdc, &end_text_wide, &mut end_size);
+
+                    let highlight_start_x = text_rect.left + 10 + start_size.cx;
+                    let highlight_end_x = text_rect.left + 10 + end_size.cx;
+
+                    let highlight_rect = RECT {
+                        left: highlight_start_x,
+                        top: y,
+                        right: highlight_end_x,
+                        bottom: y + line_height,
+                    };
+
+                    let _ = FillRect(hdc, &highlight_rect, selection_brush);
+                    let _ = DeleteObject(selection_brush.into());
+                }
+            }
+        }
+    }
+
+    /// 绘制文本区域到指定的DC（用于缓冲区绘制）
+    fn draw_text_area_to_dc(&self, hdc: HDC) {
+        unsafe {
+            // 计算文本区域在缓冲区中的位置，最大化时使用正确的标题栏高度
+            let title_bar_height = if self.is_maximized {
+                TOPEXTENDWIDTHMAX
+            } else {
+                TOPEXTENDWIDTH
+            };
+            let text_rect = RECT {
+                left: self.text_area_rect.left,
+                top: self.text_area_rect.top - title_bar_height, // 减去实际的标题栏高度
+                right: self.text_area_rect.right,
+                bottom: self.text_area_rect.bottom - title_bar_height,
+            };
+
+            // 绘制文本区域背景（白色）
+            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
+            let _ = FillRect(hdc, &text_rect, white_brush);
+            let _ = DeleteObject(white_brush.into());
+            // 设置文本绘制属性
+            let old_font = SelectObject(hdc, self.font.into());
+            let _text_color_result = SetTextColor(hdc, COLORREF(0x00000000)); // 黑色文字
+            let _bk_mode_result = SetBkMode(hdc, TRANSPARENT);
+
+            let line_height = self.line_height;
+            let scroll_offset = self.scroll_offset;
+
+            // 如果没有文本内容，显示提示信息
+            if self.text_lines.is_empty() || self.text_content.is_empty() {
+                let hint_text = if self.is_no_text_detected {
+                    "未识别到文字"
+                } else {
+                    "正在加载文本..."
+                };
+                let hint_wide: Vec<u16> = hint_text.encode_utf16().collect();
+                let _ = TextOutW(hdc, text_rect.left + 10, text_rect.top + 10, &hint_wide);
+            } else {
+                // 计算可见区域
+                let visible_height = text_rect.bottom - text_rect.top;
+                let start_line = (scroll_offset / line_height).max(0) as usize;
+                let end_line = ((scroll_offset + visible_height) / line_height + 1)
+                    .min(self.text_lines.len() as i32) as usize;
+
+                // 绘制可见的文本行
+                for (i, line) in self
+                    .text_lines
+                    .iter()
+                    .enumerate()
+                    .skip(start_line)
+                    .take(end_line - start_line)
+                {
+                    let y = text_rect.top + (i as i32 * line_height) - scroll_offset + 10; // 添加上边距
+
+                    if y + line_height > text_rect.top && y < text_rect.bottom {
+                        // 绘制选择高亮背景
+                        self.draw_selection_highlight(hdc, i, &text_rect, y, line_height);
+
+                        let line_wide: Vec<u16> = line.encode_utf16().collect();
+                        let _ = TextOutW(
+                            hdc,
+                            text_rect.left + 10, // 添加左边距
+                            y,
+                            &line_wide,
+                        );
+                    }
+                }
+            }
+
+            let _ = SelectObject(hdc, old_font);
         }
     }
 
@@ -1700,6 +2525,20 @@ impl OcrResultWindow {
             let mut rc_window = RECT::default();
             let _ = GetWindowRect(hwnd, &mut rc_window);
 
+            // 检查窗口是否真正全屏
+            let is_fullscreen = {
+                let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                rc_window.left <= 0
+                    && rc_window.top <= 0
+                    && rc_window.right >= screen_width
+                    && rc_window.bottom >= screen_height
+            };
+
+            // 计算全屏时的偏移量
+            let title_bar_top_offset = if is_fullscreen { 10 } else { 0 };
+
             // 转换为客户端坐标
             let client_x = pt_mouse_x - rc_window.left;
             let client_y = pt_mouse_y - rc_window.top;
@@ -1709,8 +2548,10 @@ impl OcrResultWindow {
             if !window_ptr.is_null() {
                 let window = &*window_ptr;
 
-                // 检查是否在标题栏区域
-                if client_y >= 0 && client_y <= TOPEXTENDWIDTH {
+                // 检查是否在标题栏区域（考虑全屏偏移）
+                if client_y >= title_bar_top_offset
+                    && client_y <= (TOPEXTENDWIDTH + title_bar_top_offset)
+                {
                     for icon in &window.svg_icons {
                         let in_click_area = if icon.is_title_bar_button {
                             // 标题栏按钮：使用按钮的完整宽度区域进行点击检测
@@ -1731,7 +2572,6 @@ impl OcrResultWindow {
                         };
 
                         if in_click_area {
-                            // println!("点击测试: 鼠标在SVG图标 {} 区域", icon.name);
                             return LRESULT(HTCLIENT as isize); // 让图标可以响应点击和悬停
                         }
                     }
@@ -1780,7 +2620,7 @@ impl OcrResultWindow {
                     },
                     HTTOPRIGHT as isize,
                 ],
-                [HTLEFT as isize, HTNOWHERE as isize, HTRIGHT as isize],
+                [HTLEFT as isize, HTCLIENT as isize, HTRIGHT as isize],
                 [
                     HTBOTTOMLEFT as isize,
                     HTBOTTOM as isize,
@@ -1802,6 +2642,39 @@ impl OcrResultWindow {
         lparam: LPARAM,
     ) -> LRESULT {
         unsafe {
+            // 先处理鼠标消息，不让DWM拦截
+            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE {
+                let x = (lparam.0 as i16) as i32;
+                let y = ((lparam.0 >> 16) as i16) as i32;
+
+                // 处理点击事件
+                if msg == WM_LBUTTONDOWN {
+                    // 获取窗口信息
+                    let window_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OcrResultWindow;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+
+                        // 检查点击是否在文本区域内
+                        if x >= window.text_area_rect.left
+                            && x <= window.text_area_rect.right
+                            && y >= window.text_area_rect.top
+                            && y <= window.text_area_rect.bottom
+                        {
+                            // 在文本区域内点击，处理文本选择
+                        }
+                    }
+                }
+
+                // 直接处理鼠标消息，不经过DWM
+                let result = Self::custom_caption_proc(hwnd, msg, wparam, lparam);
+
+                // 如果我们处理了消息，直接返回
+                if result.0 == 0 && msg == WM_LBUTTONDOWN {
+                    return result;
+                }
+            }
+
             // 检查DWM是否启用
             let dwm_enabled = DwmIsCompositionEnabled().unwrap_or(FALSE);
 
@@ -1844,7 +2717,21 @@ impl OcrResultWindow {
                         let x = (lparam.0 as i16) as i32;
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
-                        println!("WM_LBUTTONDOWN: 坐标 ({}, {})", x, y);
+                        // 检查窗口是否真正全屏
+                        let is_fullscreen = {
+                            let mut window_rect = RECT::default();
+                            let _ = GetWindowRect(hwnd, &mut window_rect);
+                            let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                            window_rect.left <= 0
+                                && window_rect.top <= 0
+                                && window_rect.right >= screen_width
+                                && window_rect.bottom >= screen_height
+                        };
+
+                        // 计算全屏时的偏移量
+                        let title_bar_top_offset = if is_fullscreen { 10 } else { 0 };
 
                         // 处理SVG图标点击（包括标题栏按钮）
                         for icon in &mut window.svg_icons {
@@ -1855,50 +2742,50 @@ impl OcrResultWindow {
                                 let button_right = button_left + button_width;
                                 x >= button_left
                                     && x <= button_right
-                                    && y >= 0
-                                    && y <= TOPEXTENDWIDTH
+                                    && y >= title_bar_top_offset
+                                    && y <= (TOPEXTENDWIDTH + title_bar_top_offset)
                             } else {
                                 // 普通图标：使用图标矩形区域加padding
                                 let click_padding = ICON_CLICK_PADDING;
                                 x >= (icon.rect.left - click_padding)
                                     && x <= (icon.rect.right + click_padding)
-                                    && y >= (icon.rect.top - click_padding)
-                                    && y <= (icon.rect.bottom + click_padding)
+                                    && y >= (icon.rect.top - click_padding + title_bar_top_offset)
+                                    && y <= (icon.rect.bottom
+                                        + click_padding
+                                        + title_bar_top_offset)
                             };
 
                             if in_click_area {
-                                println!("图标 {} 被点击", icon.name);
-
                                 // 处理标题栏按钮点击
                                 match icon.name.as_str() {
                                     "minus" => {
-                                        println!("最小化按钮被点击");
                                         // 执行最小化
                                         let _ = ShowWindow(hwnd, SW_MINIMIZE);
                                         return LRESULT(0);
                                     }
                                     "square" => {
-                                        println!("最大化按钮被点击");
                                         // 执行最大化
                                         let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                                         // 立即更新状态
                                         window.is_maximized = true;
                                         window.update_title_bar_buttons();
+                                        // 最大化完成后调用图标居中函数
+                                        window.center_icons();
                                         let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
                                     "reduction" => {
-                                        println!("还原按钮被点击");
                                         // 执行还原
                                         let _ = ShowWindow(hwnd, SW_RESTORE);
                                         // 立即更新状态
                                         window.is_maximized = false;
                                         window.update_title_bar_buttons();
+                                        // 还原完成后也调用图标居中函数
+                                        window.center_icons();
                                         let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
                                     "x" => {
-                                        println!("关闭按钮被点击");
                                         // 执行关闭
                                         let _ = PostMessageW(
                                             Some(hwnd),
@@ -1910,10 +2797,21 @@ impl OcrResultWindow {
                                     }
                                     _ => {
                                         // 处理其他SVG图标点击
-                                        println!("SVG图标 {} 被点击", icon.name);
                                         return LRESULT(0);
                                     }
                                 }
+                            }
+                        }
+
+                        // 如果没有点击图标，检查是否点击了文本区域
+                        if window.is_point_in_text_area(x, y) {
+                            // 需要获取可变引用来修改窗口状态
+                            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                            if !window_ptr.is_null() {
+                                let window_mut = &mut *window_ptr;
+                                window_mut.start_text_selection(x, y);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                                return LRESULT(0);
                             }
                         }
                     }
@@ -1937,9 +2835,26 @@ impl OcrResultWindow {
                                 match icon.name.as_str() {
                                     _ => {
                                         // 处理其他图标点击
-                                        println!("图标 {} 被释放", icon.name);
                                     }
                                 }
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                                return LRESULT(0);
+                            }
+                        }
+
+                        // 处理文本选择结束
+                        if window.is_selecting {
+                            // 需要获取可变引用来修改窗口状态
+                            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                            if !window_ptr.is_null() {
+                                let window_mut = &mut *window_ptr;
+                                window_mut.end_text_selection();
+
+                                // 如果有选中的文本，复制到剪贴板
+                                if let Some(_selected_text) = window_mut.get_selected_text() {
+                                    // 文本已选中，可以进行复制操作
+                                }
+
                                 let _ = InvalidateRect(Some(hwnd), None, false);
                                 return LRESULT(0);
                             }
@@ -1955,6 +2870,22 @@ impl OcrResultWindow {
                         let x = (lparam.0 as i16) as i32;
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
+                        // 检查窗口是否真正全屏
+                        let is_fullscreen = {
+                            let mut window_rect = RECT::default();
+                            let _ = GetWindowRect(hwnd, &mut window_rect);
+                            let screen_width = GetSystemMetrics(SM_CXSCREEN);
+                            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+
+                            window_rect.left <= 0
+                                && window_rect.top <= 0
+                                && window_rect.right >= screen_width
+                                && window_rect.bottom >= screen_height
+                        };
+
+                        // 不再使用偏移量，标题栏始终从顶部开始
+                        let title_bar_top_offset = 0;
+
                         // 启用鼠标跟踪以确保接收到 WM_MOUSELEAVE 消息
                         let mut tme = TRACKMOUSEEVENT {
                             cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1966,35 +2897,67 @@ impl OcrResultWindow {
 
                         let mut needs_repaint = false;
 
-                        // 处理SVG图标悬停 - 只在标题栏区域内检测
-                        if y >= 0 && y <= TOPEXTENDWIDTH {
+                        // 处理SVG图标悬停 - 考虑全屏时的偏移量和正确的标题栏高度
+                        let title_bar_height = if window.is_maximized {
+                            TOPEXTENDWIDTHMAX
+                        } else {
+                            TOPEXTENDWIDTH
+                        };
+                        let adjusted_title_bar_bottom = title_bar_height + title_bar_top_offset;
+
+                        if y >= title_bar_top_offset && y <= adjusted_title_bar_bottom {
                             for icon in &mut window.svg_icons {
                                 let hovered = if icon.is_title_bar_button {
-                                    // 标题栏按钮：使用按钮的完整宽度区域进行悬停检测
-                                    let button_width = TITLE_BAR_BUTTON_WIDTH;
-                                    let button_left =
-                                        icon.rect.left - (button_width - ICON_SIZE) / 2;
-                                    let button_right = button_left + button_width;
-                                    x >= button_left
-                                        && x <= button_right
-                                        && y >= 0
-                                        && y <= TOPEXTENDWIDTH
+                                    // 标题栏按钮：右边图标往左偏移（往中间偏移），使用专用的padding
+                                    let hover_padding = TITLE_BAR_BUTTON_HOVER_PADDING;
+                                    let offset_x = if window.is_maximized {
+                                        -MAXIMIZE_OFFSET // 右边图标往左偏移
+                                    } else {
+                                        0
+                                    };
+                                    let offset_y = if window.is_maximized {
+                                        MAXIMIZE_OFFSET
+                                    } else {
+                                        0
+                                    };
+
+                                    x >= (icon.rect.left - hover_padding + offset_x)
+                                        && x <= (icon.rect.right + hover_padding + offset_x)
+                                        && y >= (icon.rect.top - hover_padding
+                                            + title_bar_top_offset
+                                            + offset_y)
+                                        && y <= (icon.rect.bottom
+                                            + hover_padding
+                                            + title_bar_top_offset
+                                            + offset_y)
                                 } else {
-                                    // 普通图标：使用padding进行悬停检测
+                                    // 普通图标：使用padding进行悬停检测，考虑偏移
                                     let hover_padding = ICON_HOVER_PADDING;
-                                    x >= (icon.rect.left - hover_padding)
-                                        && x <= (icon.rect.right + hover_padding)
-                                        && y >= (icon.rect.top - hover_padding)
-                                        && y <= (icon.rect.bottom + hover_padding)
+                                    let offset_x = if window.is_maximized {
+                                        MAXIMIZE_OFFSET
+                                    } else {
+                                        0
+                                    };
+                                    let offset_y = if window.is_maximized {
+                                        MAXIMIZE_OFFSET
+                                    } else {
+                                        0
+                                    };
+
+                                    x >= (icon.rect.left - hover_padding + offset_x)
+                                        && x <= (icon.rect.right + hover_padding + offset_x)
+                                        && y >= (icon.rect.top - hover_padding
+                                            + title_bar_top_offset
+                                            + offset_y)
+                                        && y <= (icon.rect.bottom
+                                            + hover_padding
+                                            + title_bar_top_offset
+                                            + offset_y)
                                 };
 
                                 if icon.hovered != hovered {
                                     icon.hovered = hovered;
                                     needs_repaint = true;
-                                    // 减少调试输出以避免性能影响
-                                    if hovered {
-                                        println!("图标 {} 悬停", icon.name);
-                                    }
                                 }
                             }
                         } else {
@@ -2003,8 +2966,35 @@ impl OcrResultWindow {
                                 if icon.hovered {
                                     icon.hovered = false;
                                     needs_repaint = true;
-                                    println!("清除图标 {} 的悬停状态", icon.name);
                                 }
+                            }
+                        }
+
+                        // 检查是否在文本区域内，设置相应的鼠标指针
+                        if x >= window.text_area_rect.left
+                            && x <= window.text_area_rect.right
+                            && y >= window.text_area_rect.top
+                            && y <= window.text_area_rect.bottom
+                        {
+                            // 设置文本选择鼠标指针
+                            if let Ok(cursor) = LoadCursorW(None, IDC_IBEAM) {
+                                SetCursor(Some(cursor));
+                            }
+                        } else {
+                            // 恢复默认鼠标指针
+                            if let Ok(cursor) = LoadCursorW(None, IDC_ARROW) {
+                                SetCursor(Some(cursor));
+                            }
+                        }
+
+                        // 处理文本选择拖拽
+                        if window.is_selecting {
+                            // 需要获取可变引用来修改窗口状态
+                            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                            if !window_ptr.is_null() {
+                                let window_mut = &mut *window_ptr;
+                                window_mut.update_text_selection(x, y);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
                             }
                         }
 
@@ -2035,7 +3025,6 @@ impl OcrResultWindow {
                             if icon.hovered {
                                 icon.hovered = false;
                                 needs_repaint = true;
-                                println!("鼠标离开 - 清除图标 {} 的悬停状态", icon.name);
                             }
                         }
 
@@ -2062,44 +3051,48 @@ impl OcrResultWindow {
                     if wparam.0 == VK_ESCAPE.0 as usize {
                         // ESC 键关闭窗口
                         let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    } else if wparam.0 == 0x41
+                        && (GetKeyState(VK_CONTROL.0 as i32) & 0x8000u16 as i16) != 0
+                    {
+                        // Ctrl+A 全选文本
+                        let window_ptr =
+                            GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut OcrResultWindow;
+                        if !window_ptr.is_null() {
+                            let window = &mut *window_ptr;
+                            window.select_all_text();
+                        }
                     }
                     LRESULT(0)
                 }
-                WM_CTLCOLOREDIT => {
-                    // 处理Edit控件的颜色
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &*window_ptr;
-                        let hdc = HDC(wparam.0 as *mut _);
-                        let edit_hwnd = HWND(lparam.0 as *mut _);
-
-                        // 检查是否是我们的文本编辑控件
-                        if edit_hwnd == window.text_edit {
-                            if window.is_no_text_detected {
-                                // 设置灰色文本
-                                SetTextColor(hdc, COLORREF(0x00808080)); // 灰色
-                            } else {
-                                // 设置正常黑色文本
-                                SetTextColor(hdc, COLORREF(0x00000000)); // 黑色
-                            }
-
-                            // 设置白色背景
-                            SetBkColor(hdc, COLORREF(0x00FFFFFF)); // 白色背景
-                            SetBkMode(hdc, OPAQUE);
-
-                            // 创建白色画刷作为背景
-                            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
-                            return LRESULT(white_brush.0 as isize);
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
+                // WM_CTLCOLOREDIT 不再需要，因为我们使用自绘文本
                 WM_MOUSEWHEEL => {
-                    // 将滚轮事件转发给文本编辑控件
+                    // 处理文本区域的滚轮滚动
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
-                        let window = &*window_ptr;
-                        SendMessageW(window.text_edit, msg, Some(wparam), Some(lparam));
+                        let window = &mut *window_ptr;
+
+                        // 获取滚轮增量
+                        let delta = ((wparam.0 >> 16) as i16) as i32;
+                        let scroll_lines = 3; // 每次滚动3行
+                        let scroll_amount = if delta > 0 {
+                            -scroll_lines
+                        } else {
+                            scroll_lines
+                        } * window.line_height;
+
+                        // 计算新的滚动偏移量
+                        let old_offset = window.scroll_offset;
+                        window.scroll_offset += scroll_amount;
+
+                        // 限制滚动范围
+                        let max_scroll = (window.text_lines.len() as i32 * window.line_height)
+                            - (window.text_area_rect.bottom - window.text_area_rect.top);
+                        window.scroll_offset = window.scroll_offset.clamp(0, max_scroll.max(0));
+
+                        // 如果滚动位置改变了，重绘文本区域
+                        if window.scroll_offset != old_offset {
+                            let _ = InvalidateRect(Some(hwnd), Some(&window.text_area_rect), false);
+                        }
                     }
                     LRESULT(0)
                 }
@@ -2139,10 +3132,6 @@ impl OcrResultWindow {
                             // 因为标题栏按钮的位置依赖于窗口宽度
                             if maximized_changed || old_width != new_width {
                                 window.update_title_bar_buttons();
-                                println!(
-                                    "标题栏按钮已更新: 宽度从 {} 变为 {}",
-                                    old_width, new_width
-                                );
                             }
 
                             let _ = InvalidateRect(Some(hwnd), None, false);
