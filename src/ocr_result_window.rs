@@ -838,7 +838,7 @@ impl OcrResultWindow {
                         let src_b = pixel_data[src_idx];
                         let alpha = pixel_data[src_idx + 3];
 
-                        if alpha > 128 {
+                        if alpha > 0 {
                             if is_close_button {
                                 // 关闭按钮：检查是否为白色或接近白色的像素（描边）
                                 let is_white_ish = src_r > 200 && src_g > 200 && src_b > 200;
