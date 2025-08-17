@@ -4,7 +4,7 @@ use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Gdi::*;
 
-// use crate::svg_icons::SvgIconManager; // 临时注释，待迁移
+use crate::svg_icons::SvgIconManager;
 use crate::utils::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,7 +43,6 @@ pub struct DrawingElement {
     pub color: D2D1_COLOR_F,
     pub thickness: f32,
     pub text: String,
-    pub font_size: f32, // 字体大小（从原始代码迁移）
     pub selected: bool,
 }
 
@@ -56,22 +55,22 @@ pub struct Toolbar {
     pub clicked_button: ToolbarButton,
 }
 
-/// 拖拽模式枚举（从原始代码迁移）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DragMode {
     None,
-    Drawing,              // 绘制选择框
-    DrawingShape,         // 绘制图形元素
-    Moving,               // 移动选择框
-    MovingElement,        // 移动绘图元素
-    ResizingTopLeft,      // 调整大小 - 左上角
-    ResizingTopCenter,    // 调整大小 - 上边中心
-    ResizingTopRight,     // 调整大小 - 右上角
-    ResizingMiddleRight,  // 调整大小 - 右边中心
-    ResizingBottomRight,  // 调整大小 - 右下角
-    ResizingBottomCenter, // 调整大小 - 下边中心
-    ResizingBottomLeft,   // 调整大小 - 左下角
-    ResizingMiddleLeft,   // 调整大小 - 左边中心
+    Drawing,
+    Moving,
+    ResizingTopLeft,
+    ResizingTopCenter,
+    ResizingTopRight,
+    ResizingMiddleRight,
+    ResizingBottomRight,
+    ResizingBottomCenter,
+    ResizingBottomLeft,
+    ResizingMiddleLeft,
+    DrawingShape,
+    MovingElement,
+    ResizingElement,
 }
 
 #[derive(Debug)]
@@ -124,11 +123,11 @@ pub struct WindowState {
     pub selected_element: Option<usize>,
     pub drawing_color: D2D1_COLOR_F,
     pub drawing_thickness: f32,
-    pub history: Vec<crate::drawing::history::HistoryState>,
+    pub history: Vec<HistoryState>,
 
-    pub is_pinned: bool,           // 新增：标记窗口是否被pin
-    pub original_window_pos: RECT, // 新增：保存原始窗口位置
-    // pub svg_icon_manager: SvgIconManager, // SVG 图标管理器 - 临时注释
+    pub is_pinned: bool,                  // 新增：标记窗口是否被pin
+    pub original_window_pos: RECT,        // 新增：保存原始窗口位置
+    pub svg_icon_manager: SvgIconManager, // SVG 图标管理器
 
     // 文字输入相关状态
     pub text_editing: bool,                   // 是否正在编辑文字
@@ -139,11 +138,11 @@ pub struct WindowState {
     pub just_saved_text: bool,                // 是否刚刚保存了文本（防止立即创建新文本）
 
     // 系统托盘
-    // pub system_tray: Option<crate::system_tray::SystemTray>, // 系统托盘实例 - 临时注释
+    pub system_tray: Option<crate::system_tray::SystemTray>, // 系统托盘实例
 
     // 窗口检测
-    // pub window_detector: crate::window_detection::WindowDetector, // 窗口检测器 - 临时注释
-    pub auto_highlight_enabled: bool, // 是否启用自动高亮窗口
+    pub window_detector: crate::window_detection::WindowDetector, // 窗口检测器
+    pub auto_highlight_enabled: bool,                             // 是否启用自动高亮窗口
 
     // OCR引擎状态
     pub ocr_engine_available: bool, // OCR引擎是否可用
@@ -152,6 +151,11 @@ pub struct WindowState {
     pub hide_ui_for_capture: bool, // 截图时隐藏UI元素（边框、手柄等）
 }
 // IconData 结构体已移除，现在只使用 SVG 图标
+#[derive(Clone, Debug)]
+pub struct HistoryState {
+    pub drawing_elements: Vec<DrawingElement>,
+    pub selected_element: Option<usize>,
+}
 impl DrawingElement {
     pub fn new(tool: DrawingTool) -> Self {
         Self {
@@ -171,7 +175,6 @@ impl DrawingElement {
             },
             thickness: 3.0,
             text: String::new(),
-            font_size: 20.0, // 默认字体大小（从原始代码迁移）
             selected: false,
         }
     }

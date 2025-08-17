@@ -1157,8 +1157,11 @@ impl OcrResultWindow {
             let class_name = windows::core::w!("OcrResultWindow");
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
 
-            // 使用默认应用程序图标
-            let _icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
+            // 使用与托盘相同的图标
+            let _icon = crate::system_tray::create_default_icon().unwrap_or_else(|_| {
+                // 如果加载失败，使用默认应用程序图标
+                LoadIconW(None, IDI_APPLICATION).unwrap_or_default()
+            });
 
             let window_class = WNDCLASSW {
                 lpfnWndProc: Some(Self::window_proc),

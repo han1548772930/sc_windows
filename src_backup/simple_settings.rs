@@ -883,6 +883,8 @@ impl SimpleSettingsWindow {
         }
     }
 
+ 
+
     /// 专业的Windows标准布局 - 参考标准控件演示
     fn layout_controls(&mut self) {
         unsafe {
@@ -1795,7 +1797,7 @@ impl SimpleSettingsWindow {
                     // 通知主窗口重新加载设置和重新注册热键
                     // 查找主窗口并发送消息
                     if let Ok(main_hwnd) = FindWindowW(
-                        PCWSTR(to_wide_chars(crate::WINDOW_CLASS_NAME).as_ptr()),
+                        PCWSTR(to_wide_chars("sc_windows_main").as_ptr()),
                         PCWSTR::null(),
                     ) {
                         if !main_hwnd.0.is_null() {
