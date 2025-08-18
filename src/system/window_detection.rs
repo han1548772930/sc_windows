@@ -300,12 +300,6 @@ impl WindowDetectionManager {
         self.detection_enabled = false;
     }
 
-    /// 处理窗口检测到的事件
-    pub fn handle_window_detected(&mut self, _window_title: String) -> Vec<Command> {
-        // TODO: 处理检测到的窗口
-        vec![]
-    }
-
     /// 刷新窗口列表（从原始代码迁移）
     pub fn refresh_windows(&mut self) -> Result<(), SystemError> {
         self.detector.refresh_windows()

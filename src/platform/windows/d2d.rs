@@ -467,14 +467,6 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_image(
-        &mut self,
-        _image: &Image,
-        _rect: Rectangle,
-    ) -> std::result::Result<(), Self::Error> {
-        // TODO: 实现Direct2D的DrawBitmap
-        Ok(())
-    }
 
     fn draw_rectangle(
         &mut self,

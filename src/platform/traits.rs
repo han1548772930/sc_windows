@@ -69,9 +69,6 @@ pub trait PlatformRenderer {
     /// 清除画布
     fn clear(&mut self, color: Color) -> Result<(), Self::Error>;
 
-    /// 绘制图像
-    fn draw_image(&mut self, image: &Image, rect: Rectangle) -> Result<(), Self::Error>;
-
     /// 绘制矩形
     fn draw_rectangle(&mut self, rect: Rectangle, style: &DrawStyle) -> Result<(), Self::Error>;
 

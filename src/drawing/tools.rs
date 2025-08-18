@@ -64,4 +64,19 @@ impl ToolManager {
     pub fn set_text_size(&mut self, size: f32) {
         self.tool_configs.text_size = size;
     }
+
+    /// 获取画笔颜色
+    pub fn get_brush_color(&self) -> windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+        windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+            r: self.tool_configs.brush_color.0,
+            g: self.tool_configs.brush_color.1,
+            b: self.tool_configs.brush_color.2,
+            a: self.tool_configs.brush_color.3,
+        }
+    }
+
+    /// 获取画笔粗细
+    pub fn get_line_thickness(&self) -> f32 {
+        self.tool_configs.brush_thickness
+    }
 }

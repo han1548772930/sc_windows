@@ -49,8 +49,9 @@ impl SystemManager {
         match message {
             SystemMessage::TrayMessage(wparam, lparam) => self.tray.handle_message(wparam, lparam),
             SystemMessage::HotkeyTriggered => self.hotkeys.handle_hotkey_triggered(),
-            SystemMessage::WindowDetected(window_title) => {
-                self.window_detection.handle_window_detected(window_title)
+            SystemMessage::WindowDetected(_window_title) => {
+                // TODO: 实现窗口检测处理逻辑
+                vec![]
             }
             SystemMessage::OcrStatusUpdate(available) => {
                 self.ocr.update_status(available);

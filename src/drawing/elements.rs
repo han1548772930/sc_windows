@@ -35,7 +35,7 @@ impl ElementManager {
         }
     }
 
-    /// 获取指定位置的元素索引
+    /// 获取指定位置的元素索引（考虑选择框约束）
     pub fn get_element_at_position(&self, x: i32, y: i32) -> Option<usize> {
         // 从后往前查找（最后绘制的元素在最上层）
         for (index, element) in self.elements.iter().enumerate().rev() {
@@ -44,6 +44,44 @@ impl ElementManager {
             }
         }
         None
+    }
+
+    /// 获取指定位置的元素索引（带选择框可见性检查）
+    pub fn get_element_at_position_with_selection(
+        &self,
+        x: i32,
+        y: i32,
+        selection_rect: Option<windows::Win32::Foundation::RECT>,
+    ) -> Option<usize> {
+        // 从后往前查找（最后绘制的元素在最上层）
+        for (index, element) in self.elements.iter().enumerate().rev() {
+            if element.contains_point(x, y) {
+                // 如果有选择框，检查元素是否在选择框内可见
+                if let Some(sel_rect) = selection_rect {
+                    if self.is_element_visible_in_selection(element, &sel_rect) {
+                        return Some(index);
+                    }
+                } else {
+                    return Some(index);
+                }
+            }
+        }
+        None
+    }
+
+    /// 检查元素是否在选择框内可见（从原始代码迁移）
+    pub fn is_element_visible_in_selection(
+        &self,
+        element: &crate::types::DrawingElement,
+        selection_rect: &windows::Win32::Foundation::RECT,
+    ) -> bool {
+        let element_rect = element.get_bounding_rect();
+
+        // 检查元素是否与选择框有交集
+        !(element_rect.right < selection_rect.left
+            || element_rect.left > selection_rect.right
+            || element_rect.bottom < selection_rect.top
+            || element_rect.top > selection_rect.bottom)
     }
 
     /// 设置选中状态

@@ -12,19 +12,12 @@ pub mod capture;
 pub mod save;
 pub mod selection;
 
-use capture::CaptureEngine;
-use save::SaveManager;
 use selection::SelectionState;
 
 /// 截图管理器
 pub struct ScreenshotManager {
-    /// 捕获引擎（暂时保留，后续可能使用）
-    #[allow(dead_code)]
-    capture_engine: CaptureEngine,
     /// 选择状态
     selection: SelectionState,
-    /// 保存管理器
-    save_manager: SaveManager,
     /// 当前截图数据
     current_screenshot: Option<ScreenshotData>,
 
@@ -111,9 +104,7 @@ impl ScreenshotManager {
         };
 
         Ok(Self {
-            capture_engine: CaptureEngine::new()?,
             selection: SelectionState::new(),
-            save_manager: SaveManager::new()?,
             current_screenshot: None,
 
             // 初始化从WindowState迁移的字段
@@ -172,7 +163,7 @@ impl ScreenshotManager {
             }
             ScreenshotMessage::SaveToFile(path) => {
                 if let Some(screenshot) = &self.current_screenshot {
-                    match self.save_manager.save_to_file(screenshot, &path) {
+                    match save::save_to_file(screenshot, &path) {
                         Ok(_) => vec![Command::HideOverlay],
                         Err(_) => vec![Command::None],
                     }
@@ -208,7 +199,7 @@ impl ScreenshotManager {
             }
             ScreenshotMessage::CopyToClipboard => {
                 if let Some(screenshot) = &self.current_screenshot {
-                    match self.save_manager.copy_to_clipboard(screenshot) {
+                    match save::copy_to_clipboard(screenshot) {
                         Ok(_) => vec![Command::HideOverlay],
                         Err(_) => vec![Command::None],
                     }
@@ -604,10 +595,6 @@ impl ScreenshotManager {
         let is_click = self.selection.is_mouse_pressed()
             && (x - self.selection.get_interaction_start_pos().x).abs() < 5
             && (y - self.selection.get_interaction_start_pos().y).abs() < 5;
-
-        // TODO: 处理工具栏点击
-        // let toolbar_button = self.toolbar.get_button_at_position(x, y);
-        // if toolbar_button != ToolbarButton::None && toolbar_button == self.toolbar.clicked_button { ... }
 
         // 如果是单击且当前有选择区域（从原始代码迁移）
         if is_click && self.selection.has_selection() {

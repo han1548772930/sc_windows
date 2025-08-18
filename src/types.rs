@@ -53,15 +53,6 @@ pub struct DrawingElement {
     pub selected: bool,
 }
 
-#[derive(Debug)]
-pub struct Toolbar {
-    pub rect: D2D_RECT_F,
-    pub visible: bool,
-    pub buttons: Vec<(D2D_RECT_F, ToolbarButton)>,
-    pub hovered_button: ToolbarButton,
-    pub clicked_button: ToolbarButton,
-}
-
 /// 拖拽模式枚举（从原始代码迁移）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DragMode {
@@ -80,83 +71,6 @@ pub enum DragMode {
     ResizingMiddleLeft,   // 调整大小 - 左边中心
 }
 
-#[derive(Debug)]
-pub struct WindowState {
-    // Direct2D 资源
-    pub d2d_factory: ID2D1Factory,
-    pub render_target: ID2D1HwndRenderTarget,
-    pub screenshot_bitmap: ID2D1Bitmap,
-
-    // DirectWrite 资源
-    pub dwrite_factory: IDWriteFactory,
-    pub text_format: IDWriteTextFormat,
-    pub centered_text_format: IDWriteTextFormat, // 新增：居中文本格式
-
-    // 画刷缓存
-    pub selection_border_brush: ID2D1SolidColorBrush,
-    pub handle_fill_brush: ID2D1SolidColorBrush,
-    pub handle_border_brush: ID2D1SolidColorBrush,
-    pub toolbar_bg_brush: ID2D1SolidColorBrush,
-    pub button_hover_brush: ID2D1SolidColorBrush,
-    pub button_active_brush: ID2D1SolidColorBrush,
-    pub text_brush: ID2D1SolidColorBrush,
-    pub mask_brush: ID2D1SolidColorBrush,
-
-    // 几何对象缓存
-    pub rounded_rect_geometry: ID2D1RoundedRectangleGeometry,
-
-    // 传统GDI资源（用于屏幕捕获）
-    pub screenshot_dc: HDC,
-    pub gdi_screenshot_bitmap: HBITMAP,
-
-    // 窗口和选择状态
-    pub screen_width: i32,
-    pub screen_height: i32,
-    pub selection_rect: RECT,
-    pub has_selection: bool,
-
-    // 拖拽状态
-    pub drag_mode: DragMode,
-    pub mouse_pressed: bool,
-    pub drag_start_pos: POINT,
-    pub drag_start_rect: RECT,
-    pub drag_start_font_size: f32, // 保存拖拽开始时的字体大小
-
-    // 绘图功能
-    pub toolbar: Toolbar,
-    pub current_tool: DrawingTool,
-    pub drawing_elements: Vec<DrawingElement>,
-    pub current_element: Option<DrawingElement>,
-    pub selected_element: Option<usize>,
-    pub drawing_color: D2D1_COLOR_F,
-    pub drawing_thickness: f32,
-    pub history: Vec<crate::drawing::history::HistoryState>,
-
-    pub is_pinned: bool,           // 新增：标记窗口是否被pin
-    pub original_window_pos: RECT, // 新增：保存原始窗口位置
-    // pub svg_icon_manager: SvgIconManager, // SVG 图标管理器 - 临时注释
-
-    // 文字输入相关状态
-    pub text_editing: bool,                   // 是否正在编辑文字
-    pub editing_element_index: Option<usize>, // 正在编辑的文字元素索引
-    pub text_cursor_pos: usize,               // 文字光标位置
-    pub text_cursor_visible: bool,            // 光标是否可见（用于闪烁效果）
-    pub cursor_timer_id: usize,               // 光标闪烁定时器ID
-    pub just_saved_text: bool,                // 是否刚刚保存了文本（防止立即创建新文本）
-
-    // 系统托盘
-    // pub system_tray: Option<crate::system_tray::SystemTray>, // 系统托盘实例 - 临时注释
-
-    // 窗口检测
-    // pub window_detector: crate::window_detection::WindowDetector, // 窗口检测器 - 临时注释
-    pub auto_highlight_enabled: bool, // 是否启用自动高亮窗口
-
-    // OCR引擎状态
-    pub ocr_engine_available: bool, // OCR引擎是否可用
-
-    // UI显示控制
-    pub hide_ui_for_capture: bool, // 截图时隐藏UI元素（边框、手柄等）
-}
 // IconData 结构体已移除，现在只使用 SVG 图标
 impl DrawingElement {
     pub fn new(tool: DrawingTool) -> Self {
@@ -184,6 +98,55 @@ impl DrawingElement {
             font_underline: false,
             font_strikeout: false,
             selected: false,
+        }
+    }
+
+    /// 从旧格式数据创建DrawingElement（兼容性方法）
+    /// 在旧代码中，文本元素的字体大小存储在thickness字段中
+    pub fn from_legacy_data(
+        tool: DrawingTool,
+        points: Vec<POINT>,
+        rect: RECT,
+        color: D2D1_COLOR_F,
+        thickness: f32,
+        text: String,
+        selected: bool,
+    ) -> Self {
+        let mut element = Self::new(tool);
+        element.points = points;
+        element.rect = rect;
+        element.color = color;
+        element.text = text;
+        element.selected = selected;
+
+        // 兼容性处理：对于文本元素，thickness字段存储的是字体大小
+        if tool == DrawingTool::Text {
+            element.font_size = thickness.max(8.0); // 确保最小字体大小
+            element.thickness = 1.0; // 文本元素的描边粗细设为默认值
+        } else {
+            element.thickness = thickness;
+            // 非文本元素保持默认字体大小
+        }
+
+        element
+    }
+
+    /// 获取用于渲染的字体大小（兼容性方法）
+    /// 确保文本元素使用font_size字段，其他元素可能仍使用thickness
+    pub fn get_effective_font_size(&self) -> f32 {
+        if self.tool == DrawingTool::Text {
+            self.font_size.max(8.0)
+        } else {
+            // 非文本元素不应该有字体大小，但为了兼容性返回默认值
+            20.0
+        }
+    }
+
+    /// 设置字体大小（兼容性方法）
+    /// 确保正确更新font_size字段
+    pub fn set_font_size(&mut self, size: f32) {
+        if self.tool == DrawingTool::Text {
+            self.font_size = size.max(8.0);
         }
     }
 
@@ -531,20 +494,4 @@ impl DrawingElement {
     }
 }
 
-impl Toolbar {
-    pub fn new() -> Self {
-        Self {
-            rect: D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: 0.0,
-                bottom: 0.0,
-            },
-            visible: false,
-            buttons: Vec::new(),
-            hovered_button: ToolbarButton::None,
-            clicked_button: ToolbarButton::None,
-        }
-    }
-}
 // IconData 实现已移除

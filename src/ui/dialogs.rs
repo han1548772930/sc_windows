@@ -715,15 +715,7 @@ impl DialogManager {
         }
     }
 
-    /// 处理双击事件
-    pub fn handle_double_click(&mut self, _x: i32, _y: i32) -> Vec<Command> {
-        // TODO: 实现对话框双击处理
-        vec![]
-    }
+ 
 
-    /// 处理文本输入
-    pub fn handle_text_input(&mut self, _character: char) -> Vec<Command> {
-        // TODO: 实现对话框文本输入处理
-        vec![]
-    }
+
 }

@@ -5,6 +5,7 @@
 use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 
+pub mod cursor;
 pub mod dialogs;
 pub mod overlay;
 pub mod svg_icons;
@@ -153,16 +154,7 @@ impl UIManager {
         let mut commands = Vec::new();
         // 工具栏可能需要处理双击（例如快速操作）
         commands.extend(self.toolbar.handle_double_click(x, y));
-        // 对话框可能需要处理双击
-        commands.extend(self.dialogs.handle_double_click(x, y));
-        commands
-    }
 
-    /// 处理文本输入
-    pub fn handle_text_input(&mut self, character: char) -> Vec<Command> {
-        let mut commands = Vec::new();
-        // 对话框可能需要处理文本输入（例如输入框）
-        commands.extend(self.dialogs.handle_text_input(character));
         commands
     }
 

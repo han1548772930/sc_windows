@@ -45,22 +45,6 @@ impl App {
         })
     }
 
-    /// 初始化Direct2D渲染器（从原始代码迁移）
-    pub fn initialize_renderer(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-        width: i32,
-        height: i32,
-    ) -> Result<(), AppError> {
-        // 将platform转换为Direct2DRenderer并初始化
-        // 这是一个临时的解决方案，因为我们知道platform是Direct2DRenderer
-        // TODO: 改进架构以更好地处理这种情况
-
-        // 暂时跳过Direct2D初始化，因为类型转换比较复杂
-        // 在实际渲染时会处理
-        Ok(())
-    }
-
     /// 设置当前窗口句柄（用于排除自己的窗口）
     pub fn set_current_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
         self.screenshot.set_current_window(hwnd);
@@ -211,19 +195,6 @@ impl App {
         }
     }
 
-    /// 获取Direct2D渲染器的引用（临时解决方案）
-    #[allow(dead_code)]
-    fn get_d2d_renderer(
-        &self,
-    ) -> Result<&crate::platform::windows::d2d::Direct2DRenderer, AppError> {
-        // 这是一个临时的解决方案，因为我们知道platform是Direct2DRenderer
-        // TODO: 改进架构以更好地处理这种情况
-
-        // 由于Rust的借用检查器限制，我们暂时无法安全地转换
-        // 让我们使用另一种方法
-        Err(AppError::RenderError("Cannot access renderer".to_string()))
-    }
-
     /// 初始化系统托盘（从原始代码迁移）
     pub fn init_system_tray(
         &mut self,
@@ -365,7 +336,6 @@ impl App {
 
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
-        use windows::Win32::UI::WindowsAndMessaging::*;
         let mut commands = Vec::new();
 
         // 1) UI优先
@@ -375,117 +345,67 @@ impl App {
             return commands;
         }
 
-        // 2) 如果绘图处于拖拽（移动/调整）中，则只让Drawing处理，避免选择框跟随移动
+        // 2) 将事件优先交给 Drawing（元素拖拽/调整/绘制）。如果 Drawing 正在拖拽，则不要继续传递给 Screenshot，避免冲突
         let selection_rect = self.screenshot.get_selection();
         commands.extend(self.drawing.handle_mouse_move(x, y, selection_rect));
+        if !self.drawing.is_dragging() {
+            // 3) 若Drawing未接管拖拽，再交给 Screenshot（用于自动高亮/选择框拖拽）
+            commands.extend(self.screenshot.handle_mouse_move(x, y));
+        }
 
-        // 3) 让Screenshot处理（用于自动高亮/选择框拖拽）
-        commands.extend(self.screenshot.handle_mouse_move(x, y));
-
-        // 4) 统一设置鼠标指针（对齐原始逻辑）
-        //    仅在窗口可见时设置（主消息循环里已 WM_SETCURSOR -> 1）
+        // 4) 统一设置鼠标指针（使用光标管理器）
         let cursor_id = {
             let hovered_button = self.ui.get_hovered_button();
             let is_button_disabled = self.ui.is_button_disabled(hovered_button);
-            if hovered_button != crate::types::ToolbarButton::None && !is_button_disabled {
-                IDC_HAND
-            } else if self.drawing.is_text_editing() {
-                // 文本编辑时：若在手柄上则给调整光标，否则 IBEAM
+            let is_text_editing = self.drawing.is_text_editing();
+
+            // 获取文本编辑元素信息
+            let editing_element_info = if is_text_editing {
                 if let Some(edit_idx) = self.drawing.get_editing_element_index() {
                     if let Some(el) = self.drawing.get_element_ref(edit_idx) {
-                        let handle_mode = self
-                            .drawing
-                            .get_element_handle_at_position(x, y, &el.rect, el.tool, edit_idx);
-                        match handle_mode {
-                            crate::types::DragMode::ResizingTopLeft
-                            | crate::types::DragMode::ResizingBottomRight => IDC_SIZENWSE,
-                            crate::types::DragMode::ResizingTopRight
-                            | crate::types::DragMode::ResizingBottomLeft => IDC_SIZENESW,
-                            crate::types::DragMode::ResizingTopCenter
-                            | crate::types::DragMode::ResizingBottomCenter => IDC_SIZENS,
-                            crate::types::DragMode::ResizingMiddleLeft
-                            | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
-                            _ => IDC_IBEAM,
-                        }
+                        Some((el.clone(), edit_idx))
                     } else {
-                        IDC_IBEAM
+                        None
                     }
                 } else {
-                    IDC_IBEAM
-                }
-            } else if let Some(sel_rect) = self.screenshot.get_selection() {
-                // 根据当前绘图工具设置光标
-                match self.drawing.get_current_tool() {
-                    crate::types::DrawingTool::Pen
-                    | crate::types::DrawingTool::Rectangle
-                    | crate::types::DrawingTool::Circle
-                    | crate::types::DrawingTool::Arrow => IDC_CROSS,
-                    crate::types::DrawingTool::Text => IDC_IBEAM,
-                    crate::types::DrawingTool::None => {
-                        // 未选择绘图工具：根据是否在手柄/边缘/内部设置
-                        // 先检查已选元素手柄
-                        if let Some(sel_idx) = self.drawing.get_selected_element_index() {
-                            if let Some(el) = self.drawing.get_element_ref(sel_idx) {
-                                let handle_mode = self.drawing.get_element_handle_at_position(
-                                    x, y, &el.rect, el.tool, sel_idx,
-                                );
-                                if handle_mode != crate::types::DragMode::None {
-                                    match handle_mode {
-                                        crate::types::DragMode::ResizingTopLeft
-                                        | crate::types::DragMode::ResizingBottomRight => {
-                                            IDC_SIZENWSE
-                                        }
-                                        crate::types::DragMode::ResizingTopRight
-                                        | crate::types::DragMode::ResizingBottomLeft => {
-                                            IDC_SIZENESW
-                                        }
-                                        crate::types::DragMode::ResizingTopCenter
-                                        | crate::types::DragMode::ResizingBottomCenter => {
-                                            IDC_SIZENS
-                                        }
-                                        crate::types::DragMode::ResizingMiddleLeft
-                                        | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
-                                        _ => IDC_ARROW,
-                                    }
-                                } else if el.contains_point(x, y) {
-                                    IDC_SIZEALL
-                                } else {
-                                    IDC_ARROW
-                                }
-                            } else {
-                                IDC_ARROW
-                            }
-                        } else {
-                            // 无选中元素：检查选择框手柄
-                            let handle_mode = self.screenshot.get_handle_at_position(x, y);
-                            match handle_mode {
-                                crate::types::DragMode::ResizingTopLeft
-                                | crate::types::DragMode::ResizingBottomRight => IDC_SIZENWSE,
-                                crate::types::DragMode::ResizingTopRight
-                                | crate::types::DragMode::ResizingBottomLeft => IDC_SIZENESW,
-                                crate::types::DragMode::ResizingTopCenter
-                                | crate::types::DragMode::ResizingBottomCenter => IDC_SIZENS,
-                                crate::types::DragMode::ResizingMiddleLeft
-                                | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
-                                crate::types::DragMode::Moving => IDC_SIZEALL,
-                                _ => IDC_ARROW,
-                            }
-                        }
-                    }
+                    None
                 }
             } else {
-                IDC_ARROW
-            }
+                None
+            };
+
+            // 获取选中元素信息
+            let selected_element_info =
+                if let Some(sel_idx) = self.drawing.get_selected_element_index() {
+                    if let Some(el) = self.drawing.get_element_ref(sel_idx) {
+                        Some((el.clone(), sel_idx))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            let selection_rect = self.screenshot.get_selection();
+            let current_tool = self.drawing.get_current_tool();
+            let selection_handle_mode = self.screenshot.get_handle_at_position(x, y);
+
+            crate::ui::cursor::CursorManager::determine_cursor(
+                x,
+                y,
+                hovered_button,
+                is_button_disabled,
+                is_text_editing,
+                editing_element_info,
+                current_tool,
+                selection_rect,
+                selected_element_info,
+                selection_handle_mode,
+                &self.drawing,
+            )
         };
 
-        unsafe {
-            if let Ok(cursor) = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
-                Some(windows::Win32::Foundation::HINSTANCE(std::ptr::null_mut())),
-                cursor_id,
-            ) {
-                let _ = windows::Win32::UI::WindowsAndMessaging::SetCursor(Some(cursor));
-            }
-        }
+        crate::ui::cursor::CursorManager::set_cursor(cursor_id);
 
         commands
     }
@@ -577,11 +497,6 @@ impl App {
         // 文本输入主要由绘图管理器处理（文本工具）
         commands.extend(self.drawing.handle_text_input(character));
 
-        // 如果绘图管理器没有处理，可能是UI元素需要处理
-        if commands.is_empty() {
-            commands.extend(self.ui.handle_text_input(character));
-        }
-
         commands
     }
 
@@ -628,14 +543,11 @@ impl App {
         use crate::types::ToolbarButton;
         use std::collections::HashSet;
 
-        // 优先使用选中元素的工具类型，如果没有选中元素则使用当前工具（与旧代码保持一致）
-        let display_tool = self
-            .drawing
-            .get_selected_element_tool()
-            .unwrap_or_else(|| self.drawing.get_current_tool());
+        // 工具栏始终显示当前绘图工具（与原代码保持一致，选中元素时已经更新了当前工具）
+        let current_tool = self.drawing.get_current_tool();
 
         // 更新工具栏选中状态
-        self.ui.update_toolbar_selected_tool(display_tool);
+        self.ui.update_toolbar_selected_tool(current_tool);
 
         // 根据当前工具状态决定是否显示选择框手柄：仅当未选择绘图工具时显示
         let current_tool = self.drawing.get_current_tool();

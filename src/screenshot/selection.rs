@@ -266,34 +266,8 @@ impl SelectionState {
             None => return DragMode::None,
         };
 
-        // 8个调整大小手柄的位置
-        let center_x = (rect.left + rect.right) / 2;
-        let center_y = (rect.top + rect.bottom) / 2;
-        let handles = vec![
-            (rect.left, rect.top, DragMode::ResizingTopLeft),
-            (center_x, rect.top, DragMode::ResizingTopCenter),
-            (rect.right, rect.top, DragMode::ResizingTopRight),
-            (rect.right, center_y, DragMode::ResizingMiddleRight),
-            (rect.right, rect.bottom, DragMode::ResizingBottomRight),
-            (center_x, rect.bottom, DragMode::ResizingBottomCenter),
-            (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
-            (rect.left, center_y, DragMode::ResizingMiddleLeft),
-        ];
-
-        let detection_radius = HANDLE_DETECTION_RADIUS as i32;
-        for (hx, hy, mode) in handles.iter() {
-            let dx = x - hx;
-            let dy = y - hy;
-            let distance_sq = dx * dx + dy * dy;
-            let radius_sq = detection_radius * detection_radius;
-
-            if distance_sq <= radius_sq {
-                return *mode;
-            }
-        }
-
-        // 禁用通过点击内部拖动移动选择框（与原始要求一致）
-        DragMode::None
+        // 使用共用的手柄检测函数
+        crate::utils::detect_handle_at_position(x, y, &rect, true)
     }
 
     /// 开始选择框交互操作
@@ -315,58 +289,21 @@ impl SelectionState {
 
         let dx = x - self.interaction_start_pos.x;
         let dy = y - self.interaction_start_pos.y;
-        let mut new_rect = self.interaction_start_rect;
 
-        match &self.selection_interaction_mode {
-            SelectionInteractionMode::Moving => {
-                // 移动整个选择框
-                new_rect.left += dx;
-                new_rect.top += dy;
-                new_rect.right += dx;
-                new_rect.bottom += dy;
-            }
-            SelectionInteractionMode::Resizing(resize_mode) => match resize_mode {
-                DragMode::ResizingTopLeft => {
-                    new_rect.left += dx;
-                    new_rect.top += dy;
-                }
-                DragMode::ResizingTopCenter => {
-                    new_rect.top += dy;
-                }
-                DragMode::ResizingTopRight => {
-                    new_rect.right += dx;
-                    new_rect.top += dy;
-                }
-                DragMode::ResizingMiddleRight => {
-                    new_rect.right += dx;
-                }
-                DragMode::ResizingBottomRight => {
-                    new_rect.right += dx;
-                    new_rect.bottom += dy;
-                }
-                DragMode::ResizingBottomCenter => {
-                    new_rect.bottom += dy;
-                }
-                DragMode::ResizingBottomLeft => {
-                    new_rect.left += dx;
-                    new_rect.bottom += dy;
-                }
-                DragMode::ResizingMiddleLeft => {
-                    new_rect.left += dx;
-                }
-                _ => return false,
-            },
-            SelectionInteractionMode::Creating => {
-                // 创建选择框时不需要处理拖拽
-                return false;
-            }
+        // 根据交互模式确定拖拽模式
+        let drag_mode = match &self.selection_interaction_mode {
+            SelectionInteractionMode::Moving => DragMode::Moving,
+            SelectionInteractionMode::Resizing(resize_mode) => *resize_mode,
+            SelectionInteractionMode::Creating => return false,
             SelectionInteractionMode::None => return false,
-        }
+        };
+
+        // 使用共用的拖拽更新函数
+        let new_rect =
+            crate::utils::update_rect_by_drag(drag_mode, dx, dy, self.interaction_start_rect);
 
         // 检查最小尺寸
-        let width = new_rect.right - new_rect.left;
-        let height = new_rect.bottom - new_rect.top;
-        if width >= MIN_BOX_SIZE && height >= MIN_BOX_SIZE {
+        if crate::utils::is_rect_valid(&new_rect, MIN_BOX_SIZE) {
             self.selection_rect = Some(new_rect);
             return true;
         }

@@ -1,9 +1,15 @@
-use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
+// 工具函数模块
 
+use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows_numerics::*;
 
-// 辅助函数
+pub mod interaction;
+
+// 重新导出常用函数
+pub use interaction::*;
+
+// 辅助函数（从原 utils.rs 迁移）
 pub fn to_wide_chars(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(once(0)).collect()
 }
