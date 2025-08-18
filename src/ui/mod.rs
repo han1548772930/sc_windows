@@ -177,6 +177,16 @@ impl UIManager {
         self.toolbar.is_visible()
     }
 
+    /// 获取当前悬停的工具栏按钮
+    pub fn get_hovered_button(&self) -> crate::types::ToolbarButton {
+        self.toolbar.hovered_button
+    }
+
+    /// 查询某个按钮是否被禁用
+    pub fn is_button_disabled(&self, button: crate::types::ToolbarButton) -> bool {
+        self.toolbar.disabled_buttons.contains(&button)
+    }
+
     /// 更新工具栏选中的绘图工具（从原始代码迁移）
     pub fn update_toolbar_selected_tool(&mut self, tool: crate::types::DrawingTool) {
         // 将绘图工具转换为工具栏按钮

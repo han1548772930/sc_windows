@@ -41,9 +41,15 @@ pub struct DrawingElement {
     pub points: Vec<POINT>,
     pub rect: RECT,
     pub color: D2D1_COLOR_F,
-    pub thickness: f32,
+    pub thickness: f32, // Stroke width for non-text elements
+    // Text-specific properties
     pub text: String,
-    pub font_size: f32, // 字体大小（从原始代码迁移）
+    pub font_size: f32,
+    pub font_name: String,
+    pub font_weight: i32,
+    pub font_italic: bool,
+    pub font_underline: bool,
+    pub font_strikeout: bool,
     pub selected: bool,
 }
 
@@ -171,7 +177,12 @@ impl DrawingElement {
             },
             thickness: 3.0,
             text: String::new(),
-            font_size: 20.0, // 默认字体大小（从原始代码迁移）
+            font_size: 20.0,
+            font_name: "Microsoft YaHei".to_string(),
+            font_weight: 400,
+            font_italic: false,
+            font_underline: false,
+            font_strikeout: false,
             selected: false,
         }
     }

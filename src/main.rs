@@ -395,8 +395,10 @@ unsafe extern "system" fn window_proc(
             // 处理设置更改消息（从原始代码迁移）
             val if val == WM_USER + 3 => {
                 if let Some(ref mut app) = APP {
-                    // 重新加载设置
-                    app.reload_settings();
+                    // 重新加载设置并处理返回的命令
+                    let commands = app.reload_settings();
+                    handle_commands(app, commands, hwnd);
+
                     // 重新注册热键
                     let _ = app.reregister_hotkey(hwnd);
                 }

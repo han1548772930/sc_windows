@@ -230,7 +230,7 @@ impl ElementManager {
                         let text_style = TextStyle {
                             font_size: element.font_size,
                             color,
-                            font_family: "Arial".to_string(), // 默认字体
+                            font_family: element.font_name.clone(), // use element's own font
                         };
 
                         renderer

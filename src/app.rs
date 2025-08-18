@@ -167,24 +167,26 @@ impl App {
         match message {
             Message::Screenshot(msg) => {
                 // 处理截图消息，并在截图成功后创建D2D位图
-                let commands = self.screenshot.handle_message(msg.clone());
+                let mut commands = self.screenshot.handle_message(msg.clone());
 
-                // 如果是StartCapture消息且截图成功，创建D2D位图
+                // 如果是StartCapture消息且截图成功，创建D2D位图并重置绘图与手柄显示
                 if let ScreenshotMessage::StartCapture = msg {
                     if commands.contains(&Command::ShowOverlay) {
-                        // 截图成功，现在创建D2D位图
-                        if let Some(d2d_renderer) =
-                            self.platform
-                                .as_any_mut()
-                                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
+                        // 截图成功，现在创建D2D位图（使用平台无关接口）
+                        if let Err(e) = self
+                            .screenshot
+                            .create_d2d_bitmap_from_gdi(&mut *self.platform)
                         {
-                            if let Err(e) = self.screenshot.create_d2d_bitmap_from_gdi(d2d_renderer)
-                            {
-                                eprintln!("Failed to create D2D bitmap: {:?}", e);
-                            } else {
-                                eprintln!("D2D bitmap created successfully");
-                            }
+                            eprintln!("Failed to create D2D bitmap: {:?}", e);
+                        } else {
+                            eprintln!("D2D bitmap created successfully");
                         }
+
+                        // 新一轮截图：重置绘图状态为None，确保显示选择框手柄
+                        self.drawing.reset_state();
+                        self.update_toolbar_state();
+                        commands.push(Command::UpdateToolbar);
+                        commands.push(Command::RequestRedraw);
                     }
                 }
 
@@ -251,10 +253,15 @@ impl App {
     }
 
     /// 重新加载设置（从原始代码迁移）
-    pub fn reload_settings(&mut self) {
+    pub fn reload_settings(&mut self) -> Vec<Command> {
         // 重新加载设置并更新各个管理器
         self.system.reload_settings();
-        // 可以在这里添加其他管理器的设置重新加载逻辑
+
+        // 重新加载绘图属性（与旧代码保持一致）
+        self.drawing.reload_drawing_properties();
+
+        // 返回需要执行的命令
+        vec![Command::UpdateToolbar, Command::RequestRedraw]
     }
 
     /// 重新注册热键（从原始代码迁移）
@@ -348,25 +355,17 @@ impl App {
         commands
     }
 
-    /// 创建D2D位图（从原始代码迁移）
+    /// 创建D2D位图（从原始代码迁移，使用平台无关接口）
+
     pub fn create_d2d_bitmap_from_gdi(&mut self) -> Result<(), AppError> {
-        if let Some(d2d_renderer) =
-            self.platform
-                .as_any_mut()
-                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
-        {
-            self.screenshot
-                .create_d2d_bitmap_from_gdi(d2d_renderer)
-                .map_err(|e| AppError::RenderError(format!("Failed to create D2D bitmap: {:?}", e)))
-        } else {
-            Err(AppError::RenderError(
-                "Cannot access D2D renderer".to_string(),
-            ))
-        }
+        self.screenshot
+            .create_d2d_bitmap_from_gdi(&mut *self.platform)
+            .map_err(|e| AppError::RenderError(format!("Failed to create D2D bitmap: {:?}", e)))
     }
 
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
+        use windows::Win32::UI::WindowsAndMessaging::*;
         let mut commands = Vec::new();
 
         // 1) UI优先
@@ -381,8 +380,112 @@ impl App {
         commands.extend(self.drawing.handle_mouse_move(x, y, selection_rect));
 
         // 3) 让Screenshot处理（用于自动高亮/选择框拖拽）
-        // 注意：由于mouse_down阶段我们已避免冲突，这里可以始终让Screenshot检测高亮
         commands.extend(self.screenshot.handle_mouse_move(x, y));
+
+        // 4) 统一设置鼠标指针（对齐原始逻辑）
+        //    仅在窗口可见时设置（主消息循环里已 WM_SETCURSOR -> 1）
+        let cursor_id = {
+            let hovered_button = self.ui.get_hovered_button();
+            let is_button_disabled = self.ui.is_button_disabled(hovered_button);
+            if hovered_button != crate::types::ToolbarButton::None && !is_button_disabled {
+                IDC_HAND
+            } else if self.drawing.is_text_editing() {
+                // 文本编辑时：若在手柄上则给调整光标，否则 IBEAM
+                if let Some(edit_idx) = self.drawing.get_editing_element_index() {
+                    if let Some(el) = self.drawing.get_element_ref(edit_idx) {
+                        let handle_mode = self
+                            .drawing
+                            .get_element_handle_at_position(x, y, &el.rect, el.tool, edit_idx);
+                        match handle_mode {
+                            crate::types::DragMode::ResizingTopLeft
+                            | crate::types::DragMode::ResizingBottomRight => IDC_SIZENWSE,
+                            crate::types::DragMode::ResizingTopRight
+                            | crate::types::DragMode::ResizingBottomLeft => IDC_SIZENESW,
+                            crate::types::DragMode::ResizingTopCenter
+                            | crate::types::DragMode::ResizingBottomCenter => IDC_SIZENS,
+                            crate::types::DragMode::ResizingMiddleLeft
+                            | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
+                            _ => IDC_IBEAM,
+                        }
+                    } else {
+                        IDC_IBEAM
+                    }
+                } else {
+                    IDC_IBEAM
+                }
+            } else if let Some(sel_rect) = self.screenshot.get_selection() {
+                // 根据当前绘图工具设置光标
+                match self.drawing.get_current_tool() {
+                    crate::types::DrawingTool::Pen
+                    | crate::types::DrawingTool::Rectangle
+                    | crate::types::DrawingTool::Circle
+                    | crate::types::DrawingTool::Arrow => IDC_CROSS,
+                    crate::types::DrawingTool::Text => IDC_IBEAM,
+                    crate::types::DrawingTool::None => {
+                        // 未选择绘图工具：根据是否在手柄/边缘/内部设置
+                        // 先检查已选元素手柄
+                        if let Some(sel_idx) = self.drawing.get_selected_element_index() {
+                            if let Some(el) = self.drawing.get_element_ref(sel_idx) {
+                                let handle_mode = self.drawing.get_element_handle_at_position(
+                                    x, y, &el.rect, el.tool, sel_idx,
+                                );
+                                if handle_mode != crate::types::DragMode::None {
+                                    match handle_mode {
+                                        crate::types::DragMode::ResizingTopLeft
+                                        | crate::types::DragMode::ResizingBottomRight => {
+                                            IDC_SIZENWSE
+                                        }
+                                        crate::types::DragMode::ResizingTopRight
+                                        | crate::types::DragMode::ResizingBottomLeft => {
+                                            IDC_SIZENESW
+                                        }
+                                        crate::types::DragMode::ResizingTopCenter
+                                        | crate::types::DragMode::ResizingBottomCenter => {
+                                            IDC_SIZENS
+                                        }
+                                        crate::types::DragMode::ResizingMiddleLeft
+                                        | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
+                                        _ => IDC_ARROW,
+                                    }
+                                } else if el.contains_point(x, y) {
+                                    IDC_SIZEALL
+                                } else {
+                                    IDC_ARROW
+                                }
+                            } else {
+                                IDC_ARROW
+                            }
+                        } else {
+                            // 无选中元素：检查选择框手柄
+                            let handle_mode = self.screenshot.get_handle_at_position(x, y);
+                            match handle_mode {
+                                crate::types::DragMode::ResizingTopLeft
+                                | crate::types::DragMode::ResizingBottomRight => IDC_SIZENWSE,
+                                crate::types::DragMode::ResizingTopRight
+                                | crate::types::DragMode::ResizingBottomLeft => IDC_SIZENESW,
+                                crate::types::DragMode::ResizingTopCenter
+                                | crate::types::DragMode::ResizingBottomCenter => IDC_SIZENS,
+                                crate::types::DragMode::ResizingMiddleLeft
+                                | crate::types::DragMode::ResizingMiddleRight => IDC_SIZEWE,
+                                crate::types::DragMode::Moving => IDC_SIZEALL,
+                                _ => IDC_ARROW,
+                            }
+                        }
+                    }
+                }
+            } else {
+                IDC_ARROW
+            }
+        };
+
+        unsafe {
+            if let Ok(cursor) = windows::Win32::UI::WindowsAndMessaging::LoadCursorW(
+                Some(windows::Win32::Foundation::HINSTANCE(std::ptr::null_mut())),
+                cursor_id,
+            ) {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetCursor(Some(cursor));
+            }
+        }
 
         commands
     }
@@ -413,7 +516,17 @@ impl App {
 
             // 若未被Drawing消费，再交给Screenshot（选择框手柄/新建选择等）
             if !drawing_consumed {
-                commands.extend(self.screenshot.handle_mouse_down(x, y));
+                let screenshot_cmds = self.screenshot.handle_mouse_down(x, y);
+                let screenshot_consumed = !screenshot_cmds.is_empty();
+                commands.extend(screenshot_cmds);
+
+                // 如果Drawing和Screenshot都没有消耗事件，清除元素选中状态（保持与原始逻辑一致）
+                if !screenshot_consumed {
+                    commands.extend(
+                        self.drawing
+                            .handle_message(crate::message::DrawingMessage::SelectElement(None)),
+                    );
+                }
             }
         }
 
@@ -511,8 +624,33 @@ impl App {
 
     /// 更新工具栏状态以反映当前选中的绘图工具（从原始代码迁移）
     pub fn update_toolbar_state(&mut self) {
+        use crate::types::DrawingTool;
+        use crate::types::ToolbarButton;
+        use std::collections::HashSet;
+
+        // 优先使用选中元素的工具类型，如果没有选中元素则使用当前工具（与旧代码保持一致）
+        let display_tool = self
+            .drawing
+            .get_selected_element_tool()
+            .unwrap_or_else(|| self.drawing.get_current_tool());
+
+        // 更新工具栏选中状态
+        self.ui.update_toolbar_selected_tool(display_tool);
+
+        // 根据当前工具状态决定是否显示选择框手柄：仅当未选择绘图工具时显示
         let current_tool = self.drawing.get_current_tool();
-        self.ui.update_toolbar_selected_tool(current_tool);
+        let show_handles = matches!(current_tool, DrawingTool::None);
+        self.screenshot.set_show_selection_handles(show_handles);
+
+        // 更新禁用按钮集合
+        let mut disabled: HashSet<ToolbarButton> = HashSet::new();
+        if !self.can_undo() {
+            disabled.insert(ToolbarButton::Undo);
+        }
+        if !self.is_ocr_engine_available() {
+            disabled.insert(ToolbarButton::ExtractText);
+        }
+        self.ui.set_toolbar_disabled(disabled);
     }
 
     /// 保存选择区域到剪贴板（严格遵循原始同步逻辑）

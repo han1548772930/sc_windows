@@ -2,6 +2,7 @@
 //
 // 基于Direct2D的Windows平台渲染器
 
+use crate::platform::traits;
 use crate::platform::traits::*;
 use std::collections::HashMap;
 
@@ -619,6 +620,69 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
+    fn draw_dashed_rectangle(
+        &mut self,
+        rect: Rectangle,
+        style: &DrawStyle,
+        dash_pattern: &[f32],
+    ) -> std::result::Result<(), Self::Error> {
+        if let (Some(render_target), Some(d2d_factory)) = (&self.render_target, &self.d2d_factory) {
+            unsafe {
+                // 笔刷
+                let stroke_brush = {
+                    let d2d_color = D2D1_COLOR_F {
+                        r: style.stroke_color.r,
+                        g: style.stroke_color.g,
+                        b: style.stroke_color.b,
+                        a: style.stroke_color.a,
+                    };
+                    render_target
+                        .CreateSolidColorBrush(&d2d_color, None)
+                        .map_err(|e| {
+                            PlatformError::RenderError(format!(
+                                "CreateSolidColorBrush failed: {:?}",
+                                e
+                            ))
+                        })?
+                };
+
+                // 虚线样式
+                let mut dashes: Vec<f32> = dash_pattern.to_vec();
+                if dashes.is_empty() {
+                    dashes = vec![4.0, 2.0];
+                }
+                let stroke_props = D2D1_STROKE_STYLE_PROPERTIES {
+                    startCap: D2D1_CAP_STYLE_FLAT,
+                    endCap: D2D1_CAP_STYLE_FLAT,
+                    dashCap: D2D1_CAP_STYLE_FLAT,
+                    lineJoin: D2D1_LINE_JOIN_MITER,
+                    miterLimit: 10.0,
+                    dashStyle: D2D1_DASH_STYLE_CUSTOM,
+                    dashOffset: 0.0,
+                };
+                let stroke_style = d2d_factory
+                    .CreateStrokeStyle(&stroke_props, Some(&dashes))
+                    .map_err(|e| {
+                        PlatformError::RenderError(format!("CreateStrokeStyle failed: {:?}", e))
+                    })?;
+
+                let d2d_rect = D2D_RECT_F {
+                    left: rect.x,
+                    top: rect.y,
+                    right: rect.x + rect.width,
+                    bottom: rect.y + rect.height,
+                };
+                render_target.DrawRectangle(
+                    &d2d_rect,
+                    &stroke_brush,
+                    style.stroke_width.max(1.0),
+                    Some(&stroke_style),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn draw_text(
         &mut self,
         text: &str,
@@ -685,34 +749,53 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn create_brush(&mut self, _color: Color) -> std::result::Result<BrushId, Self::Error> {
-        let id = self.next_brush_id;
-        self.next_brush_id += 1;
-
-        // TODO: 创建实际的Direct2D画刷
-        // 暂时不存储到HashMap，因为类型不匹配
-        // self.brushes.insert(id, format!("Brush_{}", id));
-
-        Ok(id)
-    }
-
-    fn create_font(&mut self, family: &str, size: f32) -> std::result::Result<FontId, Self::Error> {
-        let id = self.next_font_id;
-        self.next_font_id += 1;
-
-        // TODO: 创建实际的DirectWrite字体
-        self.fonts.insert(id, format!("Font_{}_{}", family, size));
-
-        Ok(id)
-    }
-
     fn measure_text(
         &self,
         text: &str,
         style: &TextStyle,
     ) -> std::result::Result<(f32, f32), Self::Error> {
-        // TODO: 实现文本测量
-        Ok((text.len() as f32 * style.font_size * 0.6, style.font_size))
+        // 使用 DirectWrite 进行精确文本测量
+        if text.is_empty() {
+            return Ok((0.0, style.font_size));
+        }
+        let dwrite_factory = match &self.dwrite_factory {
+            Some(f) => f,
+            None => {
+                // 回退到近似值
+                return Ok((text.len() as f32 * style.font_size * 0.6, style.font_size));
+            }
+        };
+        unsafe {
+            // 文本格式
+            let text_format = dwrite_factory
+                .CreateTextFormat(
+                    &HSTRING::from(style.font_family.clone()),
+                    None,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    style.font_size,
+                    &HSTRING::from(""),
+                )
+                .map_err(|e| {
+                    PlatformError::RenderError(format!(
+                        "Failed to create text format for measure: {:?}",
+                        e
+                    ))
+                })?;
+
+            // 文本 UTF-16
+            let utf16: Vec<u16> = text.encode_utf16().collect();
+            let layout = dwrite_factory
+                .CreateTextLayout(&utf16, &text_format, f32::MAX, f32::MAX)
+                .map_err(|e| {
+                    PlatformError::RenderError(format!("Failed to create text layout: {:?}", e))
+                })?;
+
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            let _ = layout.GetMetrics(&mut metrics);
+            Ok((metrics.width, metrics.height))
+        }
     }
 
     /// 设置裁剪区域（从原始代码迁移）
@@ -750,6 +833,19 @@ impl PlatformRenderer for Direct2DRenderer {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    /// 从GDI位图创建平台位图（平台无关接口实现）
+    fn create_bitmap_from_gdi(
+        &mut self,
+        gdi_dc: windows::Win32::Graphics::Gdi::HDC,
+        width: i32,
+        height: i32,
+    ) -> std::result::Result<(), traits::PlatformError> {
+        // 调用现有的实现方法
+        let _bitmap = self.create_d2d_bitmap_from_gdi(gdi_dc, width, height)?;
+        // 位图已经创建并可以在后续渲染中使用
+        Ok(())
     }
 }
 

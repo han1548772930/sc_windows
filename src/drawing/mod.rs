@@ -1,3 +1,5 @@
+// src/drawing/mod.rs
+
 // 绘图管理器模块
 //
 // 负责绘图工具管理、绘图元素管理、撤销/重做系统
@@ -15,6 +17,46 @@ use elements::ElementManager;
 use history::HistoryManager;
 use tools::ToolManager;
 
+/// 元素交互模式（仅限绘图元素操作）
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElementInteractionMode {
+    /// 无交互
+    None,
+    /// 正在绘制新元素
+    Drawing,
+    /// 移动元素
+    MovingElement,
+    /// 调整元素大小（包含具体的调整方向）
+    ResizingElement(crate::types::DragMode),
+}
+
+impl ElementInteractionMode {
+    /// 从旧的DragMode转换为新的ElementInteractionMode
+    fn from_drag_mode(drag_mode: crate::types::DragMode) -> Self {
+        match drag_mode {
+            crate::types::DragMode::None => ElementInteractionMode::None,
+            crate::types::DragMode::DrawingShape => ElementInteractionMode::Drawing,
+            crate::types::DragMode::MovingElement => ElementInteractionMode::MovingElement,
+            crate::types::DragMode::ResizingTopLeft
+            | crate::types::DragMode::ResizingTopRight
+            | crate::types::DragMode::ResizingBottomLeft
+            | crate::types::DragMode::ResizingBottomRight => {
+                ElementInteractionMode::ResizingElement(drag_mode)
+            }
+            // 选择框相关的拖拽模式不应该在DrawingManager中处理
+            _ => ElementInteractionMode::None,
+        }
+    }
+
+    /// 获取调整大小的具体方向（如果是调整大小模式）
+    fn get_resize_mode(&self) -> Option<crate::types::DragMode> {
+        match self {
+            ElementInteractionMode::ResizingElement(mode) => Some(*mode),
+            _ => None,
+        }
+    }
+}
+
 /// 绘图管理器
 pub struct DrawingManager {
     /// 工具管理器
@@ -30,33 +72,37 @@ pub struct DrawingManager {
     /// 选中的元素索引
     selected_element: Option<usize>,
 
-    // 从WindowState迁移的字段
-    /// 绘图颜色（暂时保留，后续可能使用）
-    #[allow(dead_code)]
+    // 绘图相关状态
+    /// 绘图颜色
     drawing_color: D2D1_COLOR_F,
-    /// 绘图粗细（暂时保留，后续可能使用）
-    #[allow(dead_code)]
+    /// 绘图粗细
     drawing_thickness: f32,
     /// 历史记录栈（原始格式，用于兼容）
     history_stack: Vec<crate::drawing::history::HistoryState>,
-    /// 拖拽模式（从原始代码迁移）
-    drag_mode: crate::types::DragMode,
-    /// 鼠标按下状态（从原始代码迁移）
-    mouse_pressed: bool,
-    /// 拖拽开始位置（从原始代码迁移）
-    drag_start_pos: windows::Win32::Foundation::POINT,
-    /// 拖拽开始时的选中元素矩形
-    drag_start_rect: windows::Win32::Foundation::RECT,
-    /// 拖拽开始时的字体大小（用于文字缩放）
-    drag_start_font_size: f32,
 
-    /// 文本编辑状态（从原始代码迁移）
+    // 元素交互状态（仅限绘图元素）
+    /// 当前交互模式（仅限绘图元素操作）
+    interaction_mode: ElementInteractionMode,
+    /// 鼠标按下状态
+    mouse_pressed: bool,
+    /// 交互开始位置
+    interaction_start_pos: windows::Win32::Foundation::POINT,
+    /// 交互开始时的元素矩形
+    interaction_start_rect: windows::Win32::Foundation::RECT,
+    /// 交互开始时的字体大小（用于文字缩放）
+    interaction_start_font_size: f32,
+
+    // 文本编辑状态
+    /// 是否正在编辑文本
     text_editing: bool,
+    /// 正在编辑的元素索引
     editing_element_index: Option<usize>,
+    /// 文本光标位置
     text_cursor_pos: usize,
+    /// 光标是否可见
     text_cursor_visible: bool,
+    /// 光标定时器ID
     cursor_timer_id: usize,
-    just_saved_text: bool, // 防止连续创建文本元素
 }
 
 impl DrawingManager {
@@ -70,7 +116,7 @@ impl DrawingManager {
             current_element: None,
             selected_element: None,
 
-            // 初始化从WindowState迁移的字段
+            // 初始化绘图相关字段
             drawing_color: D2D1_COLOR_F {
                 r: 1.0,
                 g: 0.0,
@@ -79,25 +125,25 @@ impl DrawingManager {
             }, // 默认红色
             drawing_thickness: 3.0,
             history_stack: Vec::new(),
-            // 初始化拖拽相关字段（从原始代码迁移）
-            drag_mode: crate::types::DragMode::None,
+
+            // 初始化元素交互相关字段
+            interaction_mode: ElementInteractionMode::None,
             mouse_pressed: false,
-            drag_start_pos: windows::Win32::Foundation::POINT { x: 0, y: 0 },
-            drag_start_rect: windows::Win32::Foundation::RECT {
+            interaction_start_pos: windows::Win32::Foundation::POINT { x: 0, y: 0 },
+            interaction_start_rect: windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
                 right: 0,
                 bottom: 0,
             },
-            drag_start_font_size: 0.0,
+            interaction_start_font_size: 0.0,
 
-            // 初始化文本编辑相关字段（从原始代码迁移）
+            // 初始化文本编辑相关字段
             text_editing: false,
             editing_element_index: None,
             text_cursor_pos: 0,
             text_cursor_visible: false,
             cursor_timer_id: 1001, // 使用固定的定时器ID
-            just_saved_text: false,
         })
     }
 
@@ -116,6 +162,16 @@ impl DrawingManager {
 
         // 重置元素管理器
         self.elements.clear();
+
+        // 重置交互状态
+        self.interaction_mode = ElementInteractionMode::None;
+        self.mouse_pressed = false;
+
+        // 重置文本编辑状态
+        self.text_editing = false;
+        self.editing_element_index = None;
+        self.text_cursor_pos = 0;
+        self.text_cursor_visible = false;
     }
 
     /// 处理绘图消息
@@ -173,12 +229,10 @@ impl DrawingManager {
             }
             DrawingMessage::FinishDrawing => {
                 if let Some(element) = self.current_element.take() {
-                    // 保存历史状态（包含选择状态）
-                    self.history
-                        .save_state(&self.elements, self.selected_element);
-                    // 添加元素
+                    // 注意：历史保存已在操作开始前完成（start_drawing_shape）
+                    // 这里只负责提交元素
                     self.elements.add_element(element);
-                    vec![Command::RequestRedraw]
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![]
                 }
@@ -218,7 +272,8 @@ impl DrawingManager {
             DrawingMessage::SelectElement(index) => {
                 self.selected_element = index;
                 self.elements.set_selected(index);
-                vec![Command::RequestRedraw]
+                // 选中元素时同步工具栏状态（与旧代码保持一致）
+                vec![Command::UpdateToolbar, Command::RequestRedraw]
             }
             DrawingMessage::AddElement(element) => {
                 // 保存历史状态（包含选择状态）
@@ -238,12 +293,14 @@ impl DrawingManager {
                     // 统一通过 ElementManager 设置选中状态
                     self.elements.set_selected(self.selected_element);
 
-                    vec![Command::RequestRedraw]
+                    // 选中元素时同步工具栏状态（与旧代码保持一致）
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     // 没有点击元素，清除选择
                     self.selected_element = None;
                     self.elements.set_selected(None);
-                    vec![]
+                    // 清除选择时也需要更新工具栏状态
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 }
             }
         }
@@ -297,6 +354,14 @@ impl DrawingManager {
             if let Some(ref element) = self.current_element {
                 self.render_element(element, renderer)?;
             }
+            // 渲染元素选择（D2D专用实现）
+            self.draw_element_selection_d2d(
+                renderer
+                    .as_any()
+                    .downcast_ref::<crate::platform::windows::d2d::Direct2DRenderer>()
+                    .unwrap(),
+                selection_rect,
+            )?;
         }
 
         // 恢复裁剪区域（从原始代码迁移）
@@ -469,23 +534,29 @@ impl DrawingManager {
                 }
             }
             crate::types::DrawingTool::Text => {
-                if !element.points.is_empty() && !element.text.is_empty() {
-                    let position = Point {
-                        x: element.points[0].x as f32,
-                        y: element.points[0].y as f32,
-                    };
+                if !element.points.is_empty() {
+                    // 只要有位置点就渲染文本（即使文本为空，也要为光标显示做准备）
+                    if !element.text.is_empty() {
+                        let position = Point {
+                            x: element.points[0].x as f32,
+                            y: element.points[0].y as f32,
+                        };
 
-                    let text_style = TextStyle {
-                        font_size: element.thickness, // 使用thickness作为字体大小
-                        color,
-                        font_family: "Microsoft YaHei".to_string(),
-                    };
+                        let text_style = TextStyle {
+                            font_size: element.font_size,
+                            color,
+                            font_family: element.font_name.clone(), // use element's own font settings
+                        };
 
-                    renderer
-                        .draw_text(&element.text, position, &text_style)
-                        .map_err(|e| {
-                            DrawingError::RenderError(format!("Failed to draw text: {:?}", e))
-                        })?;
+                        renderer
+                            .draw_text(&element.text, position, &text_style)
+                            .map_err(|e| {
+                                DrawingError::RenderError(format!("Failed to draw text: {:?}", e))
+                            })?;
+                    }
+
+                    // 如果正在编辑此文本元素，需要绘制文本框边框和光标
+                    // 这部分逻辑将在 draw_text_element_d2d 中处理
                 }
             }
             _ => {}
@@ -528,8 +599,28 @@ impl DrawingManager {
         use windows::Win32::Graphics::Direct2D::Common::*;
         use windows::Win32::Graphics::Direct2D::*;
 
+        // 文本元素：只有在“文本编辑模式且正在编辑该元素”时才显示边框和手柄
+        if element.tool == DrawingTool::Text {
+            let is_editing_this = self.text_editing
+                && self.editing_element_index.map_or(false, |idx| {
+                    let elems = self.elements.get_elements();
+                    idx < elems.len() && std::ptr::eq(element, &elems[idx])
+                });
+            if !is_editing_this {
+                return Ok(());
+            }
+        }
+
         if let Some(ref render_target) = d2d_renderer.render_target {
             unsafe {
+                // 箭头元素特殊处理：只显示手柄，不显示虚线边框（与旧代码保持一致）
+                if element.tool == crate::types::DrawingTool::Arrow {
+                    // 箭头只绘制手柄
+                    self.draw_element_handles_d2d(element, render_target, selection_rect)?;
+                    return Ok(());
+                }
+
+                // 其他元素：绘制虚线边框和手柄
                 // 创建虚线样式（从原始代码迁移）
                 if let Some(ref d2d_factory) = d2d_renderer.d2d_factory {
                     let stroke_style_properties = D2D1_STROKE_STYLE_PROPERTIES {
@@ -584,56 +675,16 @@ impl DrawingManager {
     ) -> Result<(), DrawingError> {
         use windows::Win32::Graphics::Direct2D::Common::*;
 
+        // Unified selection visualization: always draw a dashed rectangle around
+        // the element's bounding box regardless of its shape.
         unsafe {
-            match element.tool {
-                crate::types::DrawingTool::Rectangle | crate::types::DrawingTool::Circle => {
-                    if element.points.len() >= 2 {
-                        let rect = D2D_RECT_F {
-                            left: element.points[0].x.min(element.points[1].x) as f32,
-                            top: element.points[0].y.min(element.points[1].y) as f32,
-                            right: element.points[0].x.max(element.points[1].x) as f32,
-                            bottom: element.points[0].y.max(element.points[1].y) as f32,
-                        };
-
-                        if element.tool == crate::types::DrawingTool::Rectangle {
-                            render_target.DrawRectangle(&rect, brush, 1.0, Some(stroke_style));
-                        } else {
-                            // Circle - draw ellipse
-                            let ellipse = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                                point: windows_numerics::Vector2 {
-                                    X: (rect.left + rect.right) / 2.0,
-                                    Y: (rect.top + rect.bottom) / 2.0,
-                                },
-                                radiusX: (rect.right - rect.left) / 2.0,
-                                radiusY: (rect.bottom - rect.top) / 2.0,
-                            };
-                            render_target.DrawEllipse(&ellipse, brush, 1.0, Some(stroke_style));
-                        }
-                    }
-                }
-                crate::types::DrawingTool::Text => {
-                    if !element.points.is_empty() {
-                        // For text, draw dashed border around text bounds
-                        let text_rect = D2D_RECT_F {
-                            left: element.rect.left as f32,
-                            top: element.rect.top as f32,
-                            right: element.rect.right as f32,
-                            bottom: element.rect.bottom as f32,
-                        };
-                        render_target.DrawRectangle(&text_rect, brush, 1.0, Some(stroke_style));
-                    }
-                }
-                _ => {
-                    // For other tools like Arrow, Pen - draw around bounding rect
-                    let bounding_rect = D2D_RECT_F {
-                        left: element.rect.left as f32,
-                        top: element.rect.top as f32,
-                        right: element.rect.right as f32,
-                        bottom: element.rect.bottom as f32,
-                    };
-                    render_target.DrawRectangle(&bounding_rect, brush, 1.0, Some(stroke_style));
-                }
-            }
+            let rect = D2D_RECT_F {
+                left: element.rect.left as f32,
+                top: element.rect.top as f32,
+                right: element.rect.right as f32,
+                bottom: element.rect.bottom as f32,
+            };
+            render_target.DrawRectangle(&rect, brush, 1.0, Some(stroke_style));
         }
         Ok(())
     }
@@ -958,8 +1009,11 @@ impl DrawingManager {
                     return Ok(());
                 };
 
-                // 创建文本画刷
-                let text_brush = render_target.CreateSolidColorBrush(&element.color, None);
+                // 使用元素自身的颜色属性创建文本画刷
+                let font_color = element.color;
+
+                // 创建文本画刷（使用元素颜色）
+                let text_brush = render_target.CreateSolidColorBrush(&font_color, None);
 
                 if let Ok(brush) = text_brush {
                     // 添加内边距（从原始代码迁移）
@@ -978,15 +1032,26 @@ impl DrawingManager {
                         element.text.lines().collect()
                     };
 
-                    let font_size = element.thickness.max(12.0); // 最小字体大小12
+                    let font_size = element.font_size.max(12.0); // 最小字体大小12
                     let line_height = font_size * 1.2;
+                    let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
+                    let font_weight = if element.font_weight > 400 {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD
+                    } else {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL
+                    };
+                    let font_style = if element.font_italic {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_ITALIC
+                    } else {
+                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL
+                    };
 
-                    // 创建文本格式
+                    // 创建动态字体格式，使用设置中的字体属性（与旧代码保持一致）
                     if let Ok(text_format) = dwrite_factory.CreateTextFormat(
-                        windows::core::w!("Microsoft YaHei"),
+                        windows::core::PCWSTR(font_name_wide.as_ptr()),
                         None,
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
+                        font_weight,
+                        font_style,
                         windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
                         font_size,
                         windows::core::w!(""),
@@ -1019,15 +1084,122 @@ impl DrawingManager {
                             // 转换文本为宽字符
                             let wide_text: Vec<u16> = line.encode_utf16().collect();
 
-                            // 绘制文本行
-                            render_target.DrawText(
-                                &wide_text,
-                                &text_format,
-                                &line_rect,
-                                &brush,
-                                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-                            );
+                            // 如果需要下划线或删除线，使用TextLayout；否则使用简单的DrawText
+                            if element.font_underline || element.font_strikeout {
+                                // 创建文本布局以支持下划线和删除线（使用元素属性）
+                                if let Ok(text_layout) = dwrite_factory.CreateTextLayout(
+                                    &wide_text,
+                                    &text_format,
+                                    line_rect.right - line_rect.left,
+                                    line_rect.bottom - line_rect.top,
+                                ) {
+                                    // 应用下划线和删除线（与旧代码保持一致）
+                                    if element.font_underline && !wide_text.is_empty() {
+                                        let _ = text_layout.SetUnderline(
+                                            true,
+                                            windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                                startPosition: 0,
+                                                length: wide_text.len() as u32,
+                                            },
+                                        );
+                                    }
+                                    if element.font_strikeout && !wide_text.is_empty() {
+                                        let _ = text_layout.SetStrikethrough(
+                                            true,
+                                            windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                                startPosition: 0,
+                                                length: wide_text.len() as u32,
+                                            },
+                                        );
+                                    }
+
+                                    // 绘制文本布局（与旧代码保持一致）
+                                    render_target.DrawTextLayout(
+                                        crate::utils::d2d_point(line_rect.left as i32, line_rect.top as i32),
+                                        &text_layout,
+                                        &brush,
+                                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    );
+                                }
+                            } else {
+                                // 简单文本绘制（无特殊样式）
+                                render_target.DrawText(
+                                    &wide_text,
+                                    &text_format,
+                                    &line_rect,
+                                    &brush,
+                                    windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                                );
+                            }
+                        }
+
+                        // 绘制文本输入光标（caret），仅当该元素正在编辑且光标可见
+                        if self.text_editing && self.text_cursor_visible {
+                            if let Some(edit_idx) = self.editing_element_index {
+                                // 通过指针相等找到当前元素索引
+                                if let Some(current_idx) = self
+                                    .elements
+                                    .get_elements()
+                                    .iter()
+                                    .position(|e| std::ptr::eq(e, element))
+                                {
+                                    if current_idx == edit_idx {
+                                        // 基于字符计算当前行与列
+                                        let before: String = element
+                                            .text
+                                            .chars()
+                                            .take(self.text_cursor_pos)
+                                            .collect();
+                                        let lines_before: Vec<&str> = before.lines().collect();
+                                        let caret_line = if before.ends_with('\n') {
+                                            lines_before.len()
+                                        } else {
+                                            lines_before.len().saturating_sub(1)
+                                        };
+                                        let current_line_text = if before.ends_with('\n') {
+                                            ""
+                                        } else {
+                                            lines_before.last().copied().unwrap_or("")
+                                        };
+                                        // 使用 DirectWrite 精确测量光标前文本宽度
+                                        let before_wide: Vec<u16> =
+                                            current_line_text.encode_utf16().collect();
+                                        let mut caret_x = text_content_rect.left;
+                                        if let Ok(layout) = dwrite_factory.CreateTextLayout(
+                                            &before_wide,
+                                            &text_format,
+                                            f32::MAX,
+                                            f32::MAX,
+                                        ) {
+                                            let mut metrics = windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
+                                            let _ = layout.GetMetrics(&mut metrics);
+                                            caret_x += metrics.width;
+                                        }
+
+                                        let caret_y_top = text_content_rect.top
+                                            + (caret_line as f32) * line_height;
+                                        let caret_y_bottom = (caret_y_top + line_height)
+                                            .min(text_content_rect.bottom);
+
+                                        let caret_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                            left: caret_x,
+                                            top: caret_y_top,
+                                            right: caret_x + 1.0,
+                                            bottom: caret_y_bottom,
+                                        };
+
+                                        if let Ok(cursor_brush) = render_target
+                                            .CreateSolidColorBrush(
+                                                &crate::constants::COLOR_TEXT_CURSOR,
+                                                None,
+                                            )
+                                        {
+                                            render_target.FillRectangle(&caret_rect, &cursor_brush);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1065,8 +1237,19 @@ impl DrawingManager {
         selection_rect: Option<windows::Win32::Foundation::RECT>,
     ) -> Vec<Command> {
         if self.mouse_pressed {
-            self.update_drag(x, y, selection_rect);
-            vec![Command::RequestRedraw]
+            // 添加拖拽距离阈值检查（与旧代码保持一致）
+            const DRAG_THRESHOLD: i32 = 5;
+            let dx = (x - self.interaction_start_pos.x).abs();
+            let dy = (y - self.interaction_start_pos.y).abs();
+
+            // 只有当移动距离超过阈值时才开始真正的拖拽
+            if dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD {
+                self.update_drag(x, y, selection_rect);
+                vec![Command::RequestRedraw]
+            } else {
+                // 移动距离不够，不进行拖拽
+                vec![]
+            }
         } else {
             // 检查是否悬停在元素上（用于改变光标/预览）
             if let Some(_index) = self.elements.get_element_at_position(x, y) {
@@ -1085,8 +1268,8 @@ impl DrawingManager {
         y: i32,
         selection_rect: Option<windows::Win32::Foundation::RECT>,
     ) {
-        match self.drag_mode {
-            crate::types::DragMode::DrawingShape => {
+        match &self.interaction_mode {
+            ElementInteractionMode::Drawing => {
                 if let Some(ref mut element) = self.current_element {
                     // 如果有选择框，限制绘制在选择框内（从原始代码迁移）
                     let (clamped_x, clamped_y) = if let Some(rect) = selection_rect {
@@ -1107,7 +1290,7 @@ impl DrawingManager {
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.is_empty() {
-                                element.points.push(self.drag_start_pos);
+                                element.points.push(self.interaction_start_pos);
                             }
                             if element.points.len() == 1 {
                                 element.points.push(windows::Win32::Foundation::POINT {
@@ -1134,15 +1317,15 @@ impl DrawingManager {
                     }
                 }
             }
-            crate::types::DragMode::MovingElement => {
+            ElementInteractionMode::MovingElement => {
                 if let Some(index) = self.selected_element {
                     if let Some(element) = self.elements.get_elements().get(index) {
                         if element.tool != DrawingTool::Pen {
-                            let dx = x - self.drag_start_pos.x;
-                            let dy = y - self.drag_start_pos.y;
+                            let dx = x - self.interaction_start_pos.x;
+                            let dy = y - self.interaction_start_pos.y;
                             if let Some(el) = self.elements.get_element_mut(index) {
-                                let current_dx = el.rect.left - self.drag_start_rect.left;
-                                let current_dy = el.rect.top - self.drag_start_rect.top;
+                                let current_dx = el.rect.left - self.interaction_start_rect.left;
+                                let current_dy = el.rect.top - self.interaction_start_rect.top;
                                 el.move_by(-current_dx, -current_dy);
                                 el.move_by(dx, dy);
                             }
@@ -1150,23 +1333,16 @@ impl DrawingManager {
                     }
                 }
             }
-            crate::types::DragMode::ResizingTopLeft
-            | crate::types::DragMode::ResizingTopCenter
-            | crate::types::DragMode::ResizingTopRight
-            | crate::types::DragMode::ResizingMiddleRight
-            | crate::types::DragMode::ResizingBottomRight
-            | crate::types::DragMode::ResizingBottomCenter
-            | crate::types::DragMode::ResizingBottomLeft
-            | crate::types::DragMode::ResizingMiddleLeft => {
+            ElementInteractionMode::ResizingElement(resize_mode) => {
                 if let Some(index) = self.selected_element {
                     if let Some(el) = self.elements.get_element_mut(index) {
                         if el.tool == DrawingTool::Pen {
                             return;
                         }
-                        let mut new_rect = self.drag_start_rect;
-                        let dx = x - self.drag_start_pos.x;
-                        let dy = y - self.drag_start_pos.y;
-                        match self.drag_mode {
+                        let mut new_rect = self.interaction_start_rect;
+                        let dx = x - self.interaction_start_pos.x;
+                        let dy = y - self.interaction_start_pos.y;
+                        match resize_mode {
                             crate::types::DragMode::ResizingTopLeft => {
                                 new_rect.left += dx;
                                 new_rect.top += dy;
@@ -1202,7 +1378,7 @@ impl DrawingManager {
                             DrawingTool::Arrow => {
                                 // 仅支持通过左上角/右下角手柄调整起点/终点（与旧逻辑一致）
                                 if el.points.len() >= 2 {
-                                    match self.drag_mode {
+                                    match resize_mode {
                                         crate::types::DragMode::ResizingTopLeft => {
                                             el.points[0] =
                                                 windows::Win32::Foundation::POINT { x, y };
@@ -1221,13 +1397,15 @@ impl DrawingManager {
                             }
                             DrawingTool::Text => {
                                 // 文本元素：按比例缩放并同步字体大小（基于拖拽起始字号）
-                                let original_width =
-                                    (self.drag_start_rect.right - self.drag_start_rect.left).max(1);
-                                let original_height =
-                                    (self.drag_start_rect.bottom - self.drag_start_rect.top).max(1);
+                                let original_width = (self.interaction_start_rect.right
+                                    - self.interaction_start_rect.left)
+                                    .max(1);
+                                let original_height = (self.interaction_start_rect.bottom
+                                    - self.interaction_start_rect.top)
+                                    .max(1);
 
                                 // 计算比例（不同手柄采用对应方向）
-                                let (scale_x, scale_y) = match self.drag_mode {
+                                let (scale_x, scale_y) = match resize_mode {
                                     crate::types::DragMode::ResizingTopLeft => (
                                         (original_width - dx) as f32 / original_width as f32,
                                         (original_height - dy) as f32 / original_height as f32,
@@ -1262,9 +1440,17 @@ impl DrawingManager {
                                 };
 
                                 let scale = scale_x.min(scale_y).max(0.1);
-                                el.thickness = (self.drag_start_font_size * scale as f32).max(8.0);
-                                // 应用新的矩形
+                                el.font_size =
+                                    (self.interaction_start_font_size * scale as f32).max(8.0);
+
+                                // 重要：根据新的字体大小重新计算文本框尺寸（与旧代码保持一致）
+                                // 先应用新的矩形，然后调用update_text_element_size来精确调整
                                 el.resize(new_rect);
+
+                                // 获取当前元素索引并调用文本尺寸更新函数
+                                if let Some(element_index) = self.selected_element {
+                                    self.update_text_element_size(element_index);
+                                }
                             }
                             _ => {
                                 // 其他元素：按矩形调整
@@ -1279,7 +1465,7 @@ impl DrawingManager {
     }
 
     /// 检测指定元素矩形上的手柄命中（参考旧代码逻辑）
-    fn get_element_handle_at_position(
+    pub fn get_element_handle_at_position(
         &self,
         x: i32,
         y: i32,
@@ -1355,21 +1541,58 @@ impl DrawingManager {
             None => true,
         };
 
-        // 文本工具特殊处理（从原始代码迁移）
-        if inside_selection
-            && self.current_tool == DrawingTool::Text
-            && !self.text_editing
-            && !self.just_saved_text
-        {
-            // 优先检查是否点击现有文本元素的手柄或内容
-            if let Some(idx) = self.get_text_element_at_position(x, y) {
-                // 进入编辑模式（双击在更上层处理，这里单击直接编辑保持旧逻辑简化）
-                return self.start_text_editing(idx);
+        // 文本编辑状态下的特殊处理（从原始代码迁移）
+        if self.text_editing {
+            if let Some(editing_index) = self.editing_element_index {
+                // 检查是否点击了正在编辑的文本元素
+                if let Some(element) = self.elements.get_elements().get(editing_index) {
+                    if element.contains_point(x, y) {
+                        // 点击正在编辑的文本元素，检查是否点击了手柄
+                        let handle_mode = self.get_element_handle_at_position(
+                            x,
+                            y,
+                            &element.rect,
+                            element.tool,
+                            editing_index,
+                        );
+                        if handle_mode != crate::types::DragMode::None {
+                            // 点击了手柄，开始拖拽
+                            self.interaction_mode =
+                                ElementInteractionMode::from_drag_mode(handle_mode);
+                            self.mouse_pressed = true;
+                            self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                            self.interaction_start_rect = element.rect;
+                            self.interaction_start_font_size = element.font_size;
+                            return vec![Command::RequestRedraw];
+                        }
+                        // 点击文本内容区域，继续编辑；返回重绘以消费事件，避免上层退出
+                        return vec![Command::RequestRedraw];
+                    }
+                }
+                // 点击了其他地方，停止编辑
+                return self.stop_text_editing();
             }
         }
 
-        // 重置文本保存标志
-        self.just_saved_text = false;
+        // 文本工具特殊处理（从原始代码迁移）
+        if inside_selection && self.current_tool == DrawingTool::Text && !self.text_editing {
+            // 检查是否点击了任何现有元素（与原始代码保持一致）
+            if let Some(idx) = self.elements.get_element_at_position(x, y) {
+                // 如果点击的是文本元素，选择它
+                if let Some(element) = self.elements.get_elements().get(idx) {
+                    if element.tool == DrawingTool::Text {
+                        // 单击只选择文本元素，不进入编辑模式（双击才进入编辑模式）
+                        self.handle_message(DrawingMessage::SelectElement(Some(idx)));
+                        return vec![Command::RequestRedraw];
+                    }
+                }
+                // 如果点击的是其他类型元素，不创建新文本（与原始代码保持一致）
+                return vec![];
+            } else {
+                // 未命中任何元素：在选框内空白处创建新文本并直接进入编辑
+                return self.create_and_edit_text_element(x, y);
+            }
+        }
 
         // 选择框外：不消费，让Screenshot处理（例如拖拽选择框）
         if !inside_selection {
@@ -1380,66 +1603,84 @@ impl DrawingManager {
         }
 
         // 先尝试与现有元素交互（无论当前工具是什么）
-        // 1) 已选元素的手柄优先
-        if let Some(sel_idx) = self.selected_element {
-            if let Some(element) = self.elements.get_elements().get(sel_idx) {
-                if element.tool != DrawingTool::Pen {
-                    let handle_mode = self.get_element_handle_at_position(
-                        x,
-                        y,
-                        &element.rect,
-                        element.tool,
-                        sel_idx,
-                    );
-                    if handle_mode != crate::types::DragMode::None {
-                        self.drag_mode = handle_mode;
-                        self.mouse_pressed = true;
-                        self.drag_start_pos = windows::Win32::Foundation::POINT { x, y };
-                        self.drag_start_rect = element.rect;
-                        self.drag_start_font_size = element.thickness;
-                        return vec![Command::RequestRedraw];
-                    }
-                    // 2) 已选元素内部（移动）
-                    if element.contains_point(x, y) {
-                        self.drag_mode = crate::types::DragMode::MovingElement;
-                        self.mouse_pressed = true;
-                        self.drag_start_pos = windows::Win32::Foundation::POINT { x, y };
-                        self.drag_start_rect = element.rect;
-                        return vec![Command::RequestRedraw];
+        // 1) 已选元素的手柄优先 - 但必须在选择框内
+        if inside_selection {
+            if let Some(sel_idx) = self.selected_element {
+                if let Some(element) = self.elements.get_elements().get(sel_idx) {
+                    if element.tool != DrawingTool::Pen {
+                        let handle_mode = self.get_element_handle_at_position(
+                            x,
+                            y,
+                            &element.rect,
+                            element.tool,
+                            sel_idx,
+                        );
+                        if handle_mode != crate::types::DragMode::None {
+                            self.interaction_mode =
+                                ElementInteractionMode::from_drag_mode(handle_mode);
+                            self.mouse_pressed = true;
+                            self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                            self.interaction_start_rect = element.rect;
+                            self.interaction_start_font_size = element.font_size;
+                            return vec![Command::RequestRedraw];
+                        }
+                        // 2) 已选元素内部（移动）- 也必须在选择框内
+                        if element.contains_point(x, y) {
+                            self.interaction_mode = ElementInteractionMode::MovingElement;
+                            self.mouse_pressed = true;
+                            self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                            self.interaction_start_rect = element.rect;
+                            return vec![Command::RequestRedraw];
+                        }
                     }
                 }
             }
         }
 
-        // 3) 检查是否点击其他元素
-        if let Some(idx) = self.elements.get_element_at_position(x, y) {
-            // 选择该元素
-            self.handle_message(DrawingMessage::SelectElement(Some(idx)));
-            if let Some(element) = self.elements.get_elements().get(idx) {
-                if element.tool != DrawingTool::Pen {
-                    let handle_mode =
-                        self.get_element_handle_at_position(x, y, &element.rect, element.tool, idx);
-                    self.drag_start_rect = element.rect;
-                    self.drag_start_pos = windows::Win32::Foundation::POINT { x, y };
-                    if handle_mode != crate::types::DragMode::None {
-                        self.drag_mode = handle_mode;
-                        self.mouse_pressed = true;
-                        return vec![Command::RequestRedraw];
-                    } else if element.contains_point(x, y) {
-                        self.drag_mode = crate::types::DragMode::MovingElement;
-                        self.mouse_pressed = true;
-                        return vec![Command::RequestRedraw];
+        // 3) 检查是否点击其他元素 - 但必须在选择框内
+        if inside_selection {
+            if let Some(idx) = self.elements.get_element_at_position(x, y) {
+                // 先获取元素信息，避免借用冲突
+                let (element_tool, element_rect, element_contains_point) = {
+                    if let Some(element) = self.elements.get_elements().get(idx) {
+                        (element.tool, element.rect, element.contains_point(x, y))
+                    } else {
+                        return vec![];
                     }
+                };
+
+                // 如果是画笔元素，不允许选择（与旧代码保持一致）
+                if element_tool == DrawingTool::Pen {
+                    // 笔画不能被选择，直接返回空命令
+                    return vec![];
                 }
+
+                // 选择该元素（仅非笔画元素）
+                self.handle_message(DrawingMessage::SelectElement(Some(idx)));
+
+                let handle_mode =
+                    self.get_element_handle_at_position(x, y, &element_rect, element_tool, idx);
+                self.interaction_start_rect = element_rect;
+                self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                if handle_mode != crate::types::DragMode::None {
+                    self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
+                    self.mouse_pressed = true;
+                    return vec![Command::RequestRedraw];
+                } else if element_contains_point {
+                    self.interaction_mode = ElementInteractionMode::MovingElement;
+                    self.mouse_pressed = true;
+                    return vec![Command::RequestRedraw];
+                }
+
+                // 仅仅选中元素，不开始拖拽
+                return vec![Command::RequestRedraw];
             }
-            // 仅仅选中元素，不开始拖拽
-            return vec![Command::RequestRedraw];
         }
 
         // 4) 若没有元素命中，且选择了绘图工具，则尝试开始绘制
         if self.current_tool != DrawingTool::None {
             if inside_selection {
-                self.drag_start_pos = windows::Win32::Foundation::POINT { x, y };
+                self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                 self.start_drawing_shape(x, y);
                 self.mouse_pressed = true;
                 return vec![Command::RequestRedraw];
@@ -1459,20 +1700,32 @@ impl DrawingManager {
         self.selected_element = None;
         self.elements.set_selected(None);
 
-        // 保存历史状态
-        self.save_history();
+        // 保存历史状态（在操作开始前保存，以便精确撤销）
+        self.history
+            .save_state(&self.elements, self.selected_element);
 
-        // 设置拖拽模式为绘制图形
-        self.drag_mode = crate::types::DragMode::DrawingShape;
+        // 设置交互模式为绘制图形
+        self.interaction_mode = ElementInteractionMode::Drawing;
 
         // 创建新元素
         let mut new_element = DrawingElement::new(self.current_tool);
-        new_element.color = self.drawing_color;
-        new_element.thickness = if self.current_tool == DrawingTool::Text {
-            20.0 // 默认字体大小
+        if self.current_tool == DrawingTool::Text {
+            // 文本元素使用文字颜色与字体设置
+            let (_drawing_color, text_color, _sel_border, _toolbar_bg) =
+                crate::constants::get_colors_from_settings();
+            let settings = crate::simple_settings::SimpleSettings::load();
+            new_element.color = text_color;
+            new_element.font_size = settings.font_size;
+            new_element.font_name = settings.font_name.clone();
+            new_element.font_weight = settings.font_weight;
+            new_element.font_italic = settings.font_italic;
+            new_element.font_underline = settings.font_underline;
+            new_element.font_strikeout = settings.font_strikeout;
         } else {
-            self.drawing_thickness
-        };
+            // 其他元素使用绘图颜色与线宽
+            new_element.color = self.drawing_color;
+            new_element.thickness = self.drawing_thickness;
+        }
 
         match self.current_tool {
             DrawingTool::Pen => {
@@ -1501,7 +1754,7 @@ impl DrawingManager {
         if self.mouse_pressed {
             self.end_drag();
             self.mouse_pressed = false;
-            self.drag_mode = crate::types::DragMode::None;
+            self.interaction_mode = ElementInteractionMode::None;
             vec![Command::RequestRedraw]
         } else {
             vec![]
@@ -1510,7 +1763,7 @@ impl DrawingManager {
 
     /// 结束拖拽操作（从原始代码迁移）
     fn end_drag(&mut self) {
-        if self.drag_mode == crate::types::DragMode::DrawingShape {
+        if self.interaction_mode == ElementInteractionMode::Drawing {
             if let Some(mut element) = self.current_element.take() {
                 // 根据不同工具类型判断是否保存
                 let should_save = match element.tool {
@@ -1610,12 +1863,69 @@ impl DrawingManager {
 
     /// 是否正在进行任何绘图交互（绘制/移动/调整）
     pub fn is_dragging(&self) -> bool {
-        self.mouse_pressed && self.drag_mode != crate::types::DragMode::None
+        self.mouse_pressed && self.interaction_mode != ElementInteractionMode::None
     }
 
     /// 获取当前工具
     pub fn get_current_tool(&self) -> DrawingTool {
         self.current_tool
+    }
+
+    /// 是否正在文本编辑
+    pub fn is_text_editing(&self) -> bool {
+        self.text_editing
+    }
+
+    /// 当前编辑元素索引
+    pub fn get_editing_element_index(&self) -> Option<usize> {
+        self.editing_element_index
+    }
+
+    /// 获取已选中元素索引
+    pub fn get_selected_element_index(&self) -> Option<usize> {
+        self.selected_element
+    }
+
+    /// 只读获取元素引用
+    pub fn get_element_ref(&self, index: usize) -> Option<&DrawingElement> {
+        self.elements.get_elements().get(index)
+    }
+
+    /// 获取选中元素的工具类型（用于同步工具栏状态）
+    pub fn get_selected_element_tool(&self) -> Option<DrawingTool> {
+        if let Some(index) = self.selected_element {
+            if let Some(element) = self.elements.get_elements().get(index) {
+                return Some(element.tool);
+            }
+        }
+        None
+    }
+
+    /// 重新加载绘图属性（从设置中同步最新的颜色和粗细等属性）
+    pub fn reload_drawing_properties(&mut self) {
+        // 从设置中加载最新的绘图属性
+        let (drawing_color, _text_color, _selection_border_color, _toolbar_bg_color) =
+            crate::constants::get_colors_from_settings();
+
+        // 从设置中加载绘图粗细
+        let settings = crate::simple_settings::SimpleSettings::load();
+        let drawing_thickness = settings.line_thickness;
+
+        // 更新内部缓存的绘图属性
+        self.drawing_color = drawing_color;
+        self.drawing_thickness = drawing_thickness;
+
+        // 更新工具管理器的配置
+        self.tools.set_brush_color(
+            drawing_color.r,
+            drawing_color.g,
+            drawing_color.b,
+            drawing_color.a,
+        );
+        self.tools.set_brush_thickness(drawing_thickness);
+
+        // 更新字体大小
+        self.tools.set_text_size(settings.font_size);
     }
 
     /// 处理双击事件（优先用于文本编辑）
@@ -1721,8 +2031,12 @@ impl DrawingManager {
         self.elements.set_selected(None);
         self.selected_element = None;
 
-        // 保存历史状态
-        self.save_history();
+        // 确保工具栏状态与当前工具保持一致（与原始代码一致）
+        self.current_tool = DrawingTool::Text;
+
+        // 保存历史状态（在操作开始前保存，以便精确撤销）
+        self.history
+            .save_state(&self.elements, self.selected_element);
 
         // 创建新的文字元素
         let mut text_element = DrawingElement::new(DrawingTool::Text);
@@ -1730,25 +2044,37 @@ impl DrawingManager {
             .points
             .push(windows::Win32::Foundation::POINT { x, y });
 
-        // 使用文字颜色
-        let (_, text_color, _, _) = crate::constants::get_colors_from_settings();
-        text_element.color = text_color;
-
-        // 使用设置中的字体大小
+        // 使用设置中的字体大小、颜色和样式（仅在创建时读取一次并保存到元素上）
         let settings = crate::simple_settings::SimpleSettings::load();
-        text_element.thickness = settings.font_size;
+        text_element.color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+            r: settings.font_color.0 as f32 / 255.0,
+            g: settings.font_color.1 as f32 / 255.0,
+            b: settings.font_color.2 as f32 / 255.0,
+            a: 1.0,
+        };
+        text_element.font_size = settings.font_size;
+        text_element.font_name = settings.font_name.clone();
+        text_element.font_weight = settings.font_weight;
+        text_element.font_italic = settings.font_italic;
+        text_element.font_underline = settings.font_underline;
+        text_element.font_strikeout = settings.font_strikeout;
         text_element.text = String::new(); // 空文本，等待用户输入
         text_element.selected = true;
 
-        // 设置文本框大小
-        const TEXT_BOX_WIDTH: i32 = 200;
-        const TEXT_BOX_HEIGHT: i32 = 30;
-        text_element.rect = windows::Win32::Foundation::RECT {
-            left: x,
-            top: y,
-            right: x + TEXT_BOX_WIDTH,
-            bottom: y + TEXT_BOX_HEIGHT,
-        };
+        // 根据字体大小动态计算初始文本框尺寸（与旧代码保持一致）
+        let font_size = text_element.font_size;
+        let dynamic_line_height = (font_size * 1.2) as i32;
+        let initial_width = (font_size * 6.0) as i32; // 大约6个字符的宽度
+        let initial_height = dynamic_line_height + (crate::constants::TEXT_PADDING * 2.0) as i32;
+
+        // 设置第二个点来定义文本框尺寸（与旧代码保持一致）
+        text_element.points.push(windows::Win32::Foundation::POINT {
+            x: x + initial_width,
+            y: y + initial_height,
+        });
+
+        // 更新边界矩形
+        text_element.update_bounding_rect();
 
         // 通过 ElementManager 添加，并以其索引作为编辑目标
         self.elements.add_element(text_element);
@@ -1774,23 +2100,43 @@ impl DrawingManager {
             return vec![];
         }
 
-        self.text_editing = false;
+        // 立即隐藏光标，确保保存时光标不可见
         self.text_cursor_visible = false;
-        self.just_saved_text = true; // 防止立即创建新文本
 
-        // 如果文本为空，删除该元素
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
-                if el.text.trim().is_empty() {
-                    // 从元素管理器中删除
+        // 先停止编辑状态，再检查是否需要删除空元素
+        self.text_editing = false;
+        let editing_index = self.editing_element_index;
+        self.editing_element_index = None;
+        self.text_cursor_pos = 0;
+
+        // 保存当前工具状态，确保在保存文本后保持文本工具（与原始代码一致）
+        self.current_tool = DrawingTool::Text;
+
+        // 检查当前编辑的文本元素是否为空，如果为空则删除
+        if let Some(element_index) = editing_index {
+            if let Some(element) = self.elements.get_elements().get(element_index) {
+                let should_delete = element.text.trim().is_empty();
+
+                if should_delete {
+                    // 删除空元素
                     let _ = self.elements.remove_element(element_index);
+
+                    // 更新选中元素索引（与原始代码逻辑一致）
+                    if let Some(selected) = self.selected_element {
+                        if selected == element_index {
+                            self.selected_element = None;
+                        } else if selected > element_index {
+                            self.selected_element = Some(selected - 1);
+                        }
+                    }
                 }
             }
         }
 
-        self.editing_element_index = None;
+        // 强制确保工具状态保持为文本工具，防止被其他逻辑重置（与原始代码一致）
+        self.current_tool = DrawingTool::Text;
 
-        // 清除选中状态
+        // 清除选中状态，这样保存文本后就不会进入手柄检查逻辑（与原始代码一致）
         self.selected_element = None;
         self.elements.set_selected(None);
 
@@ -1975,11 +2321,14 @@ impl DrawingManager {
         vec![]
     }
 
-    /// 动态调整文字框大小（多行，带内边距，近似宽度测量）
+    /// 动态调整文字框大小（使用 DirectWrite 精确测量）
     fn update_text_element_size(&mut self, element_index: usize) {
         use crate::constants::{MIN_TEXT_HEIGHT, MIN_TEXT_WIDTH, TEXT_PADDING};
+        use windows::Win32::Graphics::DirectWrite::*;
+        use windows::core::w;
+
         if let Some(element) = self.elements.get_element_mut(element_index) {
-            let font_size = element.thickness.max(8.0);
+            let font_size = element.font_size.max(8.0);
             let dynamic_line_height = (font_size * 1.2).ceil() as i32;
 
             let text_content = element.text.clone();
@@ -1996,19 +2345,52 @@ impl DrawingManager {
                 lines.len()
             } as i32;
 
-            // 近似测量每行宽度：字符数 * 字号 * 比例
+            // 使用 DirectWrite 精确测量最长行宽度
             let mut max_width_f = 0.0f32;
-            for line in &lines {
-                let chars = line.chars().count() as f32;
-                let width = chars * font_size * 0.6; // 经验比例
-                if width > max_width_f {
-                    max_width_f = width;
+            unsafe {
+                if let Ok(factory) =
+                    DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED)
+                {
+                    let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
+                    let weight = if element.font_weight > 400 {
+                        DWRITE_FONT_WEIGHT_BOLD
+                    } else {
+                        DWRITE_FONT_WEIGHT_NORMAL
+                    };
+                    let style = if element.font_italic {
+                        DWRITE_FONT_STYLE_ITALIC
+                    } else {
+                        DWRITE_FONT_STYLE_NORMAL
+                    };
+                    if let Ok(text_format) = factory.CreateTextFormat(
+                        windows::core::PCWSTR(font_name_wide.as_ptr()),
+                        None,
+                        weight,
+                        style,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        font_size,
+                        w!(""),
+                    ) {
+                        for line in &lines {
+                            let wide: Vec<u16> = line.encode_utf16().collect();
+                            if let Ok(layout) =
+                                factory.CreateTextLayout(&wide, &text_format, f32::MAX, f32::MAX)
+                            {
+                                let mut metrics = DWRITE_TEXT_METRICS::default();
+                                let _ = layout.GetMetrics(&mut metrics);
+                                if metrics.width > max_width_f {
+                                    max_width_f = metrics.width;
+                                }
+                            }
+                        }
+                    }
                 }
             }
+
             if max_width_f == 0.0 {
                 max_width_f = MIN_TEXT_WIDTH as f32;
             } else {
-                // 小幅增加缓冲
+                // 增加适当的缓冲，避免字符被挤压
                 max_width_f += (font_size * 0.2).max(4.0);
             }
 
@@ -2018,6 +2400,19 @@ impl DrawingManager {
 
             element.rect.right = element.rect.left + new_width;
             element.rect.bottom = element.rect.top + new_height;
+
+            // 保持 points 与 rect 同步，确保渲染和选择区域一致
+            if !element.points.is_empty() {
+                if element.points.len() >= 2 {
+                    element.points[1].x = element.rect.right;
+                    element.points[1].y = element.rect.bottom;
+                } else {
+                    element.points.push(windows::Win32::Foundation::POINT {
+                        x: element.rect.right,
+                        y: element.rect.bottom,
+                    });
+                }
+            }
         }
     }
 }

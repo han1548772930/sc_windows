@@ -121,6 +121,8 @@ pub enum Command {
     ShowSaveDialog,
     /// 显示设置窗口（从原始代码迁移）
     ShowSettings,
+    /// 重新加载设置（从原始代码迁移）
+    ReloadSettings,
     /// 执行截图（从原始代码迁移）
     TakeScreenshot,
     /// 复制到剪贴板

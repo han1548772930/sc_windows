@@ -75,12 +75,20 @@ pub trait PlatformRenderer {
     /// 绘制矩形
     fn draw_rectangle(&mut self, rect: Rectangle, style: &DrawStyle) -> Result<(), Self::Error>;
 
-    /// 绘制圆形
+    /// 绘制圆形（支持填充color）
     fn draw_circle(
         &mut self,
         center: Point,
         radius: f32,
         style: &DrawStyle,
+    ) -> Result<(), Self::Error>;
+
+    /// 绘制虚线矩形（用于选择高亮）
+    fn draw_dashed_rectangle(
+        &mut self,
+        rect: Rectangle,
+        style: &DrawStyle,
+        dash_pattern: &[f32],
     ) -> Result<(), Self::Error>;
 
     /// 绘制线条
@@ -94,12 +102,6 @@ pub trait PlatformRenderer {
         position: Point,
         style: &TextStyle,
     ) -> Result<(), Self::Error>;
-
-    /// 创建画刷
-    fn create_brush(&mut self, color: Color) -> Result<BrushId, Self::Error>;
-
-    /// 创建字体
-    fn create_font(&mut self, family: &str, size: f32) -> Result<FontId, Self::Error>;
 
     /// 获取文本尺寸
     fn measure_text(&self, text: &str, style: &TextStyle) -> Result<(f32, f32), Self::Error>;
@@ -115,6 +117,14 @@ pub trait PlatformRenderer {
 
     /// 获取可变Any引用（用于向下转型）
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// 从GDI位图创建平台位图（平台无关接口）
+    fn create_bitmap_from_gdi(
+        &mut self,
+        gdi_dc: windows::Win32::Graphics::Gdi::HDC,
+        width: i32,
+        height: i32,
+    ) -> Result<(), Self::Error>;
 }
 
 /// 平台错误类型

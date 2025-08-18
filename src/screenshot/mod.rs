@@ -43,6 +43,9 @@ pub struct ScreenshotManager {
     /// UI隐藏状态（截图时隐藏UI元素）
     hide_ui_for_capture: bool,
 
+    /// 是否显示选择框手柄（用于与绘图工具联动）
+    show_selection_handles: bool,
+
     /// 窗口检测器（从原始代码迁移）
     window_detector: crate::system::window_detection::WindowDetectionManager,
     /// 自动高亮是否启用（从原始代码迁移）
@@ -120,6 +123,7 @@ impl ScreenshotManager {
             screen_width,
             screen_height,
             hide_ui_for_capture: false,
+            show_selection_handles: true,
             window_detector: {
                 let mut detector = crate::system::window_detection::WindowDetectionManager::new()?;
                 detector.start_detection()?; // 启用窗口检测
@@ -128,6 +132,11 @@ impl ScreenshotManager {
             auto_highlight_enabled: true, // 默认启用自动高亮
             current_window: None,
         })
+    }
+
+    /// 与绘图工具联动：控制是否显示选择框手柄
+    pub fn set_show_selection_handles(&mut self, show: bool) {
+        self.show_selection_handles = show;
     }
 
     /// 处理截图消息
@@ -250,8 +259,8 @@ impl ScreenshotManager {
                             self.draw_selection_border_impl(d2d_renderer, &selection_rect)?;
                         }
 
-                        // 绘制选择框手柄（从原始代码迁移）
-                        if !self.hide_ui_for_capture {
+                        // 绘制选择框手柄（当未选择绘图工具时才显示）
+                        if !self.hide_ui_for_capture && self.show_selection_handles {
                             self.draw_handles_impl(d2d_renderer, &selection_rect)?;
                         }
 
@@ -292,6 +301,9 @@ impl ScreenshotManager {
 
         // 重置UI隐藏状态
         self.hide_ui_for_capture = false;
+
+        // 默认显示选择框手柄（新一轮截图开始时应可见）
+        self.show_selection_handles = true;
 
         // 重新启用自动窗口高亮功能（从原始代码迁移）
         self.auto_highlight_enabled = true;
@@ -400,23 +412,40 @@ impl ScreenshotManager {
         }
     }
 
-    /// 从GDI位图创建D2D位图（从原始代码迁移）
+    /// 从GDI位图创建D2D位图（从原始代码迁移，恢复原有逻辑）
     pub fn create_d2d_bitmap_from_gdi(
         &mut self,
-        renderer: &crate::platform::windows::d2d::Direct2DRenderer,
+        renderer: &mut dyn crate::platform::PlatformRenderer<Error = crate::platform::PlatformError>,
     ) -> std::result::Result<(), ScreenshotError> {
         if let Some(screenshot_dc) = self.screenshot_dc {
-            // 使用渲染器创建D2D位图
-            let d2d_bitmap = renderer
-                .create_d2d_bitmap_from_gdi(screenshot_dc, self.screen_width, self.screen_height)
-                .map_err(|e| {
-                    ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {:?}", e))
-                })?;
+            // 使用downcast获取Direct2DRenderer（与旧代码保持一致）
+            if let Some(d2d_renderer) = renderer
+                .as_any_mut()
+                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
+            ) {
+                // 创建D2D位图并存储（与旧代码逻辑一致）
+                let d2d_bitmap = d2d_renderer
+                    .create_d2d_bitmap_from_gdi(
+                        screenshot_dc,
+                        self.screen_width,
+                        self.screen_height,
+                    )
+                    .map_err(|e| {
+                        ScreenshotError::RenderError(format!(
+                            "Failed to create D2D bitmap: {:?}",
+                            e
+                        ))
+                    })?;
 
-            // 存储D2D位图
-            self.screenshot_bitmap = Some(d2d_bitmap);
+                // 存储D2D位图（关键：与旧代码保持一致）
+                self.screenshot_bitmap = Some(d2d_bitmap);
 
-            Ok(())
+                Ok(())
+            } else {
+                Err(ScreenshotError::RenderError(
+                    "Cannot access D2D renderer".to_string(),
+                ))
+            }
         } else {
             Err(ScreenshotError::CaptureError(
                 "No screenshot DC available".to_string(),
@@ -430,7 +459,7 @@ impl ScreenshotManager {
 
         // 第二优先级：检测拖拽开始（从原始代码迁移）
         if self.selection.is_mouse_pressed() && self.auto_highlight_enabled {
-            let drag_start = self.selection.get_drag_start_pos();
+            let drag_start = self.selection.get_interaction_start_pos();
             let dx = (x - drag_start.x).abs();
             let dy = (y - drag_start.y).abs();
             const DRAG_THRESHOLD: i32 = 5; // 拖拽阈值
@@ -454,7 +483,7 @@ impl ScreenshotManager {
             vec![Command::RequestRedraw]
         } else if self.selection.is_dragging() {
             // 正在拖拽选择框或调整大小
-            if self.selection.handle_drag(x, y) {
+            if self.selection.handle_interaction(x, y) {
                 let mut commands = vec![Command::RequestRedraw];
 
                 // 如果选择框移动了，更新工具栏位置（从原始代码迁移）
@@ -519,7 +548,7 @@ impl ScreenshotManager {
 
         // 设置鼠标按下状态（从原始代码迁移）
         self.selection.set_mouse_pressed(true);
-        self.selection.set_drag_start_pos(x, y);
+        self.selection.set_interaction_start_pos(x, y);
 
         // 绘图工具和元素点击检查已移至Drawing模块
 
@@ -534,7 +563,7 @@ impl ScreenshotManager {
             let handle_mode = self.selection.get_handle_at_position(x, y);
             if handle_mode != crate::types::DragMode::None {
                 // 点击了手柄，开始拖拽
-                self.selection.start_drag(x, y, handle_mode);
+                self.selection.start_interaction(x, y, handle_mode);
                 return vec![Command::RequestRedraw];
             }
         }
@@ -557,7 +586,7 @@ impl ScreenshotManager {
         if self.selection.has_selection() {
             let handle_mode = self.selection.get_handle_at_position(x, y);
             if handle_mode != crate::types::DragMode::None {
-                self.selection.start_drag(x, y, handle_mode);
+                self.selection.start_interaction(x, y, handle_mode);
             }
         } else {
             // 只有在没有选择框时才允许创建新的选择框（从原始代码迁移）
@@ -573,8 +602,8 @@ impl ScreenshotManager {
 
         // 检查是否是单击（没有拖拽）（从原始代码迁移）
         let is_click = self.selection.is_mouse_pressed()
-            && (x - self.selection.get_drag_start_pos().x).abs() < 5
-            && (y - self.selection.get_drag_start_pos().y).abs() < 5;
+            && (x - self.selection.get_interaction_start_pos().x).abs() < 5
+            && (y - self.selection.get_interaction_start_pos().y).abs() < 5;
 
         // TODO: 处理工具栏点击
         // let toolbar_button = self.toolbar.get_button_at_position(x, y);
@@ -618,7 +647,7 @@ impl ScreenshotManager {
             }
         } else if self.selection.is_dragging() {
             // 结束拖拽操作
-            self.selection.end_drag();
+            self.selection.end_interaction();
             commands.push(Command::RequestRedraw);
 
             // 更新工具栏位置（如果有选择框）
@@ -902,15 +931,6 @@ impl ScreenshotManager {
         Ok(())
     }
 
-    /// 绘制遮罩覆盖层（从原始代码迁移）
-    pub fn draw_dimmed_overlay(
-        &self,
-        _renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-    ) -> Result<(), ScreenshotError> {
-        // TODO: 实现遮罩绘制
-        Ok(())
-    }
-
     /// 绘制选择框边框（从原始代码迁移）
     pub fn draw_selection_border(
         &self,
@@ -1012,15 +1032,6 @@ impl ScreenshotManager {
         Ok(())
     }
 
-    /// 绘制全屏遮罩（从原始代码迁移）
-    pub fn draw_full_screen_mask(
-        &self,
-        _renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-    ) -> Result<(), ScreenshotError> {
-        // TODO: 实现全屏遮罩绘制
-        Ok(())
-    }
-
     /// 处理双击事件（从原始代码迁移）
     pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
         // 双击可能用于确认选择或快速操作
@@ -1068,3 +1079,10 @@ impl std::fmt::Display for ScreenshotError {
 }
 
 impl std::error::Error for ScreenshotError {}
+
+impl ScreenshotManager {
+    /// 代理选择状态的手柄命中检测（方便App层统一处理光标）
+    pub fn get_handle_at_position(&self, x: i32, y: i32) -> crate::types::DragMode {
+        self.selection.get_handle_at_position(x, y)
+    }
+}

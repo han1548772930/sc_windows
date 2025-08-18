@@ -6,6 +6,48 @@ use crate::constants::{HANDLE_DETECTION_RADIUS, MIN_BOX_SIZE};
 use crate::types::DragMode;
 use windows::Win32::Foundation::{POINT, RECT};
 
+/// 选择框交互模式（仅限选择框操作）
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectionInteractionMode {
+    /// 无交互
+    None,
+    /// 正在创建选择框
+    Creating,
+    /// 移动选择框
+    Moving,
+    /// 调整选择框大小（包含具体的调整方向）
+    Resizing(DragMode),
+}
+
+impl SelectionInteractionMode {
+    /// 从旧的DragMode转换为新的SelectionInteractionMode
+    pub fn from_drag_mode(drag_mode: DragMode) -> Self {
+        match drag_mode {
+            DragMode::None => SelectionInteractionMode::None,
+            DragMode::Drawing => SelectionInteractionMode::Creating,
+            DragMode::Moving => SelectionInteractionMode::Moving,
+            DragMode::ResizingTopLeft
+            | DragMode::ResizingTopCenter
+            | DragMode::ResizingTopRight
+            | DragMode::ResizingMiddleRight
+            | DragMode::ResizingBottomRight
+            | DragMode::ResizingBottomCenter
+            | DragMode::ResizingBottomLeft
+            | DragMode::ResizingMiddleLeft => SelectionInteractionMode::Resizing(drag_mode),
+            // 绘图元素相关的拖拽模式不应该在SelectionState中处理
+            _ => SelectionInteractionMode::None,
+        }
+    }
+
+    /// 获取调整大小的具体方向（如果是调整大小模式）
+    pub fn get_resize_mode(&self) -> Option<DragMode> {
+        match self {
+            SelectionInteractionMode::Resizing(mode) => Some(*mode),
+            _ => None,
+        }
+    }
+}
+
 /// 选择状态
 pub struct SelectionState {
     /// 是否正在选择
@@ -19,15 +61,15 @@ pub struct SelectionState {
     /// 自动高亮矩形（从原始代码迁移）
     auto_highlight_rect: Option<RECT>,
 
-    // 拖拽相关状态（从原始代码迁移）
-    /// 拖拽模式
-    drag_mode: DragMode,
+    // 选择框交互状态（仅限选择框操作）
+    /// 选择框交互模式
+    selection_interaction_mode: SelectionInteractionMode,
     /// 鼠标是否按下
     mouse_pressed: bool,
-    /// 拖拽开始位置
-    drag_start_pos: POINT,
-    /// 拖拽开始时的矩形
-    drag_start_rect: RECT,
+    /// 交互开始位置
+    interaction_start_pos: POINT,
+    /// 交互开始时的选择框矩形
+    interaction_start_rect: RECT,
 }
 
 impl SelectionState {
@@ -39,10 +81,10 @@ impl SelectionState {
             end_point: None,
             selection_rect: None,
             auto_highlight_rect: None,
-            drag_mode: DragMode::None,
+            selection_interaction_mode: SelectionInteractionMode::None,
             mouse_pressed: false,
-            drag_start_pos: POINT { x: 0, y: 0 },
-            drag_start_rect: RECT {
+            interaction_start_pos: POINT { x: 0, y: 0 },
+            interaction_start_rect: RECT {
                 left: 0,
                 top: 0,
                 right: 0,
@@ -58,10 +100,10 @@ impl SelectionState {
         self.end_point = None;
         self.selection_rect = None;
         self.auto_highlight_rect = None;
-        self.drag_mode = DragMode::None;
+        self.selection_interaction_mode = SelectionInteractionMode::None;
         self.mouse_pressed = false;
-        self.drag_start_pos = POINT { x: 0, y: 0 };
-        self.drag_start_rect = RECT {
+        self.interaction_start_pos = POINT { x: 0, y: 0 };
+        self.interaction_start_rect = RECT {
             left: 0,
             top: 0,
             right: 0,
@@ -148,14 +190,14 @@ impl SelectionState {
         self.mouse_pressed = pressed;
     }
 
-    /// 设置拖拽起始位置（从原始代码迁移）
-    pub fn set_drag_start_pos(&mut self, x: i32, y: i32) {
-        self.drag_start_pos = POINT { x, y };
+    /// 设置交互起始位置
+    pub fn set_interaction_start_pos(&mut self, x: i32, y: i32) {
+        self.interaction_start_pos = POINT { x, y };
     }
 
-    /// 获取拖拽起始位置（从原始代码迁移）
-    pub fn get_drag_start_pos(&self) -> POINT {
-        self.drag_start_pos
+    /// 获取交互起始位置
+    pub fn get_interaction_start_pos(&self) -> POINT {
+        self.interaction_start_pos
     }
 
     /// 直接设置选择矩形（从原始代码迁移，用于窗口自动高亮）
@@ -250,80 +292,75 @@ impl SelectionState {
             }
         }
 
-        // 检查是否在选择框内部（用于移动）
-        let border_margin = 5;
-        if x >= rect.left + border_margin
-            && x <= rect.right - border_margin
-            && y >= rect.top + border_margin
-            && y <= rect.bottom - border_margin
-        {
-            return DragMode::Moving;
-        }
-
+        // 禁用通过点击内部拖动移动选择框（与原始要求一致）
         DragMode::None
     }
 
-    /// 开始拖拽操作（从原始代码迁移）
-    pub fn start_drag(&mut self, x: i32, y: i32, drag_mode: DragMode) {
-        self.drag_mode = drag_mode;
+    /// 开始选择框交互操作
+    pub fn start_interaction(&mut self, x: i32, y: i32, drag_mode: DragMode) {
+        self.selection_interaction_mode = SelectionInteractionMode::from_drag_mode(drag_mode);
         self.mouse_pressed = true;
-        self.drag_start_pos = POINT { x, y };
+        self.interaction_start_pos = POINT { x, y };
         if let Some(rect) = self.get_effective_selection() {
-            self.drag_start_rect = rect;
+            self.interaction_start_rect = rect;
         }
     }
 
-    /// 处理拖拽移动（从原始代码迁移）
-    pub fn handle_drag(&mut self, x: i32, y: i32) -> bool {
-        if !self.mouse_pressed || self.drag_mode == DragMode::None {
+    /// 处理选择框交互移动
+    pub fn handle_interaction(&mut self, x: i32, y: i32) -> bool {
+        if !self.mouse_pressed || self.selection_interaction_mode == SelectionInteractionMode::None
+        {
             return false;
         }
 
-        let dx = x - self.drag_start_pos.x;
-        let dy = y - self.drag_start_pos.y;
-        let mut new_rect = self.drag_start_rect;
+        let dx = x - self.interaction_start_pos.x;
+        let dy = y - self.interaction_start_pos.y;
+        let mut new_rect = self.interaction_start_rect;
 
-        match self.drag_mode {
-            DragMode::Moving => {
+        match &self.selection_interaction_mode {
+            SelectionInteractionMode::Moving => {
                 // 移动整个选择框
                 new_rect.left += dx;
                 new_rect.top += dy;
                 new_rect.right += dx;
                 new_rect.bottom += dy;
             }
-            DragMode::ResizingTopLeft => {
-                new_rect.left += dx;
-                new_rect.top += dy;
+            SelectionInteractionMode::Resizing(resize_mode) => match resize_mode {
+                DragMode::ResizingTopLeft => {
+                    new_rect.left += dx;
+                    new_rect.top += dy;
+                }
+                DragMode::ResizingTopCenter => {
+                    new_rect.top += dy;
+                }
+                DragMode::ResizingTopRight => {
+                    new_rect.right += dx;
+                    new_rect.top += dy;
+                }
+                DragMode::ResizingMiddleRight => {
+                    new_rect.right += dx;
+                }
+                DragMode::ResizingBottomRight => {
+                    new_rect.right += dx;
+                    new_rect.bottom += dy;
+                }
+                DragMode::ResizingBottomCenter => {
+                    new_rect.bottom += dy;
+                }
+                DragMode::ResizingBottomLeft => {
+                    new_rect.left += dx;
+                    new_rect.bottom += dy;
+                }
+                DragMode::ResizingMiddleLeft => {
+                    new_rect.left += dx;
+                }
+                _ => return false,
+            },
+            SelectionInteractionMode::Creating => {
+                // 创建选择框时不需要处理拖拽
+                return false;
             }
-            DragMode::ResizingTopCenter => {
-                new_rect.top += dy;
-            }
-            DragMode::ResizingTopRight => {
-                new_rect.right += dx;
-                new_rect.top += dy;
-            }
-            DragMode::ResizingMiddleRight => {
-                new_rect.right += dx;
-            }
-            DragMode::ResizingBottomRight => {
-                new_rect.right += dx;
-                new_rect.bottom += dy;
-            }
-            DragMode::ResizingBottomCenter => {
-                new_rect.bottom += dy;
-            }
-            DragMode::ResizingBottomLeft => {
-                new_rect.left += dx;
-                new_rect.bottom += dy;
-            }
-            DragMode::ResizingMiddleLeft => {
-                new_rect.left += dx;
-            }
-            DragMode::DrawingShape => {
-                // 绘制图形模式：不修改选择框，由 DrawingManager 处理
-                return true;
-            }
-            _ => return false,
+            SelectionInteractionMode::None => return false,
         }
 
         // 检查最小尺寸
@@ -337,19 +374,24 @@ impl SelectionState {
         false
     }
 
-    /// 结束拖拽操作（从原始代码迁移）
-    pub fn end_drag(&mut self) {
-        self.drag_mode = DragMode::None;
+    /// 结束选择框交互操作
+    pub fn end_interaction(&mut self) {
+        self.selection_interaction_mode = SelectionInteractionMode::None;
         self.mouse_pressed = false;
     }
 
-    /// 获取当前拖拽模式
-    pub fn get_drag_mode(&self) -> DragMode {
-        self.drag_mode
+    /// 获取当前选择框交互模式
+    pub fn get_interaction_mode(&self) -> &SelectionInteractionMode {
+        &self.selection_interaction_mode
     }
 
-    /// 是否正在拖拽
+    /// 是否正在进行选择框交互
+    pub fn is_interacting(&self) -> bool {
+        self.mouse_pressed && self.selection_interaction_mode != SelectionInteractionMode::None
+    }
+
+    /// 兼容性方法：是否正在拖拽（重命名为is_interacting）
     pub fn is_dragging(&self) -> bool {
-        self.mouse_pressed && self.drag_mode != DragMode::None
+        self.is_interacting()
     }
 }
