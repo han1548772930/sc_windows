@@ -260,44 +260,39 @@ impl App {
                 self.reset_to_initial_state();
                 vec![Command::HideWindow]
             }
-            0x20 => {
-                // VK_SPACE - 空格键触发截图
-                self.handle_message(Message::Screenshot(ScreenshotMessage::StartCapture))
-            }
-            0x52 => {
-                // 'R' 键 - 矩形工具
-                self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-                    crate::types::DrawingTool::Rectangle,
-                )))
-            }
-            0x43 => {
-                // 'C' 键 - 圆形工具
-                self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-                    crate::types::DrawingTool::Circle,
-                )))
-            }
-            0x41 => {
-                // 'A' 键 - 箭头工具
-                self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-                    crate::types::DrawingTool::Arrow,
-                )))
-            }
-            0x50 => {
-                // 'P' 键 - 画笔工具
-                self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-                    crate::types::DrawingTool::Pen,
-                )))
-            }
-            0x54 => {
-                // 'T' 键 - 文本工具
-                self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-                    crate::types::DrawingTool::Text,
-                )))
-            }
-            0x5A => {
-                // 'Z' 键 - 撤销
-                self.handle_message(Message::Drawing(DrawingMessage::Undo))
-            }
+            // 0x20 => {
+            //     // VK_SPACE - 空格键触发截图
+            //     self.handle_message(Message::Screenshot(ScreenshotMessage::StartCapture))
+            // }
+            // 0x52 => {
+            //     // 'R' 键 - 矩形工具
+            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
+            //         crate::types::DrawingTool::Rectangle,
+            //     )))
+            // }
+            // 0x43 => {
+            //     // 'C' 键 - 圆形工具
+            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
+            //         crate::types::DrawingTool::Circle,
+            //     )))
+            // }
+
+            // 0x50 => {
+            //     // 'P' 键 - 画笔工具
+            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
+            //         crate::types::DrawingTool::Pen,
+            //     )))
+            // }
+            // 0x54 => {
+            //     // 'T' 键 - 文本工具
+            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
+            //         crate::types::DrawingTool::Text,
+            //     )))
+            // }
+            // 0x5A => {
+            //     // 'Z' 键 - 撤销
+            //     self.handle_message(Message::Drawing(DrawingMessage::Undo))
+            // }
             _ => {
                 // 其他按键传递给各个管理器处理
                 let mut commands = Vec::new();

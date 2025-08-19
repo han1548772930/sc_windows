@@ -553,6 +553,11 @@ impl ScreenshotManager {
                 // 点击了手柄，开始拖拽
                 self.selection.start_interaction(x, y, handle_mode);
                 return vec![Command::RequestRedraw];
+            } else {
+                // 修复：如果有选区但没有点击手柄，重置鼠标状态并忽略此次点击
+                // 这是关键的保护逻辑，防止在已有选区外点击时创建新选区
+                self.selection.set_mouse_pressed(false);
+                return vec![];
             }
         }
 
