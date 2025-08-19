@@ -180,22 +180,10 @@ impl ScreenshotManager {
                     vec![Command::None]
                 }
             }
-            ScreenshotMessage::EndSelection(x, y) => {
-                // 结束选择区域（从原始handle_left_button_up迁移）
-                if self.current_screenshot.is_some() {
-                    self.selection.end_selection(x, y);
-                    // 如果有有效选择，显示工具栏
-                    if let Some(rect) = self.selection.get_selection() {
-                        vec![
-                            Command::RequestRedraw,
-                            Command::UI(crate::message::UIMessage::ShowToolbar(rect)),
-                        ]
-                    } else {
-                        vec![Command::RequestRedraw]
-                    }
-                } else {
-                    vec![Command::None]
-                }
+            ScreenshotMessage::EndSelection(_x, _y) => {
+                // 注意：此消息处理已废弃，选择结束逻辑已移至 handle_mouse_up 方法中
+                // 保留此分支以避免编译错误，但不执行任何操作
+                vec![Command::None]
             }
             ScreenshotMessage::CopyToClipboard => {
                 if let Some(screenshot) = &self.current_screenshot {
@@ -485,7 +473,8 @@ impl ScreenshotManager {
             if self.selection.handle_interaction(x, y) {
                 let mut commands = vec![Command::RequestRedraw];
 
-                // 如果选择框移动了，更新工具栏位置（从原始代码迁移）
+                // 修复：拖拽已有选择框时，更新工具栏位置（按照原始代码逻辑）
+                // 这里发送UpdateToolbarPosition命令，UI层会检查工具栏是否可见再决定是否更新
                 if let Some(selection_rect) = self.selection.get_selection() {
                     commands.push(Command::UI(
                         crate::message::UIMessage::UpdateToolbarPosition(selection_rect),
@@ -604,25 +593,18 @@ impl ScreenshotManager {
             && (x - self.selection.get_interaction_start_pos().x).abs() < 5
             && (y - self.selection.get_interaction_start_pos().y).abs() < 5;
 
-        // 如果是单击且当前有选择区域（从原始代码迁移）
-        if is_click && self.selection.has_selection() {
-            // 单击确认：无论是自动高亮还是手动框选后的单击，都显示工具栏
-            if let Some(rect) = self.selection.get_selection() {
-                commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
-            }
-            // 单击确认后进入已选择状态，禁用自动高亮
-            self.auto_highlight_enabled = false;
-        } else if is_click && !self.selection.has_selection() {
-            // 如果是单击但没有选择区域，重新启用自动高亮
-            self.auto_highlight_enabled = true;
-        }
-
         // 处理选择框创建和拖拽结束
         if self.selection.is_selecting() {
             // 结束选择框创建
             self.selection.end_selection(x, y);
             commands.push(Command::RequestRedraw);
-            // 注意：拖拽结束仅完成选框创建，不立即显示工具栏
+
+            // 如果选择框创建成功且有效，显示工具栏（仅对手动拖拽创建的选择框）
+            if !is_click {
+                if let Some(rect) = self.selection.get_selection() {
+                    commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
+                }
+            }
         } else if self.selection.is_dragging() {
             // 结束拖拽操作
             self.selection.end_interaction();
@@ -634,6 +616,19 @@ impl ScreenshotManager {
                     crate::message::UIMessage::UpdateToolbarPosition(rect),
                 ));
             }
+        }
+
+        // 处理单击确认逻辑（独立于选择框创建和拖拽逻辑）
+        if is_click && self.selection.has_selection() {
+            // 单击确认：无论是自动高亮还是手动框选后的单击，都显示工具栏
+            if let Some(rect) = self.selection.get_selection() {
+                commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
+            }
+            // 单击确认后进入已选择状态，禁用自动高亮
+            self.auto_highlight_enabled = false;
+        } else if is_click && !self.selection.has_selection() {
+            // 如果是单击但没有选择区域，重新启用自动高亮
+            self.auto_highlight_enabled = true;
         }
 
         // 如果没有选择区域，重新启用自动高亮以便下次使用（从原始代码迁移）

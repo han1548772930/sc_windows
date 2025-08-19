@@ -77,10 +77,14 @@ impl UIManager {
                 vec![Command::RequestRedraw]
             }
             UIMessage::UpdateToolbarPosition(rect) => {
-                // 更新工具栏位置但不改变可见性（使用正确的屏幕尺寸）
-                self.toolbar
-                    .update_position(&rect, screen_width, screen_height);
-                vec![Command::RequestRedraw]
+                // 修复：只有在工具栏已经可见时才更新位置，避免在创建选择框时意外显示
+                if self.toolbar.is_visible() {
+                    self.toolbar
+                        .update_position(&rect, screen_width, screen_height);
+                    vec![Command::RequestRedraw]
+                } else {
+                    vec![]
+                }
             }
             UIMessage::ToolbarButtonClicked(button) => self.toolbar.handle_button_click(button),
             UIMessage::ShowDialog(dialog_type) => {
