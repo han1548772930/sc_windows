@@ -240,14 +240,20 @@ impl ScreenshotManager {
 
                     // 如果有选择区域，绘制遮罩和边框
                     if let Some(selection_rect) = self.selection.get_effective_selection() {
-                        // 绘制遮罩覆盖层
-                        self.draw_dimmed_overlay_impl(d2d_renderer, &selection_rect)?;
+                        // 绘制遮罩和边框在截图时需要隐藏（避免被捕获到）
+                        if !self.hide_ui_for_capture {
+                            // 绘制遮罩覆盖层
+                            self.draw_dimmed_overlay_impl(d2d_renderer, &selection_rect)?;
 
-                        // 绘制选择框边框（自动高亮用不同颜色）
-                        if self.selection.has_auto_highlight() {
-                            self.draw_auto_highlight_border_impl(d2d_renderer, &selection_rect)?;
-                        } else {
-                            self.draw_selection_border_impl(d2d_renderer, &selection_rect)?;
+                            // 绘制选择框边框（自动高亮用不同颜色）
+                            if self.selection.has_auto_highlight() {
+                                self.draw_auto_highlight_border_impl(
+                                    d2d_renderer,
+                                    &selection_rect,
+                                )?;
+                            } else {
+                                self.draw_selection_border_impl(d2d_renderer, &selection_rect)?;
+                            }
                         }
 
                         // 绘制选择框手柄（当未选择绘图工具时才显示）
@@ -257,8 +263,10 @@ impl ScreenshotManager {
 
                         // 当前正在绘制的元素由Drawing模块处理
                     } else {
-                        // 绘制全屏遮罩
-                        self.draw_full_screen_mask_impl(d2d_renderer)?;
+                        // 绘制全屏遮罩（截图时隐藏UI，不绘制遮罩）
+                        if !self.hide_ui_for_capture {
+                            self.draw_full_screen_mask_impl(d2d_renderer)?;
+                        }
                     }
                 }
             }
@@ -598,24 +606,12 @@ impl ScreenshotManager {
 
         // 如果是单击且当前有选择区域（从原始代码迁移）
         if is_click && self.selection.has_selection() {
-            // 如果自动高亮仍然启用，说明这是对自动高亮窗口的点击选择
-            if self.auto_highlight_enabled {
-                // 更新并显示工具栏，确认选择，并禁用自动高亮（进入已选择状态）
-                if let Some(rect) = self.selection.get_selection() {
-                    commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
-                }
-                // 禁用自动高亮，进入已选择状态
-                self.auto_highlight_enabled = false;
-            } else {
-                // 自动高亮已禁用，说明这是手动拖拽的结果
-                // 更新并显示工具栏
-                if let Some(rect) = self.selection.get_selection() {
-                    commands.push(Command::UI(
-                        crate::message::UIMessage::UpdateToolbarPosition(rect),
-                    ));
-                }
-                // 保持自动高亮禁用状态
+            // 单击确认：无论是自动高亮还是手动框选后的单击，都显示工具栏
+            if let Some(rect) = self.selection.get_selection() {
+                commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
             }
+            // 单击确认后进入已选择状态，禁用自动高亮
+            self.auto_highlight_enabled = false;
         } else if is_click && !self.selection.has_selection() {
             // 如果是单击但没有选择区域，重新启用自动高亮
             self.auto_highlight_enabled = true;
@@ -626,12 +622,7 @@ impl ScreenshotManager {
             // 结束选择框创建
             self.selection.end_selection(x, y);
             commands.push(Command::RequestRedraw);
-
-            // 如果有有效选择，显示工具栏并禁用自动高亮
-            if let Some(rect) = self.selection.get_selection() {
-                commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
-                self.auto_highlight_enabled = false; // 进入已选择状态
-            }
+            // 注意：拖拽结束仅完成选框创建，不立即显示工具栏
         } else if self.selection.is_dragging() {
             // 结束拖拽操作
             self.selection.end_interaction();

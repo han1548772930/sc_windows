@@ -1363,8 +1363,7 @@ impl DrawingManager {
                         return vec![Command::UpdateToolbar, Command::RequestRedraw];
                     }
                 }
-                // 如果点击的是其他类型元素，不创建新文本（与原始代码保持一致）
-                return vec![];
+                // 点击了其他类型元素：不在此处处理，继续后续通用元素命中逻辑（允许选择并拖动该元素）
             } else {
                 // 未命中任何元素：在选框内空白处创建新文本并直接进入编辑
                 return self.create_and_edit_text_element(x, y);
