@@ -6,7 +6,7 @@ use crate::interaction::InteractionController;
 use crate::message::{Command, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
-use windows::Win32::Graphics::Gdi::{HBITMAP, HDC};
+use windows::Win32::Graphics::Gdi::HBITMAP;
 // use windows::core::Result; // 不需要，会与std::result::Result冲突
 
 pub mod capture;
@@ -25,10 +25,6 @@ pub struct ScreenshotManager {
     current_screenshot: Option<ScreenshotData>,
 
     // 从WindowState迁移的字段
-    /// 传统GDI资源（用于屏幕捕获）
-    screenshot_dc: Option<HDC>,
-    gdi_screenshot_bitmap: Option<HBITMAP>,
-
     /// Direct2D截图位图
     screenshot_bitmap: Option<ID2D1Bitmap>,
 
@@ -64,44 +60,7 @@ pub struct ScreenshotData {
 impl ScreenshotManager {
     /// 创建新的截图管理器
     pub fn new() -> Result<Self, ScreenshotError> {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, GetDC, ReleaseDC, SelectObject,
-        };
         let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
-
-        // 初始化GDI资源（从原始代码迁移）
-        let (screenshot_dc, gdi_screenshot_bitmap) = unsafe {
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-            if screen_dc.is_invalid() {
-                return Err(ScreenshotError::InitError(
-                    "Failed to get screen DC".to_string(),
-                ));
-            }
-
-            let screenshot_dc = CreateCompatibleDC(Some(screen_dc));
-            if screenshot_dc.is_invalid() {
-                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-                return Err(ScreenshotError::InitError(
-                    "Failed to create compatible DC".to_string(),
-                ));
-            }
-
-            let gdi_screenshot_bitmap =
-                CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
-            if gdi_screenshot_bitmap.is_invalid() {
-                let _ = windows::Win32::Graphics::Gdi::DeleteDC(screenshot_dc);
-                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-                return Err(ScreenshotError::InitError(
-                    "Failed to create compatible bitmap".to_string(),
-                ));
-            }
-
-            SelectObject(screenshot_dc, gdi_screenshot_bitmap.into());
-            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-
-            (Some(screenshot_dc), Some(gdi_screenshot_bitmap))
-        };
 
         Ok(Self {
             selection: SelectionState::new(),
@@ -109,8 +68,6 @@ impl ScreenshotManager {
             selection_interaction: InteractionController::new(),
 
             // 初始化从WindowState迁移的字段
-            screenshot_dc,
-            gdi_screenshot_bitmap,
             screenshot_bitmap: None,
             screen_width,
             screen_height,
@@ -175,7 +132,7 @@ impl ScreenshotManager {
                 vec![Command::RequestRedraw]
             }
             ScreenshotMessage::ConfirmSelection => {
-                if let Some(rect) = self.selection.get_selection() {
+                if let Some(_rect) = self.selection.get_selection() {
                     // 处理选择确认
                     vec![Command::ShowSaveDialog]
                 } else {
@@ -195,11 +152,6 @@ impl ScreenshotManager {
                 } else {
                     vec![Command::None]
                 }
-            }
-            ScreenshotMessage::EndSelection(_x, _y) => {
-                // 注意：此消息处理已废弃，选择结束逻辑已移至 handle_mouse_up 方法中
-                // 保留此分支以避免编译错误，但不执行任何操作
-                vec![Command::None]
             }
         }
     }
@@ -240,9 +192,21 @@ impl ScreenshotManager {
         Ok(())
     }
 
-    /// 获取GDI位图句柄（用于简单显示）
-    pub fn get_gdi_bitmap(&self) -> Option<HBITMAP> {
-        self.gdi_screenshot_bitmap
+    /// 按需捕获屏幕并返回GDI位图句柄
+    /// 调用方负责释放返回的HBITMAP
+    pub fn capture_screen_to_gdi_bitmap(&self) -> Result<HBITMAP, ScreenshotError> {
+        // 使用统一的平台层截图函数，避免重复的GDI代码
+        let screen_rect = windows::Win32::Foundation::RECT {
+            left: 0,
+            top: 0,
+            right: self.screen_width,
+            bottom: self.screen_height,
+        };
+
+        unsafe {
+            crate::platform::windows::gdi::capture_screen_region_to_hbitmap(screen_rect)
+                .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {:?}", e)))
+        }
     }
 
     /// 重置状态（从原始reset_to_initial_state迁移）
@@ -288,87 +252,30 @@ impl ScreenshotManager {
     /// 重新截取当前屏幕（带窗口句柄，用于排除自己的窗口）
     pub fn capture_screen_with_hwnd(
         &mut self,
-        exclude_hwnd: windows::Win32::Foundation::HWND,
+        _exclude_hwnd: windows::Win32::Foundation::HWND,
     ) -> std::result::Result<(), ScreenshotError> {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::{
-            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            ReleaseDC, SRCCOPY, SelectObject,
-        };
-        unsafe {
-            // 获取当前屏幕尺寸（可能在pin后发生了变化）
-            let (current_screen_width, current_screen_height) =
-                crate::platform::windows::system::get_screen_size();
+        // 获取当前屏幕尺寸（可能在pin后发生了变化）
+        let (current_screen_width, current_screen_height) =
+            crate::platform::windows::system::get_screen_size();
 
-            // 如果屏幕尺寸发生了变化，需要重新创建资源
-            if current_screen_width != self.screen_width
-                || current_screen_height != self.screen_height
-            {
-                self.screen_width = current_screen_width;
-                self.screen_height = current_screen_height;
+        // 更新屏幕尺寸
+        self.screen_width = current_screen_width;
+        self.screen_height = current_screen_height;
 
-                // 重新创建GDI资源
-                let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                let new_screenshot_dc = CreateCompatibleDC(Some(screen_dc));
-                let new_gdi_bitmap =
-                    CreateCompatibleBitmap(screen_dc, self.screen_width, self.screen_height);
-                SelectObject(new_screenshot_dc, new_gdi_bitmap.into());
+        // 标记截图数据已更新（实际捕获将按需进行）
+        self.current_screenshot = Some(ScreenshotData {
+            width: self.screen_width as u32,
+            height: self.screen_height as u32,
+            data: vec![], // 暂时为空，实际数据将按需捕获
+        });
 
-                // 清理旧资源
-                if let Some(old_dc) = self.screenshot_dc {
-                    let _ = DeleteDC(old_dc);
-                }
-                if let Some(old_bitmap) = self.gdi_screenshot_bitmap {
-                    let _ = DeleteObject(old_bitmap.into());
-                }
-
-                // 更新资源
-                self.screenshot_dc = Some(new_screenshot_dc);
-                self.gdi_screenshot_bitmap = Some(new_gdi_bitmap);
-
-                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-            }
-
-            // 获取屏幕DC
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-
-            // 重新捕获屏幕到GDI位图
-            if let Some(screenshot_dc) = self.screenshot_dc {
-                BitBlt(
-                    screenshot_dc,
-                    0,
-                    0,
-                    self.screen_width,
-                    self.screen_height,
-                    Some(screen_dc),
-                    0,
-                    0,
-                    SRCCOPY,
-                )
-                .map_err(|e| ScreenshotError::CaptureError(format!("BitBlt failed: {}", e)))?;
-            }
-
-            // 释放屏幕DC
-            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-
-            // 从更新的GDI位图重新创建D2D位图（从原始代码迁移）
-            // 注意：这里需要渲染器来创建D2D位图，但当前架构中ScreenshotManager无法直接访问
-            // 我们需要重构这个方法，让它接收渲染器参数
-            // 暂时先标记截图数据已更新
-            self.current_screenshot = Some(ScreenshotData {
-                width: self.screen_width as u32,
-                height: self.screen_height as u32,
-                data: vec![], // 暂时为空，实际数据在GDI位图中
-            });
-
-            // 刷新窗口列表（从原始代码迁移）
-            if let Err(e) = self.window_detector.refresh_windows() {
-                eprintln!("Warning: Failed to refresh windows: {:?}", e);
-                // 继续运行，不退出程序
-            }
-
-            Ok(())
+        // 刷新窗口列表（从原始代码迁移）
+        if let Err(e) = self.window_detector.refresh_windows() {
+            eprintln!("Warning: Failed to refresh windows: {:?}", e);
+            // 继续运行，不退出程序
         }
+
+        Ok(())
     }
 
     /// 从GDI位图创建D2D位图（从原始代码迁移，恢复原有逻辑）
@@ -376,19 +283,28 @@ impl ScreenshotManager {
         &mut self,
         renderer: &mut dyn crate::platform::PlatformRenderer<Error = crate::platform::PlatformError>,
     ) -> std::result::Result<(), ScreenshotError> {
-        if let Some(screenshot_dc) = self.screenshot_dc {
-            // 使用downcast获取Direct2DRenderer（与旧代码保持一致）
-            if let Some(d2d_renderer) = renderer
-                .as_any_mut()
-                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
-            ) {
-                // 创建D2D位图并存储（与旧代码逻辑一致）
+        // 按需捕获屏幕到GDI位图
+        let gdi_bitmap = self.capture_screen_to_gdi_bitmap()?;
+
+        // 使用downcast获取Direct2DRenderer（与旧代码保持一致）
+        if let Some(d2d_renderer) = renderer
+            .as_any_mut()
+            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
+        ) {
+            // 创建临时DC来使用GDI位图
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::Graphics::Gdi::{
+                CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+            };
+
+            unsafe {
+                let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+                let temp_dc = CreateCompatibleDC(Some(screen_dc));
+                SelectObject(temp_dc, gdi_bitmap.into());
+
+                // 创建D2D位图并存储
                 let d2d_bitmap = d2d_renderer
-                    .create_d2d_bitmap_from_gdi(
-                        screenshot_dc,
-                        self.screen_width,
-                        self.screen_height,
-                    )
+                    .create_d2d_bitmap_from_gdi(temp_dc, self.screen_width, self.screen_height)
                     .map_err(|e| {
                         ScreenshotError::RenderError(format!(
                             "Failed to create D2D bitmap: {:?}",
@@ -396,18 +312,22 @@ impl ScreenshotManager {
                         ))
                     })?;
 
+                // 清理临时资源
+                let _ = DeleteDC(temp_dc);
+                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+                let _ = DeleteObject(gdi_bitmap.into());
+
                 // 存储D2D位图（关键：与旧代码保持一致）
                 self.screenshot_bitmap = Some(d2d_bitmap);
-
                 Ok(())
-            } else {
-                Err(ScreenshotError::RenderError(
-                    "Cannot access D2D renderer".to_string(),
-                ))
             }
         } else {
-            Err(ScreenshotError::CaptureError(
-                "No screenshot DC available".to_string(),
+            // 清理GDI位图
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::DeleteObject(gdi_bitmap.into());
+            }
+            Err(ScreenshotError::RenderError(
+                "Cannot access D2D renderer".to_string(),
             ))
         }
     }
@@ -672,11 +592,6 @@ impl ScreenshotManager {
             let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
             let _ = UpdateWindow(hwnd);
         }
-    }
-
-    /// 获取截图DC（从原始代码迁移）
-    pub fn get_screenshot_dc(&self) -> windows::Win32::Graphics::Gdi::HDC {
-        self.screenshot_dc.unwrap_or_default()
     }
 
     /// 处理双击事件（从原始代码迁移）

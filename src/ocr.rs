@@ -1,4 +1,3 @@
-use crate::ocr_result_window::OcrResultWindow;
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use paddleocr::{ImageData, Ppocr};
@@ -43,7 +42,14 @@ impl PaddleOcrEngine {
         Ok(Self)
     }
 
+    /// 确保OCR引擎已启动（推荐使用的统一接口）
+    /// 如果引擎未启动则异步启动，如果已启动则直接返回
+    pub fn ensure_engine_started() {
+        Self::start_ocr_engine_async();
+    }
+
     /// 异步启动OCR引擎（截图开始时调用，不阻塞）
+    /// 注意：推荐使用 ensure_engine_started() 方法
     pub fn start_ocr_engine_async() {
         // 在后台线程中异步启动OCR引擎
         std::thread::spawn(|| {
@@ -85,7 +91,18 @@ impl PaddleOcrEngine {
         Ok(())
     }
 
+    /// 停止OCR引擎（统一的停止接口）
+    /// 根据 immediate 参数决定是异步还是同步停止
+    pub fn stop_engine(immediate: bool) {
+        if immediate {
+            Self::stop_ocr_engine_sync();
+        } else {
+            Self::stop_ocr_engine_async();
+        }
+    }
+
     /// 异步停止OCR引擎（截图结束时调用，不阻塞）
+    /// 注意：推荐使用 stop_engine(false) 方法
     pub fn stop_ocr_engine_async() {
         // 在后台线程中异步停止OCR引擎
         std::thread::spawn(|| {
@@ -121,6 +138,7 @@ impl PaddleOcrEngine {
     }
 
     /// 立即停止OCR引擎（程序退出时使用，同步）
+    /// 注意：推荐使用 stop_engine(true) 方法
     pub fn stop_ocr_engine_immediate() {
         Self::stop_ocr_engine_sync();
     }
@@ -520,98 +538,8 @@ impl PaddleOcrEngine {
     }
 }
 
-/// 从选择区域创建图像并进行 OCR 识别
-pub fn extract_text_from_selection(
-    screenshot_dc: HDC,
-    selection_rect: RECT,
-    current_window: Option<HWND>,
-) -> Result<Vec<OcrResult>> {
-    unsafe {
-        let width = selection_rect.right - selection_rect.left;
-        let height = selection_rect.bottom - selection_rect.top;
-
-        if width <= 0 || height <= 0 {
-            return Ok(vec![]);
-        }
-
-        // 创建兼容的内存 DC
-        let mem_dc = CreateCompatibleDC(Some(screenshot_dc));
-        if mem_dc.is_invalid() {
-            return Err(anyhow::anyhow!("创建内存 DC 失败"));
-        }
-
-        // 创建位图
-        let bitmap = CreateCompatibleBitmap(screenshot_dc, width, height);
-        if bitmap.is_invalid() {
-            let _ = DeleteDC(mem_dc);
-            return Err(anyhow::anyhow!("创建位图失败"));
-        }
-
-        // 选择位图到内存 DC
-        let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-        // 复制选择区域到内存 DC
-        let result = BitBlt(
-            mem_dc,
-            0,
-            0,
-            width,
-            height,
-            Some(screenshot_dc),
-            selection_rect.left,
-            selection_rect.top,
-            SRCCOPY,
-        );
-
-        if result.is_err() {
-            let _ = SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteObject(bitmap.into());
-            let _ = DeleteDC(mem_dc);
-            return Err(anyhow::anyhow!("复制图像失败"));
-        }
-
-        // 将位图转换为 BMP 数据
-        let image_data = bitmap_to_bmp_data(mem_dc, bitmap, width, height)?;
-
-        // 清理 GDI 资源
-        let _ = SelectObject(mem_dc, old_bitmap);
-        let _ = DeleteObject(bitmap.into());
-        let _ = DeleteDC(mem_dc);
-
-        // 分行识别文本
-        let line_results = match recognize_text_by_lines(&image_data, selection_rect) {
-            Ok(results) => results,
-            Err(_) => {
-                // 即使识别失败，也要显示结果窗口
-                vec![OcrResult {
-                    text: "OCR识别失败".to_string(),
-                    confidence: 0.0,
-                    bounding_box: BoundingBox {
-                        x: 0,
-                        y: 0,
-                        width: 200,
-                        height: 25,
-                    },
-                }]
-            }
-        };
-
-        // 显示 OCR 结果窗口
-        let _ = OcrResultWindow::show(image_data, line_results.clone(), selection_rect);
-
-        // 关闭截图窗口（如果提供了窗口句柄）
-        if let Some(hwnd) = current_window {
-            use windows::Win32::UI::WindowsAndMessaging::*;
-            // 使用自定义消息来通知窗口关闭截图模式，而不是关闭整个程序
-            let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
-        }
-
-        Ok(line_results)
-    }
-}
-
 /// 整体识别文本然后根据坐标换行
-fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Result<Vec<OcrResult>> {
+pub fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Result<Vec<OcrResult>> {
     // 使用整体识别
     let mut ocr_engine = PaddleOcrEngine::new()?;
 
@@ -795,7 +723,12 @@ fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Ve
 }
 
 /// 将位图转换为 BMP 数据
-fn bitmap_to_bmp_data(mem_dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<Vec<u8>> {
+pub fn bitmap_to_bmp_data(
+    mem_dc: HDC,
+    bitmap: HBITMAP,
+    width: i32,
+    height: i32,
+) -> Result<Vec<u8>> {
     unsafe {
         // 获取位图信息
         let mut bitmap_info = BITMAPINFO {

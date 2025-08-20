@@ -72,8 +72,8 @@ impl SystemManager {
         // 启动窗口检测
         self.window_detection.start_detection()?;
 
-        // 启动OCR引擎
-        self.ocr.start_engine()?;
+        // 确保OCR引擎已启动
+        self.ocr.ensure_engine_started()?;
 
         Ok(())
     }
@@ -99,7 +99,7 @@ impl SystemManager {
 
     /// 异步停止OCR引擎（从原始代码迁移）
     pub fn stop_ocr_engine_async(&mut self) {
-        self.ocr.stop_engine_async();
+        self.ocr.stop_engine();
     }
 
     /// 重新加载设置（从原始代码迁移）
@@ -128,6 +128,17 @@ impl SystemManager {
     ) {
         self.ocr.update_status(available);
         // 可以在这里添加状态更新后的其他逻辑
+    }
+
+    /// 从选择区域识别文本（委托给OcrManager）
+    pub fn recognize_text_from_selection(
+        &mut self,
+        selection_rect: windows::Win32::Foundation::RECT,
+        hwnd: windows::Win32::Foundation::HWND,
+        screenshot_manager: &mut crate::screenshot::ScreenshotManager,
+    ) -> Result<(), SystemError> {
+        self.ocr
+            .recognize_text_from_selection(selection_rect, hwnd, screenshot_manager)
     }
 }
 

@@ -7,7 +7,6 @@ use crate::utils::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolbarButton {
     Save,
-    Copy,
     Rectangle,
     Circle,
     Arrow,
@@ -98,35 +97,8 @@ impl DrawingElement {
         }
     }
 
-    /// 从旧格式数据创建DrawingElement（兼容性方法）
-    /// 在旧代码中，文本元素的字体大小存储在thickness字段中
-    pub fn from_legacy_data(
-        tool: DrawingTool,
-        points: Vec<POINT>,
-        rect: RECT,
-        color: D2D1_COLOR_F,
-        thickness: f32,
-        text: String,
-        selected: bool,
-    ) -> Self {
-        let mut element = Self::new(tool);
-        element.points = points;
-        element.rect = rect;
-        element.color = color;
-        element.text = text;
-        element.selected = selected;
-
-        // 兼容性处理：对于文本元素，thickness字段存储的是字体大小
-        if tool == DrawingTool::Text {
-            element.font_size = thickness.max(8.0); // 确保最小字体大小
-            element.thickness = 1.0; // 文本元素的描边粗细设为默认值
-        } else {
-            element.thickness = thickness;
-            // 非文本元素保持默认字体大小
-        }
-
-        element
-    }
+    // 注意：from_legacy_data 方法已被移除
+    // 该方法用于兼容旧数据格式，现在所有新的绘图元素都通过 new() 方法创建
 
     /// 获取用于渲染的字体大小（兼容性方法）
     /// 确保文本元素使用font_size字段，其他元素可能仍使用thickness

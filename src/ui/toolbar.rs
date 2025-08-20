@@ -187,7 +187,6 @@ impl ToolbarManager {
                 // 动作按钮：不改变当前 clicked_button；触发保存动作
                 vec![Command::SaveSelectionToFile]
             }
-            ToolbarButton::Copy => vec![Command::CopyToClipboard],
             ToolbarButton::Rectangle => vec![Command::SelectDrawingTool(
                 crate::types::DrawingTool::Rectangle,
             )],

@@ -6,40 +6,97 @@ use crate::constants::HANDLE_DETECTION_RADIUS;
 use crate::types::DragMode;
 use windows::Win32::Foundation::RECT;
 
-/// 通用的手柄命中检测
+/// 手柄检测配置
+#[derive(Debug, Clone)]
+pub enum HandleConfig {
+    /// 8个手柄（常规矩形）
+    Full,
+    /// 4个角手柄（文本框）
+    Corners,
+    /// 2个端点（箭头）
+    Endpoints(Option<&'static [windows::Win32::Foundation::POINT]>),
+}
+
+/// 通用的手柄命中检测（合并版本）
 ///
 /// # 参数
 /// - `x, y`: 鼠标位置
 /// - `rect`: 目标矩形
+/// - `config`: 手柄配置
 /// - `allow_moving`: 是否允许通过点击内部移动
 ///
 /// # 返回
 /// 返回检测到的拖拽模式
-pub fn detect_handle_at_position(x: i32, y: i32, rect: &RECT, allow_moving: bool) -> DragMode {
-    let center_x = (rect.left + rect.right) / 2;
-    let center_y = (rect.top + rect.bottom) / 2;
-
-    // 8个手柄的位置和对应的拖拽模式
-    let handles = [
-        (rect.left, rect.top, DragMode::ResizingTopLeft),
-        (center_x, rect.top, DragMode::ResizingTopCenter),
-        (rect.right, rect.top, DragMode::ResizingTopRight),
-        (rect.right, center_y, DragMode::ResizingMiddleRight),
-        (rect.right, rect.bottom, DragMode::ResizingBottomRight),
-        (center_x, rect.bottom, DragMode::ResizingBottomCenter),
-        (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
-        (rect.left, center_y, DragMode::ResizingMiddleLeft),
-    ];
-
+pub fn detect_handle_at_position_unified(
+    x: i32,
+    y: i32,
+    rect: &RECT,
+    config: HandleConfig,
+    allow_moving: bool,
+) -> DragMode {
     let detection_radius = HANDLE_DETECTION_RADIUS as i32;
-    for (hx, hy, mode) in handles.iter() {
-        let dx = x - hx;
-        let dy = y - hy;
-        let distance_sq = dx * dx + dy * dy;
-        let radius_sq = detection_radius * detection_radius;
 
-        if distance_sq <= radius_sq {
-            return *mode;
+    match config {
+        HandleConfig::Endpoints(points_opt) => {
+            // 箭头元素特殊处理：只检查起点和终点
+            if let Some(points) = points_opt {
+                if points.len() >= 2 {
+                    let start = points[0];
+                    let end = points[1];
+                    let dx = x - start.x;
+                    let dy = y - start.y;
+                    if dx * dx + dy * dy <= detection_radius * detection_radius {
+                        return DragMode::ResizingTopLeft;
+                    }
+                    let dx2 = x - end.x;
+                    let dy2 = y - end.y;
+                    if dx2 * dx2 + dy2 * dy2 <= detection_radius * detection_radius {
+                        return DragMode::ResizingBottomRight;
+                    }
+                }
+            }
+            return DragMode::None;
+        }
+        HandleConfig::Corners => {
+            // 文本元素只有4个角的手柄
+            let handles = [
+                (rect.left, rect.top, DragMode::ResizingTopLeft),
+                (rect.right, rect.top, DragMode::ResizingTopRight),
+                (rect.right, rect.bottom, DragMode::ResizingBottomRight),
+                (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
+            ];
+
+            for (hx, hy, mode) in handles.iter() {
+                let dx = x - hx;
+                let dy = y - hy;
+                if dx * dx + dy * dy <= detection_radius * detection_radius {
+                    return *mode;
+                }
+            }
+        }
+        HandleConfig::Full => {
+            // 8个手柄的完整检测
+            let center_x = (rect.left + rect.right) / 2;
+            let center_y = (rect.top + rect.bottom) / 2;
+
+            let handles = [
+                (rect.left, rect.top, DragMode::ResizingTopLeft),
+                (center_x, rect.top, DragMode::ResizingTopCenter),
+                (rect.right, rect.top, DragMode::ResizingTopRight),
+                (rect.right, center_y, DragMode::ResizingMiddleRight),
+                (rect.right, rect.bottom, DragMode::ResizingBottomRight),
+                (center_x, rect.bottom, DragMode::ResizingBottomCenter),
+                (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
+                (rect.left, center_y, DragMode::ResizingMiddleLeft),
+            ];
+
+            for (hx, hy, mode) in handles.iter() {
+                let dx = x - hx;
+                let dy = y - hy;
+                if dx * dx + dy * dy <= detection_radius * detection_radius {
+                    return *mode;
+                }
+            }
         }
     }
 
@@ -134,80 +191,4 @@ pub fn get_handle_positions(rect: &RECT) -> [(i32, i32); 8] {
         (rect.left, rect.bottom),  // 左下
         (rect.left, center_y),     // 左中
     ]
-}
-
-/// 绘图元素的手柄检测（支持不同元素类型的特殊处理）
-///
-/// # 参数
-/// - `x, y`: 鼠标位置
-/// - `rect`: 元素矩形
-/// - `tool`: 绘图工具类型
-/// - `element_points`: 元素的点集合（用于箭头等特殊元素）
-///
-/// # 返回
-/// 返回检测到的拖拽模式
-pub fn detect_element_handle_at_position(
-    x: i32,
-    y: i32,
-    rect: &RECT,
-    tool: crate::types::DrawingTool,
-    element_points: Option<&[windows::Win32::Foundation::POINT]>,
-) -> DragMode {
-    let detection_radius = HANDLE_DETECTION_RADIUS as i32;
-
-    // 箭头元素特殊处理：只检查起点和终点
-    if tool == crate::types::DrawingTool::Arrow {
-        if let Some(points) = element_points {
-            if points.len() >= 2 {
-                let start = points[0];
-                let end = points[1];
-                let dx = x - start.x;
-                let dy = y - start.y;
-                if dx * dx + dy * dy <= detection_radius * detection_radius {
-                    return DragMode::ResizingTopLeft;
-                }
-                let dx2 = x - end.x;
-                let dy2 = y - end.y;
-                if dx2 * dx2 + dy2 * dy2 <= detection_radius * detection_radius {
-                    return DragMode::ResizingBottomRight;
-                }
-            }
-        }
-        return DragMode::None;
-    }
-
-    let center_x = (rect.left + rect.right) / 2;
-    let center_y = (rect.top + rect.bottom) / 2;
-
-    // 文本元素只有4个角的手柄
-    let handles = if tool == crate::types::DrawingTool::Text {
-        vec![
-            (rect.left, rect.top, DragMode::ResizingTopLeft),
-            (rect.right, rect.top, DragMode::ResizingTopRight),
-            (rect.right, rect.bottom, DragMode::ResizingBottomRight),
-            (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
-        ]
-    } else {
-        // 其他元素有8个手柄
-        vec![
-            (rect.left, rect.top, DragMode::ResizingTopLeft),
-            (center_x, rect.top, DragMode::ResizingTopCenter),
-            (rect.right, rect.top, DragMode::ResizingTopRight),
-            (rect.right, center_y, DragMode::ResizingMiddleRight),
-            (rect.right, rect.bottom, DragMode::ResizingBottomRight),
-            (center_x, rect.bottom, DragMode::ResizingBottomCenter),
-            (rect.left, rect.bottom, DragMode::ResizingBottomLeft),
-            (rect.left, center_y, DragMode::ResizingMiddleLeft),
-        ]
-    };
-
-    for (hx, hy, mode) in handles.into_iter() {
-        let dx = x - hx;
-        let dy = y - hy;
-        if dx * dx + dy * dy <= detection_radius * detection_radius {
-            return mode;
-        }
-    }
-
-    DragMode::None
 }

@@ -6,11 +6,74 @@ use crate::types::{DragMode, DrawingTool, ToolbarButton};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
+/// 光标上下文 - 封装所有光标判断所需的状态
+#[derive(Debug)]
+pub struct CursorContext {
+    pub mouse_x: i32,
+    pub mouse_y: i32,
+    pub hovered_button: ToolbarButton,
+    pub is_button_disabled: bool,
+    pub is_text_editing: bool,
+    pub editing_element_info: Option<(crate::types::DrawingElement, usize)>,
+    pub current_tool: DrawingTool,
+    pub selection_rect: Option<windows::Win32::Foundation::RECT>,
+    pub selected_element_info: Option<(crate::types::DrawingElement, usize)>,
+    pub selection_handle_mode: DragMode,
+}
+
+impl CursorContext {
+    pub fn new(
+        mouse_x: i32,
+        mouse_y: i32,
+        hovered_button: ToolbarButton,
+        is_button_disabled: bool,
+        is_text_editing: bool,
+        editing_element_info: Option<(crate::types::DrawingElement, usize)>,
+        current_tool: DrawingTool,
+        selection_rect: Option<windows::Win32::Foundation::RECT>,
+        selected_element_info: Option<(crate::types::DrawingElement, usize)>,
+        selection_handle_mode: DragMode,
+    ) -> Self {
+        Self {
+            mouse_x,
+            mouse_y,
+            hovered_button,
+            is_button_disabled,
+            is_text_editing,
+            editing_element_info,
+            current_tool,
+            selection_rect,
+            selected_element_info,
+            selection_handle_mode,
+        }
+    }
+}
+
 /// 光标管理器
 pub struct CursorManager;
 
 impl CursorManager {
-    /// 根据应用状态确定合适的光标
+    /// 根据上下文确定合适的光标（简化版本）
+    pub fn determine_cursor_from_context(
+        context: &CursorContext,
+        drawing_manager: &crate::drawing::DrawingManager,
+    ) -> PCWSTR {
+        Self::determine_cursor(
+            context.mouse_x,
+            context.mouse_y,
+            context.hovered_button,
+            context.is_button_disabled,
+            context.is_text_editing,
+            context.editing_element_info.clone(),
+            context.current_tool,
+            context.selection_rect,
+            context.selected_element_info.clone(),
+            context.selection_handle_mode,
+            drawing_manager,
+        )
+    }
+
+    /// 根据应用状态确定合适的光标（原版本，保持向后兼容）
     pub fn determine_cursor(
         x: i32,
         y: i32,

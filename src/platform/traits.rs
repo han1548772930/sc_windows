@@ -27,6 +27,50 @@ pub struct Rectangle {
     pub height: f32,
 }
 
+impl Rectangle {
+    /// 创建新的矩形
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// 从左上角和右下角坐标创建矩形
+    pub fn from_bounds(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        }
+    }
+}
+
+impl From<windows::Win32::Foundation::RECT> for Rectangle {
+    fn from(rect: windows::Win32::Foundation::RECT) -> Self {
+        Rectangle {
+            x: rect.left as f32,
+            y: rect.top as f32,
+            width: (rect.right - rect.left) as f32,
+            height: (rect.bottom - rect.top) as f32,
+        }
+    }
+}
+
+impl From<&windows::Win32::Foundation::RECT> for Rectangle {
+    fn from(rect: &windows::Win32::Foundation::RECT) -> Self {
+        Rectangle {
+            x: rect.left as f32,
+            y: rect.top as f32,
+            width: (rect.right - rect.left) as f32,
+            height: (rect.bottom - rect.top) as f32,
+        }
+    }
+}
+
 /// 文本样式
 #[derive(Debug, Clone)]
 pub struct TextStyle {

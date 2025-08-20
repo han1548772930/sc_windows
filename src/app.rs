@@ -63,8 +63,10 @@ impl App {
     }
 
     /// 获取当前的GDI截图位图句柄（用于简单显示）
+    /// 注意：调用方负责释放返回的HBITMAP
     pub fn get_gdi_screenshot_bitmap(&self) -> Option<windows::Win32::Graphics::Gdi::HBITMAP> {
-        self.screenshot.get_gdi_bitmap()
+        // 按需捕获屏幕并返回GDI位图
+        self.screenshot.capture_screen_to_gdi_bitmap().ok()
     }
 
     /// 绘制窗口内容（从原始代码迁移）
@@ -265,39 +267,7 @@ impl App {
                 self.reset_to_initial_state();
                 vec![Command::HideWindow]
             }
-            // 0x20 => {
-            //     // VK_SPACE - 空格键触发截图
-            //     self.handle_message(Message::Screenshot(ScreenshotMessage::StartCapture))
-            // }
-            // 0x52 => {
-            //     // 'R' 键 - 矩形工具
-            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-            //         crate::types::DrawingTool::Rectangle,
-            //     )))
-            // }
-            // 0x43 => {
-            //     // 'C' 键 - 圆形工具
-            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-            //         crate::types::DrawingTool::Circle,
-            //     )))
-            // }
 
-            // 0x50 => {
-            //     // 'P' 键 - 画笔工具
-            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-            //         crate::types::DrawingTool::Pen,
-            //     )))
-            // }
-            // 0x54 => {
-            //     // 'T' 键 - 文本工具
-            //     self.handle_message(Message::Drawing(DrawingMessage::SelectTool(
-            //         crate::types::DrawingTool::Text,
-            //     )))
-            // }
-            // 0x5A => {
-            //     // 'Z' 键 - 撤销
-            //     self.handle_message(Message::Drawing(DrawingMessage::Undo))
-            // }
             _ => {
                 // 其他按键传递给各个管理器处理
                 let mut commands = Vec::new();
@@ -327,11 +297,223 @@ impl App {
     }
 
     /// 创建D2D位图（从原始代码迁移，使用平台无关接口）
-
     pub fn create_d2d_bitmap_from_gdi(&mut self) -> Result<(), AppError> {
         self.screenshot
             .create_d2d_bitmap_from_gdi(&mut *self.platform)
             .map_err(|e| AppError::RenderError(format!("Failed to create D2D bitmap: {:?}", e)))
+    }
+
+    /// 执行单个命令（从main.rs的handle_commands迁移）
+    /// 这个方法负责处理所有类型的命令，并返回可能产生的新命令
+    pub fn execute_command(
+        &mut self,
+        command: Command,
+        hwnd: windows::Win32::Foundation::HWND,
+    ) -> Vec<Command> {
+        use crate::message::{Command, DrawingMessage};
+        use windows::Win32::Foundation::*;
+        use windows::Win32::Graphics::Gdi::InvalidateRect;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        match command {
+            Command::RequestRedraw => {
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
+                }
+                vec![]
+            }
+            Command::UI(ui_message) => {
+                // 处理UI消息
+                self.handle_message(Message::UI(ui_message))
+            }
+            Command::Drawing(drawing_message) => {
+                // 检查是否应该禁用某些绘图命令（从原始代码迁移）
+                let should_execute = match &drawing_message {
+                    DrawingMessage::Undo => self.can_undo(),
+                    _ => true,
+                };
+
+                if should_execute {
+                    // 处理绘图消息
+                    self.handle_message(Message::Drawing(drawing_message))
+                } else {
+                    vec![]
+                }
+            }
+            Command::SelectDrawingTool(tool) => {
+                // 处理绘图工具选择
+                let mut commands = self.select_drawing_tool(tool);
+                commands.push(Command::RequestRedraw);
+                commands
+            }
+            Command::ShowOverlay => {
+                // 显示覆盖层（截图成功）
+                // 这个命令在热键处理中已经处理了
+                vec![]
+            }
+            Command::HideOverlay => {
+                // 隐藏覆盖层（取消或确认）
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
+                vec![]
+            }
+            Command::HideWindow => {
+                // 隐藏窗口（从原始代码迁移）
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
+                vec![]
+            }
+            Command::SaveSelectionToFile => {
+                // 保存选择区域到文件（从原始代码迁移）
+                match self.save_selection_to_file(hwnd) {
+                    Ok(true) => {
+                        // 保存成功，隐藏窗口并重置状态
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        self.reset_to_initial_state();
+                        vec![]
+                    }
+                    Ok(false) => {
+                        // 用户取消，不做任何操作
+                        vec![]
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to save selection to file: {}", e);
+                        vec![Command::ShowError(format!("保存失败: {}", e))]
+                    }
+                }
+            }
+            Command::SaveSelectionToClipboard => {
+                // 复制选择区域到剪贴板（从原始代码迁移）
+                match self.save_selection_to_clipboard(hwnd) {
+                    Ok(_) => {
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        self.reset_to_initial_state();
+                        vec![]
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to copy selection to clipboard: {}", e);
+                        vec![Command::ShowError(format!("复制失败: {}", e))]
+                    }
+                }
+            }
+            Command::UpdateToolbar => {
+                // 更新工具栏状态
+                self.update_toolbar_state();
+                vec![]
+            }
+            Command::ShowSettings => {
+                // 显示设置窗口（从原始代码迁移）
+                let _ = crate::simple_settings::show_settings_window();
+                vec![]
+            }
+            Command::TakeScreenshot => {
+                // 执行截图（从原始代码迁移）
+                match self.take_screenshot(hwnd) {
+                    Ok(_) => vec![],
+                    Err(e) => {
+                        eprintln!("Failed to take screenshot: {}", e);
+                        vec![Command::ShowError(format!("截图失败: {}", e))]
+                    }
+                }
+            }
+            Command::ExtractText => {
+                // 提取文本（从原始代码迁移）
+                match self.extract_text_from_selection(hwnd) {
+                    Ok(_) => {
+                        // OCR完成后隐藏截屏窗口（从原始代码迁移）
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        self.reset_to_initial_state();
+                        vec![]
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to extract text: {}", e);
+                        vec![Command::ShowError(format!("文本提取失败: {}", e))]
+                    }
+                }
+            }
+            Command::PinSelection => {
+                // 固定选择区域（从原始代码迁移）
+                match self.pin_selection(hwnd) {
+                    Ok(_) => vec![],
+                    Err(e) => {
+                        eprintln!("Failed to pin selection: {}", e);
+                        vec![Command::ShowError(format!("固定失败: {}", e))]
+                    }
+                }
+            }
+            Command::ResetToInitialState => {
+                // 重置到初始状态（从原始代码迁移）
+                self.reset_to_initial_state();
+                vec![]
+            }
+            Command::CopyToClipboard => {
+                // 复制到剪贴板（重定向到 SaveSelectionToClipboard）
+                self.execute_command(Command::SaveSelectionToClipboard, hwnd)
+            }
+            Command::ShowSaveDialog => {
+                // 显示保存对话框（从原始代码迁移）
+                match self.save_selection_to_file(hwnd) {
+                    Ok(true) => {
+                        unsafe {
+                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        }
+                        self.reset_to_initial_state();
+                        vec![]
+                    }
+                    Ok(false) => {
+                        // 用户取消，不做任何操作
+                        vec![]
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to show save dialog: {}", e);
+                        vec![Command::ShowError(format!("保存失败: {}", e))]
+                    }
+                }
+            }
+            Command::StartTimer(timer_id, interval_ms) => {
+                // 启动定时器（从原始代码迁移，用于文本编辑光标闪烁）
+                unsafe {
+                    let _ = SetTimer(Some(hwnd), timer_id as usize, interval_ms, None);
+                }
+                vec![]
+            }
+            Command::StopTimer(timer_id) => {
+                // 停止定时器（从原始代码迁移）
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), timer_id as usize);
+                }
+                vec![]
+            }
+            Command::ReloadSettings => {
+                // 重新加载设置（从原始代码迁移）
+                let commands = self.reload_settings();
+                commands
+            }
+            Command::ShowError(msg) => {
+                // 显示错误消息
+                eprintln!("Error: {}", msg);
+                vec![]
+            }
+            Command::Quit => {
+                // 退出应用
+                unsafe {
+                    PostQuitMessage(0);
+                }
+                vec![]
+            }
+            Command::None => {
+                // 无操作，忽略
+                vec![]
+            }
+        }
     }
 
     /// 处理鼠标移动
@@ -682,7 +864,7 @@ impl App {
         result.map(|_| true).map_err(|e| AppError::InitError(e))
     }
 
-    /// 从选择区域提取文本（从原始代码迁移）
+    /// 从选择区域提取文本（简化版本 - 委托给OcrManager）
     pub fn extract_text_from_selection(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
@@ -692,80 +874,10 @@ impl App {
             return Ok(());
         };
 
-        // 检查OCR引擎是否可用（从原始代码迁移）
-        if !self.is_ocr_engine_available() {
-            // 如果OCR引擎不可用，显示错误消息
-            use windows::Win32::UI::WindowsAndMessaging::*;
-            let message = "OCR引擎不可用。\n\n请确保PaddleOCR引擎正常运行。";
-            let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
-            let title_w: Vec<u16> = "OCR错误".encode_utf16().chain(std::iter::once(0)).collect();
-
-            unsafe {
-                MessageBoxW(
-                    Some(hwnd),
-                    windows::core::PCWSTR(message_w.as_ptr()),
-                    windows::core::PCWSTR(title_w.as_ptr()),
-                    MB_OK | MB_ICONERROR,
-                );
-            }
-            return Ok(());
-        }
-
-        // 临时隐藏UI元素
-        self.screenshot.hide_ui_for_capture(hwnd);
-
-        let result = unsafe {
-            // 直接使用原始OCR模块的extract_text_from_selection函数
-            // 这个函数会自动处理图像数据创建和OCR结果窗口显示
-            match crate::ocr::extract_text_from_selection(
-                self.screenshot.get_screenshot_dc(),
-                selection_rect,
-                Some(hwnd),
-            ) {
-                Ok(ocr_results) => {
-                    // 原始函数已经处理了OCR结果窗口显示
-                    // 这里只需要处理空结果的情况
-                    if ocr_results.is_empty() {
-                        // 显示"未识别到文本"消息
-                        use windows::Win32::UI::WindowsAndMessaging::*;
-                        let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
-                        let message_w: Vec<u16> =
-                            message.encode_utf16().chain(std::iter::once(0)).collect();
-                        let title_w: Vec<u16> =
-                            "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
-
-                        MessageBoxW(
-                            Some(hwnd),
-                            windows::core::PCWSTR(message_w.as_ptr()),
-                            windows::core::PCWSTR(title_w.as_ptr()),
-                            MB_OK | MB_ICONINFORMATION,
-                        );
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    // 显示错误消息
-                    use windows::Win32::UI::WindowsAndMessaging::*;
-                    let message = format!("OCR识别失败：{}\n\n请确保PaddleOCR引擎正常运行。", e);
-                    let message_w: Vec<u16> =
-                        message.encode_utf16().chain(std::iter::once(0)).collect();
-                    let title_w: Vec<u16> =
-                        "OCR错误".encode_utf16().chain(std::iter::once(0)).collect();
-
-                    MessageBoxW(
-                        Some(hwnd),
-                        windows::core::PCWSTR(message_w.as_ptr()),
-                        windows::core::PCWSTR(title_w.as_ptr()),
-                        MB_OK | MB_ICONERROR,
-                    );
-                    Err(AppError::InitError(format!("OCR failed: {}", e)))
-                }
-            }
-        };
-
-        // 恢复UI元素
-        self.screenshot.show_ui_after_capture(hwnd);
-        result
+        // 委托给SystemManager处理整个OCR流程
+        self.system
+            .recognize_text_from_selection(selection_rect, hwnd, &mut self.screenshot)
+            .map_err(|e| AppError::InitError(format!("OCR识别失败: {}", e)))
     }
 
     /// 固定选择区域（从原始代码迁移）
@@ -796,10 +908,8 @@ impl App {
             self.screenshot.show_ui_after_capture(hwnd);
 
             // 隐藏原始截屏窗口
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
-                let _ = ShowWindow(hwnd, SW_HIDE);
-            }
+            use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
+            let _ = ShowWindow(hwnd, SW_HIDE);
 
             // 重置原始窗口状态，准备下次截屏
             self.reset_to_initial_state();

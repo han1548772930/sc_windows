@@ -266,8 +266,14 @@ impl SelectionState {
             None => return DragMode::None,
         };
 
-        // 使用共用的手柄检测函数
-        crate::utils::detect_handle_at_position(x, y, &rect, true)
+        // 使用统一的手柄检测函数
+        crate::utils::detect_handle_at_position_unified(
+            x,
+            y,
+            &rect,
+            crate::utils::HandleConfig::Full,
+            true,
+        )
     }
 
     /// 开始选择框交互操作

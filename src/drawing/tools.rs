@@ -8,30 +8,16 @@ use crate::types::DrawingTool;
 pub struct ToolManager {
     /// 当前工具
     current_tool: DrawingTool,
-    /// 工具配置
-    tool_configs: ToolConfigs,
 }
 
-/// 工具配置
-pub struct ToolConfigs {
-    /// 画笔粗细
-    pub brush_thickness: f32,
-    /// 画笔颜色
-    pub brush_color: (f32, f32, f32, f32), // RGBA
-    /// 文字大小
-    pub text_size: f32,
-}
+// 注意：ToolConfigs 结构体已被移除
+// 现在配置直接从 SimpleSettings 读取，避免重复存储和同步问题
 
 impl ToolManager {
     /// 创建新的工具管理器
     pub fn new() -> Self {
         Self {
             current_tool: DrawingTool::None,
-            tool_configs: ToolConfigs {
-                brush_thickness: 3.0,
-                brush_color: (1.0, 0.0, 0.0, 1.0), // 红色
-                text_size: 16.0,
-            },
         }
     }
 
@@ -45,38 +31,26 @@ impl ToolManager {
         self.current_tool
     }
 
-    /// 获取工具配置
-    pub fn get_configs(&self) -> &ToolConfigs {
-        &self.tool_configs
-    }
-
-    /// 设置画笔粗细
-    pub fn set_brush_thickness(&mut self, thickness: f32) {
-        self.tool_configs.brush_thickness = thickness;
-    }
-
-    /// 设置画笔颜色
-    pub fn set_brush_color(&mut self, r: f32, g: f32, b: f32, a: f32) {
-        self.tool_configs.brush_color = (r, g, b, a);
-    }
-
-    /// 设置文字大小
-    pub fn set_text_size(&mut self, size: f32) {
-        self.tool_configs.text_size = size;
-    }
-
-    /// 获取画笔颜色
+    /// 获取画笔颜色（直接从设置读取）
     pub fn get_brush_color(&self) -> windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-        windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-            r: self.tool_configs.brush_color.0,
-            g: self.tool_configs.brush_color.1,
-            b: self.tool_configs.brush_color.2,
-            a: self.tool_configs.brush_color.3,
-        }
+        let (drawing_color, _text_color, _selection_border_color, _toolbar_bg_color) =
+            crate::constants::get_colors_from_settings();
+        drawing_color
     }
 
-    /// 获取画笔粗细
+    /// 获取画笔粗细（直接从设置读取）
     pub fn get_line_thickness(&self) -> f32 {
-        self.tool_configs.brush_thickness
+        let settings = crate::simple_settings::SimpleSettings::load();
+        settings.line_thickness
     }
+
+    /// 获取文字大小（直接从设置读取）
+    pub fn get_text_size(&self) -> f32 {
+        let settings = crate::simple_settings::SimpleSettings::load();
+        settings.font_size
+    }
+
+    // 注意：设置器方法已被移除
+    // 配置现在直接从 SimpleSettings 读取，避免重复存储和同步问题
+    // 如需修改配置，请直接修改 SimpleSettings 并保存
 }

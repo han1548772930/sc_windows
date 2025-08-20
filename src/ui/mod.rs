@@ -6,11 +6,9 @@ use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 
 pub mod cursor;
-pub mod dialogs;
 pub mod svg_icons;
 pub mod toolbar;
 
-use dialogs::DialogManager;
 use svg_icons::SvgIconManager;
 use toolbar::ToolbarManager;
 
@@ -18,8 +16,6 @@ use toolbar::ToolbarManager;
 pub struct UIManager {
     /// 工具栏管理器
     toolbar: ToolbarManager,
-    /// 对话框管理器
-    dialogs: DialogManager,
     /// SVG图标管理器
     svg_icons: SvgIconManager,
 }
@@ -35,7 +31,6 @@ impl UIManager {
 
         Ok(Self {
             toolbar: ToolbarManager::new()?,
-            dialogs: DialogManager::new()?,
             svg_icons,
         })
     }
@@ -47,9 +42,6 @@ impl UIManager {
 
         // 重置工具栏按钮状态
         self.toolbar.clicked_button = crate::types::ToolbarButton::None;
-
-        // 关闭所有对话框
-        self.dialogs.close_current_dialog();
     }
 
     /// 处理UI消息
@@ -83,13 +75,13 @@ impl UIManager {
                 }
             }
             UIMessage::ToolbarButtonClicked(button) => self.toolbar.handle_button_click(button),
-            UIMessage::ShowDialog(dialog_type) => {
-                self.dialogs.show_dialog(dialog_type);
-                vec![Command::RequestRedraw]
+            UIMessage::ShowDialog(_dialog_type) => {
+                // 对话框系统已移除，返回空命令
+                vec![]
             }
             UIMessage::CloseDialog => {
-                self.dialogs.close_current_dialog();
-                vec![Command::RequestRedraw]
+                // 对话框系统已移除，返回空命令
+                vec![]
             }
         }
     }
@@ -101,9 +93,6 @@ impl UIManager {
     ) -> Result<(), UIError> {
         // 渲染工具栏
         self.toolbar.render(renderer, &self.svg_icons)?;
-
-        // 渲染对话框
-        self.dialogs.render(renderer)?;
 
         Ok(())
     }
@@ -222,59 +211,30 @@ impl UIManager {
     /// 处理鼠标移动
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
-        let mut commands = Vec::new();
-
         // 工具栏处理鼠标移动
         let toolbar_commands = self.toolbar.handle_mouse_move(x, y);
         let toolbar_consumed = !toolbar_commands.is_empty();
-        commands.extend(toolbar_commands);
 
-        // 如果工具栏没有消费，传递给对话框
-        if !toolbar_consumed {
-            let dialog_commands = self.dialogs.handle_mouse_move(x, y);
-            let dialog_consumed = !dialog_commands.is_empty();
-            commands.extend(dialog_commands);
-            (commands, dialog_consumed)
-        } else {
-            (commands, true)
-        }
+        (toolbar_commands, toolbar_consumed)
     }
 
     /// 处理鼠标按下
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
-        let mut commands = Vec::new();
-
         // 工具栏处理鼠标按下
         let toolbar_commands = self.toolbar.handle_mouse_down(x, y);
         let toolbar_consumed = !toolbar_commands.is_empty();
-        commands.extend(toolbar_commands);
 
-        // 如果工具栏没有处理，则传递给对话框
-        if !toolbar_consumed {
-            let dialog_commands = self.dialogs.handle_mouse_down(x, y);
-            let dialog_consumed = !dialog_commands.is_empty();
-            commands.extend(dialog_commands);
-            (commands, dialog_consumed)
-        } else {
-            (commands, true)
-        }
+        (toolbar_commands, toolbar_consumed)
     }
 
     /// 处理鼠标释放
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
-        let mut commands = Vec::new();
-
         let toolbar_commands = self.toolbar.handle_mouse_up(x, y);
         let toolbar_consumed = !toolbar_commands.is_empty();
-        commands.extend(toolbar_commands);
 
-        let dialog_commands = self.dialogs.handle_mouse_up(x, y);
-        let dialog_consumed = !dialog_commands.is_empty();
-        commands.extend(dialog_commands);
-
-        (commands, toolbar_consumed || dialog_consumed)
+        (toolbar_commands, toolbar_consumed)
     }
 
     /// 处理双击事件
@@ -287,9 +247,9 @@ impl UIManager {
     }
 
     /// 处理键盘输入
-    pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
-        // 对话框优先处理键盘输入
-        self.dialogs.handle_key_input(key)
+    pub fn handle_key_input(&mut self, _key: u32) -> Vec<Command> {
+        // 对话框系统已移除，返回空命令
+        vec![]
     }
 
     /// 工具栏是否可见

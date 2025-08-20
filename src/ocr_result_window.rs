@@ -455,74 +455,42 @@ impl OcrResultWindow {
             }
         }
 
-        // 创建新的标题栏按钮，最大化和普通状态使用相同的位置
-        let mut title_bar_buttons = if self.is_maximized {
-            // 最大化时使用还原按钮而不是最大化按钮
-            Self::create_title_bar_buttons_maximized(window_width, title_bar_top_offset)
-        } else {
-            Self::create_title_bar_buttons(window_width, title_bar_top_offset)
-        };
+        // 创建新的标题栏按钮，根据窗口状态选择合适的按钮
+        let mut title_bar_buttons =
+            Self::create_title_bar_buttons(window_width, title_bar_top_offset, self.is_maximized);
 
         self.svg_icons.append(&mut title_bar_buttons);
     }
 
-    /// 创建最大化状态的标题栏按钮
-    fn create_title_bar_buttons_maximized(
+    /// 创建标题栏按钮（合并版本）
+    ///
+    /// # 参数
+    /// * `window_width` - 窗口宽度
+    /// * `_title_bar_top_offset` - 标题栏顶部偏移（暂未使用）
+    /// * `is_maximized` - 是否为最大化状态
+    fn create_title_bar_buttons(
         window_width: i32,
         _title_bar_top_offset: i32,
+        is_maximized: bool,
     ) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
-        // 标题栏按钮列表：关闭、还原、最小化（从右到左的正确顺序）
-        let button_files = vec![
-            "x.svg",         // 关闭（最右边）
-            "reduction.svg", // 还原
-            "minus.svg",     // 最小化（最左边）
-        ];
-
-        // 从右到左创建按钮
-        for (i, filename) in button_files.iter().enumerate() {
-            if let Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized)) =
-                Self::load_title_bar_button_from_file(filename)
-            {
-                // 按钮位置计算（从右边开始，关闭按钮贴边）- 和普通状态一样，不偏移
-                let button_x = window_width - (i as i32 + 1) * TITLE_BAR_BUTTON_WIDTH;
-
-                // 图标在按钮中心，相对于标题栏的坐标系
-                let icon_x = button_x + (TITLE_BAR_BUTTON_WIDTH - ICON_SIZE) / 2;
-                // 在标题栏内垂直居中（相对坐标，不包含屏幕偏移）
-                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
-
-                buttons.push(SvgIcon {
-                    name: filename.replace(".svg", "").to_string(),
-                    bitmap: normal_bitmap,
-                    hover_bitmap,
-                    hover_bitmap_maximized: Some(hover_bitmap_maximized),
-                    rect: RECT {
-                        left: icon_x,
-                        top: icon_y,
-                        right: icon_x + ICON_SIZE,
-                        bottom: icon_y + ICON_SIZE,
-                    },
-                    hovered: false,
-                    is_title_bar_button: true, // 标记为标题栏按钮
-                });
-            }
-        }
-
-        buttons
-    }
-
-    /// 创建标题栏按钮
-    fn create_title_bar_buttons(window_width: i32, _title_bar_top_offset: i32) -> Vec<SvgIcon> {
-        let mut buttons = Vec::new();
-
-        // 标题栏按钮列表：关闭、最大化、最小化（从右到左的正确顺序）
-        let button_files = vec![
-            "x.svg",      // 关闭（最右边）
-            "square.svg", // 最大化
-            "minus.svg",  // 最小化（最左边）
-        ];
+        // 根据窗口状态选择按钮文件列表
+        let button_files = if is_maximized {
+            // 最大化状态：关闭、还原、最小化（从右到左的正确顺序）
+            vec![
+                "x.svg",         // 关闭（最右边）
+                "reduction.svg", // 还原
+                "minus.svg",     // 最小化（最左边）
+            ]
+        } else {
+            // 普通状态：关闭、最大化、最小化（从右到左的正确顺序）
+            vec![
+                "x.svg",      // 关闭（最右边）
+                "square.svg", // 最大化
+                "minus.svg",  // 最小化（最左边）
+            ]
+        };
 
         // 从右到左创建按钮
         for (i, filename) in button_files.iter().enumerate() {
@@ -1336,7 +1304,7 @@ impl OcrResultWindow {
 
             // 加载所有SVG图标（普通图标 + 标题栏按钮）
             let mut svg_icons = Self::load_all_svg_icons();
-            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, 0); // 初始化时不是全屏
+            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, 0, false); // 初始化时不是最大化
             svg_icons.append(&mut title_bar_buttons);
 
             // 创建窗口实例

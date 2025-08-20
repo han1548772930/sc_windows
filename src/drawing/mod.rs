@@ -1238,8 +1238,36 @@ impl DrawingManager {
             None
         };
 
-        // 使用共用的绘图元素手柄检测函数
-        crate::utils::detect_element_handle_at_position(x, y, rect, tool, element_points)
+        // 使用统一的绘图元素手柄检测函数
+        // 根据工具类型选择合适的配置
+        let config = match tool {
+            crate::types::DrawingTool::Arrow => {
+                // 箭头元素的特殊处理
+                let detection_radius = crate::constants::HANDLE_DETECTION_RADIUS as i32;
+                if let Some(points) = element_points {
+                    if points.len() >= 2 {
+                        let start = points[0];
+                        let end = points[1];
+                        let dx = x - start.x;
+                        let dy = y - start.y;
+                        if dx * dx + dy * dy <= detection_radius * detection_radius {
+                            return crate::types::DragMode::ResizingTopLeft;
+                        }
+                        let dx2 = x - end.x;
+                        let dy2 = y - end.y;
+                        if dx2 * dx2 + dy2 * dy2 <= detection_radius * detection_radius {
+                            return crate::types::DragMode::ResizingBottomRight;
+                        }
+                    }
+                }
+                return crate::types::DragMode::None;
+            }
+            crate::types::DrawingTool::Text => crate::utils::HandleConfig::Corners,
+            _ => crate::utils::HandleConfig::Full,
+        };
+
+        // 委托给统一的检测函数
+        crate::utils::detect_handle_at_position_unified(x, y, rect, config, false)
     }
 
     /// 处理鼠标按下（从原始代码迁移，支持拖拽模式）
@@ -1683,26 +1711,11 @@ impl DrawingManager {
     }
 
     /// 重新加载绘图属性（从设置中同步最新的颜色和粗细等属性）
+    /// 注意：现在 ToolManager 直接从设置读取配置，无需手动同步
     pub fn reload_drawing_properties(&mut self) {
-        // 从设置中加载最新的绘图属性
-        let (drawing_color, _text_color, _selection_border_color, _toolbar_bg_color) =
-            crate::constants::get_colors_from_settings();
-
-        // 从设置中加载绘图粗细
-        let settings = crate::simple_settings::SimpleSettings::load();
-        let drawing_thickness = settings.line_thickness;
-
-        // 更新工具管理器的配置（不再需要内部缓存）
-        self.tools.set_brush_color(
-            drawing_color.r,
-            drawing_color.g,
-            drawing_color.b,
-            drawing_color.a,
-        );
-        self.tools.set_brush_thickness(drawing_thickness);
-
-        // 更新字体大小
-        self.tools.set_text_size(settings.font_size);
+        // ToolManager 现在直接从 SimpleSettings 读取配置
+        // 无需手动同步，配置会在需要时自动从设置中读取
+        // 这个方法保留是为了兼容性，但实际上不再需要做任何操作
     }
 
     /// 处理双击事件（优先用于文本编辑）

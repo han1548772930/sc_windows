@@ -5,7 +5,6 @@
 use super::SystemError;
 use crate::message::Command;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::{Shell::*, WindowsAndMessaging::*};
 use windows::core::*;
 
@@ -175,13 +174,14 @@ impl TrayManager {
     }
 }
 
-/// 创建默认图标（从原始代码完整迁移）
+/// 创建默认图标（简化版本，直接从嵌入数据加载）
 pub fn create_default_icon() -> std::result::Result<HICON, SystemError> {
     unsafe {
-        // 使用 include_bytes! 在编译时嵌入图标文件（与原始代码一致）
+        // 使用 include_bytes! 在编译时嵌入图标文件
         const ICON_DATA: &[u8] = include_bytes!("../../icons/i.ico");
 
-        match load_icon_from_bytes(ICON_DATA) {
+        // 直接从嵌入的字节数据加载图标，避免复杂的文件操作
+        match load_embedded_icon(ICON_DATA) {
             Ok(icon) => Ok(icon),
             Err(_e) => {
                 // 如果嵌入图标加载失败，使用系统默认图标
@@ -193,17 +193,27 @@ pub fn create_default_icon() -> std::result::Result<HICON, SystemError> {
     }
 }
 
-/// 从字节数据加载图标（从原始代码迁移）
-pub fn load_icon_from_bytes(image_data: &[u8]) -> std::result::Result<HICON, SystemError> {
+/// 从嵌入的字节数据直接加载图标（简化版本）
+fn load_embedded_icon(icon_data: &[u8]) -> std::result::Result<HICON, SystemError> {
     unsafe {
-        // 创建临时文件来存储图像数据
-        let temp_path = std::env::temp_dir().join("temp_icon.ico");
-        std::fs::write(&temp_path, image_data).map_err(|e| {
+        // 创建临时文件来存储图标数据（ICO格式需要文件路径）
+        let temp_path = std::env::temp_dir().join("temp_tray_icon.ico");
+        std::fs::write(&temp_path, icon_data).map_err(|e| {
             SystemError::TrayError(format!("Failed to write temp icon file: {:?}", e))
         })?;
 
-        // 使用临时文件加载图标
-        let result = load_icon_from_file(&temp_path.to_string_lossy());
+        // 直接加载ICO文件
+        let path_wide = crate::utils::to_wide_chars(&temp_path.to_string_lossy());
+        let result = LoadImageW(
+            None,
+            PCWSTR(path_wide.as_ptr()),
+            IMAGE_ICON,
+            16, // 系统托盘图标标准大小
+            16,
+            LR_LOADFROMFILE,
+        )
+        .map(|h| HICON(h.0))
+        .map_err(|e| SystemError::TrayError(format!("Failed to load embedded icon: {:?}", e)));
 
         // 清理临时文件
         let _ = std::fs::remove_file(&temp_path);
@@ -212,84 +222,8 @@ pub fn load_icon_from_bytes(image_data: &[u8]) -> std::result::Result<HICON, Sys
     }
 }
 
-/// 从文件加载图标（从原始代码迁移）
-pub fn load_icon_from_file(file_path: &str) -> std::result::Result<HICON, SystemError> {
-    unsafe {
-        let path_wide = crate::utils::to_wide_chars(file_path);
-
-        // 如果是 ICO 文件，直接加载图标
-        if file_path.to_lowercase().ends_with(".ico") {
-            LoadImageW(
-                None,
-                PCWSTR(path_wide.as_ptr()),
-                IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE,
-            )
-            .map(|h| HICON(h.0))
-            .map_err(|e| SystemError::TrayError(format!("Failed to load icon from file: {:?}", e)))
-        } else {
-            // 对于其他格式，先加载为位图然后转换为图标
-            let hbitmap = LoadImageW(
-                None,
-                PCWSTR(path_wide.as_ptr()),
-                IMAGE_BITMAP,
-                0,
-                0,
-                LR_LOADFROMFILE,
-            )
-            .map_err(|e| SystemError::TrayError(format!("Failed to load bitmap: {:?}", e)))?;
-
-            // 将位图转换为图标
-            let bitmap = HBITMAP(hbitmap.0);
-            create_icon_from_bitmap(bitmap)
-        }
-    }
-}
-
-/// 从位图创建图标（从原始代码迁移）
-fn create_icon_from_bitmap(bitmap: HBITMAP) -> std::result::Result<HICON, SystemError> {
-    unsafe {
-        // 获取位图信息
-        let mut bm = BITMAP::default();
-        if GetObjectW(
-            bitmap.into(),
-            std::mem::size_of::<BITMAP>() as i32,
-            Some(&mut bm as *mut _ as *mut _),
-        ) == 0
-        {
-            return Err(SystemError::TrayError(
-                "Failed to get bitmap info".to_string(),
-            ));
-        }
-
-        // 创建掩码位图
-        let hdc = GetDC(Some(HWND(std::ptr::null_mut())));
-        let mask_bitmap = CreateCompatibleBitmap(hdc, bm.bmWidth, bm.bmHeight);
-        if mask_bitmap.is_invalid() {
-            return Err(SystemError::TrayError(
-                "Failed to create mask bitmap".to_string(),
-            ));
-        }
-        let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), hdc);
-
-        // 创建图标信息结构
-        let icon_info = ICONINFO {
-            fIcon: TRUE,
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: mask_bitmap,
-            hbmColor: bitmap,
-        };
-
-        // 创建图标
-        let icon = CreateIconIndirect(&icon_info)
-            .map_err(|e| SystemError::TrayError(format!("Failed to create icon: {:?}", e)))?;
-
-        // 清理资源
-        let _ = DeleteObject(mask_bitmap.into());
-
-        Ok(icon)
-    }
-}
+// 注意：以下函数已被移除，因为只需要加载嵌入的ICO文件
+// - load_icon_from_bytes: 复杂的通用字节加载
+// - load_icon_from_file: 通用文件加载
+// - create_icon_from_bitmap: 位图转图标
+// 现在只保留简化的 load_embedded_icon 函数

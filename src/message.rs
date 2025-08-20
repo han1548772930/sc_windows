@@ -28,8 +28,6 @@ pub enum ScreenshotMessage {
     StartSelection(i32, i32),
     /// 更新选择区域
     UpdateSelection(RECT),
-    /// 结束选择区域（鼠标释放）
-    EndSelection(i32, i32),
     /// 确认选择
     ConfirmSelection,
     /// 取消截图

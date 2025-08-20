@@ -2,11 +2,10 @@
 //
 // 使用重构后的模块化架构，严格按照原始代码逻辑
 
-use sc_windows::message::DrawingMessage;
 use sc_windows::platform::windows::Direct2DRenderer;
 use sc_windows::simple_settings::SimpleSettings;
 use sc_windows::utils::to_wide_chars;
-use sc_windows::{App, Command, Message, WINDOW_CLASS_NAME};
+use sc_windows::{App, Command, WINDOW_CLASS_NAME};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -19,150 +18,20 @@ use windows::core::*;
 // 全局应用实例（按照原始代码的WindowState模式）
 static mut APP: Option<App> = None;
 
-/// 处理命令的辅助函数（避免重复代码）
+/// 处理命令的辅助函数（简化版，使用App::execute_command）
 unsafe fn handle_commands(app: &mut App, commands: Vec<Command>, hwnd: HWND) {
-    unsafe {
-        for command in commands {
-            match command {
-                Command::RequestRedraw => {
-                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                }
-                Command::UI(ui_message) => {
-                    // 处理UI消息
-                    let ui_commands = app.handle_message(Message::UI(ui_message));
-                    handle_commands(app, ui_commands, hwnd); // 递归处理
-                }
-                Command::Drawing(drawing_message) => {
-                    // 检查是否应该禁用某些绘图命令（从原始代码迁移）
-                    let should_execute = match &drawing_message {
-                        DrawingMessage::Undo => app.can_undo(),
-                        _ => true,
-                    };
+    let mut pending_commands = commands;
 
-                    if should_execute {
-                        // 处理绘图消息
-                        let drawing_commands =
-                            app.handle_message(Message::Drawing(drawing_message));
-                        handle_commands(app, drawing_commands, hwnd); // 递归处理
-                    }
-                }
-                Command::SelectDrawingTool(tool) => {
-                    // 处理绘图工具选择
-                    let drawing_commands = app.select_drawing_tool(tool);
-                    // 递归处理绘图管理器返回的命令
-                    handle_commands(app, drawing_commands, hwnd);
-                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                }
-                Command::ShowOverlay => {
-                    // 显示覆盖层（截图成功）
-                    // 这个命令在热键处理中已经处理了
-                }
-                Command::HideOverlay => {
-                    // 隐藏覆盖层（取消或确认）
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-                Command::SaveSelectionToFile => {
-                    // 保存选择区域到文件（从原始代码迁移）
-                    match app.save_selection_to_file(hwnd) {
-                        Ok(true) => {
-                            // 保存成功，隐藏窗口并重置状态
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                            app.reset_to_initial_state();
-                        }
-                        Ok(false) => {
-                            // 用户取消，不做任何操作
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to save selection to file: {}", e);
-                        }
-                    }
-                }
-                Command::SaveSelectionToClipboard => {
-                    // 保存选择区域到剪贴板（从原始代码迁移）
-                    if let Err(e) = app.save_selection_to_clipboard(hwnd) {
-                        eprintln!("Failed to save selection to clipboard: {}", e);
-                    }
-                }
-                Command::PinSelection => {
-                    // 固定选择区域（从原始代码迁移）
-                    if let Err(e) = app.pin_selection(hwnd) {
-                        eprintln!("Failed to pin selection: {}", e);
-                    }
-                }
-                Command::ExtractText => {
-                    // 检查OCR引擎是否可用（从原始代码迁移）
-                    if app.is_ocr_engine_available() {
-                        // 提取文本（从原始代码迁移）
-                        if let Err(e) = app.extract_text_from_selection(hwnd) {
-                            eprintln!("Failed to extract text: {}", e);
-                        }
-                        // OCR完成后隐藏截屏窗口（从原始代码迁移）
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                        app.reset_to_initial_state();
-                    } else {
-                        eprintln!("OCR engine is not available");
-                    }
-                }
-                Command::ResetToInitialState => {
-                    // 重置到初始状态（从原始代码迁移）
-                    app.reset_to_initial_state();
-                }
-                Command::HideWindow => {
-                    // 隐藏窗口（从原始代码迁移）
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-                Command::StartTimer(timer_id, interval_ms) => {
-                    // 启动定时器（从原始代码迁移，用于文本编辑光标闪烁）
-                    let _ = SetTimer(Some(hwnd), timer_id as usize, interval_ms, None);
-                }
-                Command::StopTimer(timer_id) => {
-                    // 停止定时器（从原始代码迁移）
-                    let _ = KillTimer(Some(hwnd), timer_id as usize);
-                }
-                Command::UpdateToolbar => {
-                    // 更新工具栏状态
-                    app.update_toolbar_state();
-                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                }
-                Command::CopyToClipboard => {
-                    // 复制到剪贴板（从原始代码迁移）
-                    if let Err(e) = app.save_selection_to_clipboard(hwnd) {
-                        eprintln!("Failed to copy to clipboard: {}", e);
-                    }
-                }
-                Command::ShowSaveDialog => {
-                    // 显示保存对话框（从原始代码迁移）
-                    if let Err(e) = app.save_selection_to_file(hwnd) {
-                        eprintln!("Failed to show save dialog: {}", e);
-                    }
-                }
-                Command::ShowSettings => {
-                    // 显示设置窗口（从原始代码迁移）
-                    let _ = sc_windows::simple_settings::show_settings_window();
-                }
-                Command::TakeScreenshot => {
-                    // 执行截图（从原始代码迁移）
-                    if let Err(e) = app.take_screenshot(hwnd) {
-                        eprintln!("Failed to take screenshot: {}", e);
-                    }
-                }
-                Command::ShowError(msg) => {
-                    // 显示错误消息
-                    eprintln!("Error: {}", msg);
-                }
-                Command::Quit => {
-                    // 退出应用
-                    PostQuitMessage(0);
-                }
-                Command::None => {
-                    // 无操作，忽略
-                }
-                _ => {
-                    // 其他命令暂时忽略
-                    eprintln!("Unhandled command: {:?}", command);
-                }
-            }
+    // 处理所有命令，包括新产生的命令
+    while !pending_commands.is_empty() {
+        let mut new_commands = Vec::new();
+
+        for command in pending_commands {
+            let result_commands = app.execute_command(command, hwnd);
+            new_commands.extend(result_commands);
         }
+
+        pending_commands = new_commands;
     }
 }
 
@@ -285,6 +154,26 @@ unsafe extern "system" fn window_proc(
                         LRESULT(-1)
                     }
                 }
+            }
+
+            WM_CLOSE => {
+                // 处理窗口关闭请求
+                // 检查是否是托盘退出请求（通过检查窗口是否可见来判断）
+                let is_visible = IsWindowVisible(hwnd).as_bool();
+
+                if !is_visible {
+                    // 窗口不可见，说明是托盘退出请求，真正退出程序
+                    let _ = DestroyWindow(hwnd);
+                } else {
+                    // 窗口可见，说明是用户点击X按钮，只隐藏窗口
+                    if let Some(ref mut app) = APP {
+                        app.reset_to_initial_state();
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                }
+                LRESULT(0)
             }
 
             WM_DESTROY => {
