@@ -70,7 +70,8 @@ impl UIManager {
                 self.toolbar
                     .update_position(&rect, screen_width, screen_height);
                 self.toolbar.show(); // 显示工具栏
-                vec![Command::RequestRedraw]
+                // 显示时同步一次禁用/选中状态，确保初次展示（热键启动后）Undo 为禁用
+                vec![Command::UpdateToolbar, Command::RequestRedraw]
             }
             UIMessage::HideToolbar => {
                 self.toolbar.hide();

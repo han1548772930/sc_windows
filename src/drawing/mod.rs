@@ -38,9 +38,13 @@ impl ElementInteractionMode {
             crate::types::DragMode::DrawingShape => ElementInteractionMode::Drawing,
             crate::types::DragMode::MovingElement => ElementInteractionMode::MovingElement,
             crate::types::DragMode::ResizingTopLeft
+            | crate::types::DragMode::ResizingTopCenter
             | crate::types::DragMode::ResizingTopRight
+            | crate::types::DragMode::ResizingMiddleRight
+            | crate::types::DragMode::ResizingBottomRight
+            | crate::types::DragMode::ResizingBottomCenter
             | crate::types::DragMode::ResizingBottomLeft
-            | crate::types::DragMode::ResizingBottomRight => {
+            | crate::types::DragMode::ResizingMiddleLeft => {
                 ElementInteractionMode::ResizingElement(drag_mode)
             }
             // 选择框相关的拖拽模式不应该在DrawingManager中处理
@@ -239,9 +243,10 @@ impl DrawingManager {
                     self.elements.restore_state(elements);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
-                    vec![Command::RequestRedraw]
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
-                    vec![]
+                    // 即使无法撤销，也需要刷新工具栏禁用状态（保持一致）
+                    vec![Command::UpdateToolbar]
                 }
             }
             DrawingMessage::Redo => {
@@ -1662,6 +1667,18 @@ impl DrawingManager {
                 }
             }
             _ => vec![],
+        }
+    }
+
+    /// 获取当前拖拽模式（用于光标显示）：
+    /// - 元素移动 => Moving
+    /// - 元素调整大小 => 返回对应的 Resizing* 模式
+    /// - 非拖拽 => None
+    pub fn get_current_drag_mode(&self) -> Option<crate::types::DragMode> {
+        match &self.interaction_mode {
+            ElementInteractionMode::MovingElement => Some(crate::types::DragMode::Moving),
+            ElementInteractionMode::ResizingElement(mode) => Some(*mode),
+            _ => None,
         }
     }
 

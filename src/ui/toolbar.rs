@@ -184,8 +184,7 @@ impl ToolbarManager {
 
         match button {
             ToolbarButton::Save => {
-                // 保存文件（从原始代码迁移）
-                // Note: HideWindow and ResetToInitialState are now handled in main.rs based on save result
+                // 动作按钮：不改变当前 clicked_button；触发保存动作
                 vec![Command::SaveSelectionToFile]
             }
             ToolbarButton::Copy => vec![Command::CopyToClipboard],
@@ -394,11 +393,10 @@ impl ToolbarManager {
 
                 // 记录按下的按钮（从原始代码迁移）
                 self.pressed_button = *button_type;
-                // 设置点击状态（从原始代码迁移）
-                self.clicked_button = *button_type;
+                // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
                 // 调试输出
                 eprintln!("Toolbar button clicked: {:?}", button_type);
-                // 立即处理按钮点击
+                // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
                 return self.handle_button_click(*button_type);
             }
         }
