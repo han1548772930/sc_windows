@@ -34,10 +34,6 @@ pub enum ScreenshotMessage {
     ConfirmSelection,
     /// 取消截图
     CancelCapture,
-    /// 保存到文件
-    SaveToFile(String),
-    /// 复制到剪贴板
-    CopyToClipboard,
 }
 
 /// 绘图管理器消息

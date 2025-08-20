@@ -108,26 +108,11 @@ impl App {
             .render(&mut *self.platform)
             .map_err(|e| AppError::RenderError(format!("Failed to render screenshot: {:?}", e)))?;
 
-        // 渲染绘图元素（添加边界检查）
+        // 渲染绘图元素
         let selection_rect = self.screenshot.get_selection();
-        let screen_width = unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
-                windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
-            )
-        };
-        let screen_height = unsafe {
-            windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
-                windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN,
-            )
-        };
 
         self.drawing
-            .render(
-                &mut *self.platform,
-                selection_rect.as_ref(),
-                screen_width,
-                screen_height,
-            )
+            .render(&mut *self.platform, selection_rect.as_ref())
             .map_err(|e| AppError::RenderError(format!("Failed to render drawing: {:?}", e)))?;
 
         // 渲染UI覆盖层
@@ -557,55 +542,51 @@ impl App {
         self.ui.set_toolbar_disabled(disabled);
     }
 
-    /// 保存选择区域到剪贴板（严格遵循原始同步逻辑）
+    /// 保存选择区域到剪贴板（使用 screenshot 模块的统一接口）
     pub fn save_selection_to_clipboard(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
     ) -> Result<(), AppError> {
-        use windows::Win32::Foundation::{HANDLE, HWND};
         use windows::Win32::Graphics::Gdi::DeleteObject;
-        use windows::Win32::System::DataExchange::{
-            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+
+        // 获取选择区域
+        let Some(selection_rect) = self.screenshot.get_selection() else {
+            return Ok(());
         };
+
+        let width = selection_rect.right - selection_rect.left;
+        let height = selection_rect.bottom - selection_rect.top;
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
 
         // 临时隐藏UI元素
         self.screenshot.hide_ui_for_capture(hwnd);
 
-        let result = unsafe {
-            let Some(selection_rect) = self.screenshot.get_selection() else {
-                // 恢复UI元素
-                self.screenshot.show_ui_after_capture(hwnd);
-                return Ok(());
-            };
-
-            let width = selection_rect.right - selection_rect.left;
-            let height = selection_rect.bottom - selection_rect.top;
-            if width <= 0 || height <= 0 {
-                // 恢复UI元素
-                self.screenshot.show_ui_after_capture(hwnd);
-                return Ok(());
-            }
-
-            // 截取屏幕的完整选择区域（包含所有内容但不包含UI元素）
-            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
-                selection_rect,
-            ) {
+        let result = {
+            // 使用 screenshot 模块捕获区域
+            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
+            {
                 Ok(b) => b,
-                Err(_) => {
-                    return Ok(());
+                Err(e) => {
+                    self.screenshot.show_ui_after_capture(hwnd);
+                    return Err(AppError::InitError(format!(
+                        "Failed to capture region: {:?}",
+                        e
+                    )));
                 }
             };
 
-            // 复制到剪贴板（CF_BITMAP = 2）
-            if OpenClipboard(Some(HWND(std::ptr::null_mut()))).is_ok() {
-                let _ = EmptyClipboard();
-                let _ = SetClipboardData(2u32, Some(HANDLE(bitmap.0 as *mut std::ffi::c_void)));
-                let _ = CloseClipboard();
-            } else {
+            // 使用 screenshot 模块复制到剪贴板
+            let copy_result = crate::screenshot::save::copy_hbitmap_to_clipboard(bitmap);
+
+            // 清理位图资源
+            unsafe {
                 let _ = DeleteObject(bitmap.into());
             }
 
-            Ok(())
+            copy_result
+                .map_err(|e| AppError::InitError(format!("Failed to copy to clipboard: {:?}", e)))
         };
 
         // 恢复UI元素
@@ -641,13 +622,13 @@ impl App {
         // 临时隐藏UI元素
         self.screenshot.hide_ui_for_capture(hwnd);
 
-        let result = unsafe {
-            // 截取屏幕选择区域（通过平台GDI工具）
-            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
-                selection_rect,
-            ) {
+        let result = {
+            // 使用 screenshot 模块捕获区域
+            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
+            {
                 Ok(b) => b,
                 Err(e) => {
+                    self.screenshot.show_ui_after_capture(hwnd);
                     return Err(AppError::InitError(format!(
                         "Failed to capture region: {:?}",
                         e
@@ -655,110 +636,21 @@ impl App {
                 }
             };
 
-            // 保存位图到文件（使用备份代码中的实现）
-            let save_res = Self::save_bitmap_to_file_internal(bitmap, &file_path, width, height);
+            // 使用 screenshot 模块保存到文件
+            let save_result =
+                crate::screenshot::save::save_hbitmap_to_file(bitmap, &file_path, width, height);
 
             // 清理资源（保存后释放位图）
-            let _ = DeleteObject(bitmap.into());
+            unsafe {
+                let _ = DeleteObject(bitmap.into());
+            }
 
-            save_res
+            save_result.map_err(|e| format!("Failed to save file: {:?}", e))
         };
 
         // 恢复UI元素
         self.screenshot.show_ui_after_capture(hwnd);
         result.map(|_| true).map_err(|e| AppError::InitError(e))
-    }
-
-    /// 保存位图到文件（从原始代码迁移的内部实现）
-    fn save_bitmap_to_file_internal(
-        bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-        file_path: &str,
-        width: i32,
-        height: i32,
-    ) -> Result<(), String> {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::*;
-
-        unsafe {
-            // 获取位图信息
-            let mut bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width,
-                    biHeight: -height, // 负值表示自上而下的位图
-                    biPlanes: 1,
-                    biBitCount: 24, // 24位RGB
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            // 计算位图数据大小
-            let bytes_per_line = ((width * 3 + 3) / 4) * 4; // 4字节对齐
-            let data_size = bytes_per_line * height;
-            let mut bitmap_data = vec![0u8; data_size as usize];
-
-            // 获取屏幕DC
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-
-            // 获取位图数据
-            let _ = GetDIBits(
-                screen_dc,
-                bitmap,
-                0,
-                height as u32,
-                Some(bitmap_data.as_mut_ptr() as *mut _),
-                &mut bitmap_info,
-                DIB_RGB_COLORS,
-            );
-
-            // 创建BMP文件头
-            let file_header = BITMAPFILEHEADER {
-                bfType: 0x4D42, // "BM"
-                bfSize: (std::mem::size_of::<BITMAPFILEHEADER>()
-                    + std::mem::size_of::<BITMAPINFOHEADER>()
-                    + data_size as usize) as u32,
-                bfReserved1: 0,
-                bfReserved2: 0,
-                bfOffBits: (std::mem::size_of::<BITMAPFILEHEADER>()
-                    + std::mem::size_of::<BITMAPINFOHEADER>()) as u32,
-            };
-
-            // 写入文件
-            use std::fs::File;
-            use std::io::Write;
-
-            let mut file = File::create(file_path).map_err(|e| e.to_string())?;
-
-            // 写入文件头
-            let file_header_bytes = std::slice::from_raw_parts(
-                &file_header as *const _ as *const u8,
-                std::mem::size_of::<BITMAPFILEHEADER>(),
-            );
-            file.write_all(file_header_bytes)
-                .map_err(|e| e.to_string())?;
-
-            // 写入信息头
-            let info_header_bytes = std::slice::from_raw_parts(
-                &bitmap_info.bmiHeader as *const _ as *const u8,
-                std::mem::size_of::<BITMAPINFOHEADER>(),
-            );
-            file.write_all(info_header_bytes)
-                .map_err(|e| e.to_string())?;
-
-            // 写入位图数据
-            file.write_all(&bitmap_data).map_err(|e| e.to_string())?;
-
-            // 清理资源
-            let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-        }
-
-        Ok(())
     }
 
     /// 从选择区域提取文本（从原始代码迁移）

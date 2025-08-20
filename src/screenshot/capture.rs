@@ -260,3 +260,85 @@ pub fn capture_region(
         }
     }
 }
+
+/// 捕获指定区域到 HBITMAP（为 App 层提供直接的 GDI 位图）
+pub fn capture_region_to_hbitmap(
+    rect: windows::Win32::Foundation::RECT,
+) -> Result<windows::Win32::Graphics::Gdi::HBITMAP, ScreenshotError> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        ReleaseDC, SRCCOPY, SelectObject,
+    };
+
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+
+    // 验证参数
+    if width <= 0 || height <= 0 {
+        return Err(ScreenshotError::CaptureError(
+            "Invalid region dimensions".to_string(),
+        ));
+    }
+
+    unsafe {
+        // 获取屏幕设备上下文
+        let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+        if screen_dc.is_invalid() {
+            return Err(ScreenshotError::CaptureError(
+                "Failed to get screen DC".to_string(),
+            ));
+        }
+
+        // 创建兼容的内存设备上下文
+        let mem_dc = CreateCompatibleDC(Some(screen_dc));
+        if mem_dc.is_invalid() {
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+            return Err(ScreenshotError::CaptureError(
+                "Failed to create memory DC".to_string(),
+            ));
+        }
+
+        // 创建兼容的位图
+        let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+        if bitmap.is_invalid() {
+            let _ = DeleteDC(mem_dc);
+            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+            return Err(ScreenshotError::CaptureError(
+                "Failed to create bitmap".to_string(),
+            ));
+        }
+
+        // 选择位图到内存设备上下文
+        let old_bitmap = SelectObject(mem_dc, bitmap.into());
+
+        // 从屏幕复制指定区域
+        let blt_result = BitBlt(
+            mem_dc,
+            0,
+            0,
+            width,
+            height,
+            Some(screen_dc),
+            rect.left,
+            rect.top,
+            SRCCOPY,
+        );
+
+        // 恢复原始位图
+        SelectObject(mem_dc, old_bitmap);
+
+        // 清理资源
+        let _ = DeleteDC(mem_dc);
+        ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+        if blt_result.is_ok() {
+            Ok(bitmap)
+        } else {
+            let _ = DeleteObject(bitmap.into());
+            Err(ScreenshotError::CaptureError(
+                "Failed to capture screen region".to_string(),
+            ))
+        }
+    }
+}

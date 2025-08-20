@@ -323,8 +323,6 @@ impl DrawingManager {
         &self,
         renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
         selection_rect: Option<&windows::Win32::Foundation::RECT>,
-        _screen_width: i32,
-        _screen_height: i32,
     ) -> Result<(), DrawingError> {
         // 如果有选择区域，设置裁剪（从原始代码迁移）
         if let Some(rect) = selection_rect {
@@ -1333,10 +1331,10 @@ impl DrawingManager {
                         return vec![Command::RequestRedraw];
                     }
                 }
-                // 点击了其他地方，停止编辑但继续处理事件（关键修复：与原代码保持一致）
-                // 这样用户可以在退出文本编辑后立即拖动被点击的元素
-                let _stop_commands = self.stop_text_editing();
-                // 注意：不要return，让事件继续被处理
+                // 点击了其他地方，停止编辑并立即返回（修复空文本框删除问题）
+                // 避免后续逻辑干扰 stop_text_editing 的清理操作
+                let stop_commands = self.stop_text_editing();
+                return stop_commands;
             }
         }
 
@@ -1438,6 +1436,10 @@ impl DrawingManager {
                 // 先获取元素信息，避免借用冲突
                 let (element_tool, element_rect, element_font_size) = {
                     if let Some(element) = self.elements.get_elements().get(idx) {
+                        if element.tool == DrawingTool::Pen {
+                            return vec![]; // 返回空命令，不消费此事件
+                        }
+
                         (element.tool, element.rect, element.font_size)
                     } else {
                         return vec![];
@@ -1591,8 +1593,8 @@ impl DrawingManager {
                         }
                     }
                     DrawingTool::Text => {
-                        // 文本工具：有位置点就保存
-                        !element.points.is_empty()
+                        // 文本工具：必须有位置点且文本内容不为空
+                        !element.points.is_empty() && !element.text.trim().is_empty()
                     }
                     _ => false,
                 };

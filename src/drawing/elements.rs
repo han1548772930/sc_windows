@@ -55,6 +55,10 @@ impl ElementManager {
     ) -> Option<usize> {
         // 从后往前查找（最后绘制的元素在最上层）
         for (index, element) in self.elements.iter().enumerate().rev() {
+            if element.tool == crate::types::DrawingTool::Pen {
+                continue;
+            }
+
             if element.contains_point(x, y) {
                 // 如果有选择框，检查元素是否在选择框内可见
                 if let Some(sel_rect) = selection_rect {

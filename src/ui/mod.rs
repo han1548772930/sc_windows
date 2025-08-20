@@ -7,12 +7,10 @@ use crate::platform::{PlatformError, PlatformRenderer};
 
 pub mod cursor;
 pub mod dialogs;
-pub mod overlay;
 pub mod svg_icons;
 pub mod toolbar;
 
 use dialogs::DialogManager;
-use overlay::OverlayManager;
 use svg_icons::SvgIconManager;
 use toolbar::ToolbarManager;
 
@@ -20,8 +18,6 @@ use toolbar::ToolbarManager;
 pub struct UIManager {
     /// 工具栏管理器
     toolbar: ToolbarManager,
-    /// 覆盖层管理器
-    overlay: OverlayManager,
     /// 对话框管理器
     dialogs: DialogManager,
     /// SVG图标管理器
@@ -39,7 +35,6 @@ impl UIManager {
 
         Ok(Self {
             toolbar: ToolbarManager::new()?,
-            overlay: OverlayManager::new()?,
             dialogs: DialogManager::new()?,
             svg_icons,
         })
@@ -104,9 +99,6 @@ impl UIManager {
         &self,
         renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
     ) -> Result<(), UIError> {
-        // 渲染覆盖层
-        self.overlay.render(renderer)?;
-
         // 渲染工具栏
         self.toolbar.render(renderer, &self.svg_icons)?;
 

@@ -158,16 +158,6 @@ impl ScreenshotManager {
                 self.selection.clear();
                 vec![Command::HideOverlay]
             }
-            ScreenshotMessage::SaveToFile(path) => {
-                if let Some(screenshot) = &self.current_screenshot {
-                    match save::save_to_file(screenshot, &path) {
-                        Ok(_) => vec![Command::HideOverlay],
-                        Err(_) => vec![Command::None],
-                    }
-                } else {
-                    vec![Command::None]
-                }
-            }
             ScreenshotMessage::StartSelection(x, y) => {
                 // 开始选择区域（从原始handle_left_button_down迁移）
                 if self.current_screenshot.is_some() {
@@ -181,16 +171,6 @@ impl ScreenshotManager {
                 // 注意：此消息处理已废弃，选择结束逻辑已移至 handle_mouse_up 方法中
                 // 保留此分支以避免编译错误，但不执行任何操作
                 vec![Command::None]
-            }
-            ScreenshotMessage::CopyToClipboard => {
-                if let Some(screenshot) = &self.current_screenshot {
-                    match save::copy_to_clipboard(screenshot) {
-                        Ok(_) => vec![Command::HideOverlay],
-                        Err(_) => vec![Command::None],
-                    }
-                } else {
-                    vec![Command::None]
-                }
             }
         }
     }
