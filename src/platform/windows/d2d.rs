@@ -29,12 +29,6 @@ pub struct Direct2DRenderer {
     brushes: HashMap<BrushId, ID2D1SolidColorBrush>,
     // 颜色到画刷的缓存（避免每帧创建）
     brush_cache: HashMap<u32, ID2D1SolidColorBrush>,
-    /// 字体缓存
-    fonts: HashMap<FontId, String>, // 临时保留
-    /// 下一个画刷ID
-    next_brush_id: BrushId,
-    /// 下一个字体ID
-    next_font_id: FontId,
 
     // 屏幕尺寸
     screen_width: i32,
@@ -51,9 +45,6 @@ impl Direct2DRenderer {
             text_format: None,
             brushes: HashMap::new(),
             brush_cache: HashMap::new(),
-            fonts: HashMap::new(),
-            next_brush_id: 1,
-            next_font_id: 1,
             screen_width: 0,
             screen_height: 0,
         })
@@ -816,6 +807,284 @@ impl PlatformRenderer for Direct2DRenderer {
         // 调用现有的实现方法
         let _bitmap = self.create_d2d_bitmap_from_gdi(gdi_dc, width, height)?;
         // 位图已经创建并可以在后续渲染中使用
+        Ok(())
+    }
+
+    // ---------- 高层绘图接口实现 ----------
+
+    fn draw_selection_mask(
+        &mut self,
+        screen_rect: Rectangle,
+        selection_rect: Rectangle,
+        mask_color: Color,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(ref render_target) = self.render_target {
+            unsafe {
+                // 创建遮罩画刷
+                let d2d_color = D2D1_COLOR_F {
+                    r: mask_color.r,
+                    g: mask_color.g,
+                    b: mask_color.b,
+                    a: mask_color.a,
+                };
+
+                if let Ok(mask_brush) = render_target.CreateSolidColorBrush(&d2d_color, None) {
+                    // 绘制四个矩形覆盖选区外区域
+                    let left = selection_rect.x;
+                    let top = selection_rect.y;
+                    let right = selection_rect.x + selection_rect.width;
+                    let bottom = selection_rect.y + selection_rect.height;
+
+                    // 上方区域
+                    if top > screen_rect.y {
+                        let rect = D2D_RECT_F {
+                            left: screen_rect.x,
+                            top: screen_rect.y,
+                            right: screen_rect.x + screen_rect.width,
+                            bottom: top,
+                        };
+                        render_target.FillRectangle(&rect, &mask_brush);
+                    }
+
+                    // 下方区域
+                    if bottom < screen_rect.y + screen_rect.height {
+                        let rect = D2D_RECT_F {
+                            left: screen_rect.x,
+                            top: bottom,
+                            right: screen_rect.x + screen_rect.width,
+                            bottom: screen_rect.y + screen_rect.height,
+                        };
+                        render_target.FillRectangle(&rect, &mask_brush);
+                    }
+
+                    // 左侧区域
+                    if left > screen_rect.x {
+                        let rect = D2D_RECT_F {
+                            left: screen_rect.x,
+                            top: top,
+                            right: left,
+                            bottom: bottom,
+                        };
+                        render_target.FillRectangle(&rect, &mask_brush);
+                    }
+
+                    // 右侧区域
+                    if right < screen_rect.x + screen_rect.width {
+                        let rect = D2D_RECT_F {
+                            left: right,
+                            top: top,
+                            right: screen_rect.x + screen_rect.width,
+                            bottom: bottom,
+                        };
+                        render_target.FillRectangle(&rect, &mask_brush);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_selection_border(
+        &mut self,
+        rect: Rectangle,
+        color: Color,
+        width: f32,
+        dash_pattern: Option<&[f32]>,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(ref render_target) = self.render_target {
+            unsafe {
+                // 创建边框画刷
+                let d2d_color = D2D1_COLOR_F {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                    a: color.a,
+                };
+
+                if let Ok(border_brush) = render_target.CreateSolidColorBrush(&d2d_color, None) {
+                    let d2d_rect = D2D_RECT_F {
+                        left: rect.x,
+                        top: rect.y,
+                        right: rect.x + rect.width,
+                        bottom: rect.y + rect.height,
+                    };
+
+                    if let Some(dash) = dash_pattern {
+                        // 创建虚线样式
+                        if let Some(ref d2d_factory) = self.d2d_factory {
+                            let stroke_style_props = D2D1_STROKE_STYLE_PROPERTIES {
+                                startCap: D2D1_CAP_STYLE_FLAT,
+                                endCap: D2D1_CAP_STYLE_FLAT,
+                                dashCap: D2D1_CAP_STYLE_FLAT,
+                                lineJoin: D2D1_LINE_JOIN_MITER,
+                                miterLimit: 10.0,
+                                dashStyle: D2D1_DASH_STYLE_CUSTOM,
+                                dashOffset: 0.0,
+                            };
+
+                            if let Ok(stroke_style) =
+                                d2d_factory.CreateStrokeStyle(&stroke_style_props, Some(dash))
+                            {
+                                render_target.DrawRectangle(
+                                    &d2d_rect,
+                                    &border_brush,
+                                    width,
+                                    Some(&stroke_style),
+                                );
+                            } else {
+                                // 如果创建虚线样式失败，使用实线
+                                render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
+                            }
+                        } else {
+                            render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
+                        }
+                    } else {
+                        // 实线边框
+                        render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_selection_handles(
+        &mut self,
+        rect: Rectangle,
+        handle_size: f32,
+        fill_color: Color,
+        border_color: Color,
+        border_width: f32,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(ref render_target) = self.render_target {
+            unsafe {
+                // 创建填充和边框画刷
+                let fill_d2d_color = D2D1_COLOR_F {
+                    r: fill_color.r,
+                    g: fill_color.g,
+                    b: fill_color.b,
+                    a: fill_color.a,
+                };
+                let border_d2d_color = D2D1_COLOR_F {
+                    r: border_color.r,
+                    g: border_color.g,
+                    b: border_color.b,
+                    a: border_color.a,
+                };
+
+                if let (Ok(fill_brush), Ok(border_brush)) = (
+                    render_target.CreateSolidColorBrush(&fill_d2d_color, None),
+                    render_target.CreateSolidColorBrush(&border_d2d_color, None),
+                ) {
+                    let half = handle_size / 2.0;
+                    let cx = rect.x + rect.width / 2.0;
+                    let cy = rect.y + rect.height / 2.0;
+
+                    // 8个手柄位置：4个角 + 4个边中点
+                    let handle_positions = [
+                        (rect.x, rect.y),                            // 左上
+                        (cx, rect.y),                                // 上中
+                        (rect.x + rect.width, rect.y),               // 右上
+                        (rect.x + rect.width, cy),                   // 右中
+                        (rect.x + rect.width, rect.y + rect.height), // 右下
+                        (cx, rect.y + rect.height),                  // 下中
+                        (rect.x, rect.y + rect.height),              // 左下
+                        (rect.x, cy),                                // 左中
+                    ];
+
+                    for (px, py) in handle_positions.iter() {
+                        let handle_rect = D2D_RECT_F {
+                            left: *px - half,
+                            top: *py - half,
+                            right: *px + half,
+                            bottom: *py + half,
+                        };
+
+                        // 绘制填充
+                        render_target.FillRectangle(&handle_rect, &fill_brush);
+
+                        // 绘制边框
+                        if border_width > 0.0 {
+                            render_target.DrawRectangle(
+                                &handle_rect,
+                                &border_brush,
+                                border_width,
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_element_handles(
+        &mut self,
+        rect: Rectangle,
+        handle_radius: f32,
+        fill_color: Color,
+        border_color: Color,
+        border_width: f32,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(ref render_target) = self.render_target {
+            unsafe {
+                // 创建填充和边框画刷
+                let fill_d2d_color = D2D1_COLOR_F {
+                    r: fill_color.r,
+                    g: fill_color.g,
+                    b: fill_color.b,
+                    a: fill_color.a,
+                };
+                let border_d2d_color = D2D1_COLOR_F {
+                    r: border_color.r,
+                    g: border_color.g,
+                    b: border_color.b,
+                    a: border_color.a,
+                };
+
+                if let (Ok(fill_brush), Ok(border_brush)) = (
+                    render_target.CreateSolidColorBrush(&fill_d2d_color, None),
+                    render_target.CreateSolidColorBrush(&border_d2d_color, None),
+                ) {
+                    let cx = rect.x + rect.width / 2.0;
+                    let cy = rect.y + rect.height / 2.0;
+
+                    // 8个圆形手柄位置：4个角 + 4个边中点
+                    let handle_positions = [
+                        (rect.x, rect.y),                            // 左上
+                        (cx, rect.y),                                // 上中
+                        (rect.x + rect.width, rect.y),               // 右上
+                        (rect.x + rect.width, cy),                   // 右中
+                        (rect.x + rect.width, rect.y + rect.height), // 右下
+                        (cx, rect.y + rect.height),                  // 下中
+                        (rect.x, rect.y + rect.height),              // 左下
+                        (rect.x, cy),                                // 左中
+                    ];
+
+                    for (px, py) in handle_positions.iter() {
+                        let handle_ellipse = D2D1_ELLIPSE {
+                            point: windows_numerics::Vector2 { X: *px, Y: *py },
+                            radiusX: handle_radius,
+                            radiusY: handle_radius,
+                        };
+
+                        // 绘制填充
+                        render_target.FillEllipse(&handle_ellipse, &fill_brush);
+
+                        // 绘制边框
+                        if border_width > 0.0 {
+                            render_target.DrawEllipse(
+                                &handle_ellipse,
+                                &border_brush,
+                                border_width,
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

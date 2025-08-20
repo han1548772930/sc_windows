@@ -3,7 +3,7 @@
 // 负责检测和高亮窗口
 
 use super::SystemError;
-use crate::message::Command;
+
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowRect, GetWindowTextW,
@@ -390,31 +390,6 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
         windows.push(window_info);
         windows::core::BOOL::from(true) // 继续枚举
     }
-}
-
-/// 检查是否为系统窗口（需要过滤掉的窗口）（从原始代码迁移）
-#[allow(dead_code)]
-fn is_system_window(class_name: &str) -> bool {
-    const SYSTEM_CLASSES: &[&str] = &[
-        "Shell_TrayWnd",              // 任务栏
-        "DV2ControlHost",             // 系统控件
-        "MsgrIMEWindowClass",         // 输入法
-        "SysShadow",                  // 系统阴影
-        "Button",                     // 系统按钮
-        "Progman",                    // 桌面
-        "WorkerW",                    // 桌面工作区
-        "Windows.UI.Core.CoreWindow", // UWP应用核心窗口
-        "ApplicationFrameWindow",     // UWP应用框架
-        "ForegroundStaging",          // 前台暂存
-        "MultitaskingViewFrame",      // 多任务视图
-        "EdgeUiInputTopWndClass",     // Edge UI
-        "NativeHWNDHost",             // 原生HWND主机
-        "Chrome_WidgetWin_0",         // Chrome内部窗口（某些版本）
-    ];
-
-    SYSTEM_CLASSES
-        .iter()
-        .any(|&sys_class| class_name.contains(sys_class))
 }
 
 /// EnumChildWindows的回调函数（从原始代码迁移）

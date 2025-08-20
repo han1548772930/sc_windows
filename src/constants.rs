@@ -94,6 +94,10 @@ pub const DEFAULT_TEXT_HEIGHT: i32 = 32; // 调整为更合理的初始高度
 pub const MIN_TEXT_WIDTH: i32 = 40;
 pub const MIN_TEXT_HEIGHT: i32 = 20;
 pub const MAX_TEXT_WIDTH: i32 = 400; // 保留用于向后兼容，但实际不再使用
+
+// 拖拽开始的像素阈值（用于判定是否进入拖拽状态）
+pub const DRAG_THRESHOLD: i32 = 5;
+
 pub const LINE_HEIGHT: i32 = 24; // 每行高度
 pub const CHAR_WIDTH: f32 = 15.0; // 平均字符宽度（进一步增大以确保准确性）
 pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压

@@ -1,8 +1,5 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::DirectWrite::*;
-use windows::Win32::Graphics::Gdi::*;
 
 // use crate::svg_icons::SvgIconManager; // 临时注释，待迁移
 use crate::utils::*;

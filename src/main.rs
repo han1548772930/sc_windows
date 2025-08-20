@@ -2,10 +2,9 @@
 //
 // 使用重构后的模块化架构，严格按照原始代码逻辑
 
-use sc_windows::message::{DrawingMessage, ScreenshotMessage};
+use sc_windows::message::DrawingMessage;
 use sc_windows::platform::windows::Direct2DRenderer;
 use sc_windows::simple_settings::SimpleSettings;
-use sc_windows::types::DrawingTool;
 use sc_windows::utils::to_wide_chars;
 use sc_windows::{App, Command, Message, WINDOW_CLASS_NAME};
 

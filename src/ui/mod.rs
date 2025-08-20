@@ -108,42 +108,173 @@ impl UIManager {
         Ok(())
     }
 
+    /// 渲染选区相关的UI元素（遮罩、边框、手柄）
+    ///
+    /// # 参数
+    /// * `renderer` - 平台渲染器
+    /// * `screen_size` - 屏幕尺寸 (width, height)
+    /// * `selection_rect` - 选择区域矩形（如果有）
+    /// * `show_handles` - 是否显示调整手柄
+    /// * `hide_ui_for_capture` - 是否因截图而隐藏UI
+    /// * `has_auto_highlight` - 是否有自动高亮
+    pub fn render_selection_ui(
+        &self,
+        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
+        screen_size: (i32, i32),
+        selection_rect: Option<&windows::Win32::Foundation::RECT>,
+        show_handles: bool,
+        hide_ui_for_capture: bool,
+        has_auto_highlight: bool,
+    ) -> Result<(), UIError> {
+        // 如果截图时隐藏UI，则不绘制任何选区UI
+        if hide_ui_for_capture {
+            return Ok(());
+        }
+
+        // 如果有选择区域，绘制遮罩、边框和手柄
+        if let Some(selection_rect) = selection_rect {
+            use crate::platform::traits::{Color, Rectangle};
+
+            // 绘制选择区域遮罩
+            let screen_rect = Rectangle {
+                x: 0.0,
+                y: 0.0,
+                width: screen_size.0 as f32,
+                height: screen_size.1 as f32,
+            };
+            let selection_rect_platform = Rectangle {
+                x: selection_rect.left as f32,
+                y: selection_rect.top as f32,
+                width: (selection_rect.right - selection_rect.left) as f32,
+                height: (selection_rect.bottom - selection_rect.top) as f32,
+            };
+            let mask_color = Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.6,
+            };
+
+            renderer
+                .draw_selection_mask(screen_rect, selection_rect_platform, mask_color)
+                .map_err(|e| UIError::RenderError(format!("draw selection mask failed: {}", e)))?;
+
+            // 绘制选择框边框
+            if has_auto_highlight {
+                let color = Color {
+                    r: 1.0,
+                    g: 0.2,
+                    b: 0.2,
+                    a: 1.0,
+                };
+                renderer
+                    .draw_selection_border(selection_rect_platform, color, 3.0, None)
+                    .map_err(|e| {
+                        UIError::RenderError(format!("draw auto-highlight border failed: {}", e))
+                    })?;
+            } else {
+                let c = &crate::constants::COLOR_SELECTION_BORDER;
+                let color = Color {
+                    r: c.r,
+                    g: c.g,
+                    b: c.b,
+                    a: c.a,
+                };
+                renderer
+                    .draw_selection_border(selection_rect_platform, color, 2.0, None)
+                    .map_err(|e| {
+                        UIError::RenderError(format!("draw selection border failed: {}", e))
+                    })?;
+            }
+
+            // 绘制选择框手柄（如果需要显示）
+            if show_handles {
+                let fill_color = Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                let border_color = Color {
+                    r: 0.0,
+                    g: 0.47,
+                    b: 0.84,
+                    a: 1.0,
+                };
+
+                renderer
+                    .draw_selection_handles(
+                        selection_rect_platform,
+                        crate::constants::HANDLE_SIZE,
+                        fill_color,
+                        border_color,
+                        1.0,
+                    )
+                    .map_err(|e| {
+                        UIError::RenderError(format!("draw selection handles failed: {}", e))
+                    })?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// 处理鼠标移动
-    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
         // 工具栏处理鼠标移动
-        commands.extend(self.toolbar.handle_mouse_move(x, y));
+        let toolbar_commands = self.toolbar.handle_mouse_move(x, y);
+        let toolbar_consumed = !toolbar_commands.is_empty();
+        commands.extend(toolbar_commands);
 
-        // 对话框处理鼠标移动
-        commands.extend(self.dialogs.handle_mouse_move(x, y));
-
-        commands
+        // 如果工具栏没有消费，传递给对话框
+        if !toolbar_consumed {
+            let dialog_commands = self.dialogs.handle_mouse_move(x, y);
+            let dialog_consumed = !dialog_commands.is_empty();
+            commands.extend(dialog_commands);
+            (commands, dialog_consumed)
+        } else {
+            (commands, true)
+        }
     }
 
     /// 处理鼠标按下
-    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
         // 工具栏处理鼠标按下
-        commands.extend(self.toolbar.handle_mouse_down(x, y));
+        let toolbar_commands = self.toolbar.handle_mouse_down(x, y);
+        let toolbar_consumed = !toolbar_commands.is_empty();
+        commands.extend(toolbar_commands);
 
         // 如果工具栏没有处理，则传递给对话框
-        if commands.is_empty() {
-            commands.extend(self.dialogs.handle_mouse_down(x, y));
+        if !toolbar_consumed {
+            let dialog_commands = self.dialogs.handle_mouse_down(x, y);
+            let dialog_consumed = !dialog_commands.is_empty();
+            commands.extend(dialog_commands);
+            (commands, dialog_consumed)
+        } else {
+            (commands, true)
         }
-
-        commands
     }
 
     /// 处理鼠标释放
-    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
-        commands.extend(self.toolbar.handle_mouse_up(x, y));
-        commands.extend(self.dialogs.handle_mouse_up(x, y));
+        let toolbar_commands = self.toolbar.handle_mouse_up(x, y);
+        let toolbar_consumed = !toolbar_commands.is_empty();
+        commands.extend(toolbar_commands);
 
-        commands
+        let dialog_commands = self.dialogs.handle_mouse_up(x, y);
+        let dialog_consumed = !dialog_commands.is_empty();
+        commands.extend(dialog_commands);
+
+        (commands, toolbar_consumed || dialog_consumed)
     }
 
     /// 处理双击事件

@@ -8,6 +8,7 @@ pub mod ocr; // 使用原始文件
 pub mod ocr_result_window; // 使用原始文件
 pub mod platform;
 
+pub mod interaction;
 pub mod screenshot;
 pub mod simple_settings; // 从原始代码复制
 pub mod system;

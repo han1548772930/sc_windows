@@ -2,7 +2,7 @@
 //
 // 负责管理用户的选择区域状态
 
-use crate::constants::{HANDLE_DETECTION_RADIUS, MIN_BOX_SIZE};
+use crate::constants::MIN_BOX_SIZE;
 use crate::types::DragMode;
 use windows::Win32::Foundation::{POINT, RECT};
 
@@ -330,5 +330,27 @@ impl SelectionState {
     /// 兼容性方法：是否正在拖拽（重命名为is_interacting）
     pub fn is_dragging(&self) -> bool {
         self.is_interacting()
+    }
+}
+
+// --- InteractionTarget 适配实现（阶段1 PoC）---
+impl crate::interaction::InteractionTarget for SelectionState {
+    fn hit_test(&self, x: i32, y: i32) -> DragMode {
+        self.get_handle_at_position(x, y)
+    }
+    fn begin_interaction(&mut self, x: i32, y: i32, mode: DragMode) {
+        self.start_interaction(x, y, mode)
+    }
+    fn update_interaction(&mut self, x: i32, y: i32) -> bool {
+        self.handle_interaction(x, y)
+    }
+    fn end_interaction(&mut self) {
+        self.end_interaction()
+    }
+    fn is_interacting(&self) -> bool {
+        self.is_interacting()
+    }
+    fn rect(&self) -> Option<RECT> {
+        self.get_selection()
     }
 }

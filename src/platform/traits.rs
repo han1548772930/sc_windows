@@ -56,6 +56,9 @@ pub type BrushId = u32;
 /// 字体ID
 pub type FontId = u32;
 
+/// 平台位图ID（由渲染后端管理的位图句柄）
+pub type BitmapId = u64;
+
 /// 平台渲染器trait
 pub trait PlatformRenderer {
     type Error: std::error::Error;
@@ -115,12 +118,77 @@ pub trait PlatformRenderer {
     /// 获取可变Any引用（用于向下转型）
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
-    /// 从GDI位图创建平台位图（平台无关接口）
+    /// 从GDI位图创建并缓存平台位图（平台无关接口）
     fn create_bitmap_from_gdi(
         &mut self,
         gdi_dc: windows::Win32::Graphics::Gdi::HDC,
         width: i32,
         height: i32,
+    ) -> Result<(), Self::Error>;
+
+    // ---------- 高层绘图接口 ----------
+    // 这些方法封装了常见的UI绘图操作，隐藏底层实现细节
+
+    /// 绘制选择区域遮罩（选择区域外的半透明覆盖）
+    ///
+    /// # 参数
+    /// * `screen_rect` - 整个屏幕区域
+    /// * `selection_rect` - 选择区域（此区域不被遮罩覆盖）
+    /// * `mask_color` - 遮罩颜色（通常是半透明黑色）
+    fn draw_selection_mask(
+        &mut self,
+        screen_rect: Rectangle,
+        selection_rect: Rectangle,
+        mask_color: Color,
+    ) -> Result<(), Self::Error>;
+
+    /// 绘制选择区域边框
+    ///
+    /// # 参数
+    /// * `rect` - 选择区域矩形
+    /// * `color` - 边框颜色
+    /// * `width` - 边框宽度
+    /// * `dash_pattern` - 虚线模式，None表示实线
+    fn draw_selection_border(
+        &mut self,
+        rect: Rectangle,
+        color: Color,
+        width: f32,
+        dash_pattern: Option<&[f32]>,
+    ) -> Result<(), Self::Error>;
+
+    /// 绘制选择区域手柄（8个调整手柄）
+    ///
+    /// # 参数
+    /// * `rect` - 选择区域矩形
+    /// * `handle_size` - 手柄大小
+    /// * `fill_color` - 手柄填充颜色
+    /// * `border_color` - 手柄边框颜色
+    /// * `border_width` - 手柄边框宽度
+    fn draw_selection_handles(
+        &mut self,
+        rect: Rectangle,
+        handle_size: f32,
+        fill_color: Color,
+        border_color: Color,
+        border_width: f32,
+    ) -> Result<(), Self::Error>;
+
+    /// 绘制元素手柄（用于绘图元素的选择和调整）
+    ///
+    /// # 参数
+    /// * `rect` - 元素边界矩形
+    /// * `handle_radius` - 手柄半径（圆形手柄）
+    /// * `fill_color` - 手柄填充颜色
+    /// * `border_color` - 手柄边框颜色
+    /// * `border_width` - 手柄边框宽度
+    fn draw_element_handles(
+        &mut self,
+        rect: Rectangle,
+        handle_radius: f32,
+        fill_color: Color,
+        border_color: Color,
+        border_width: f32,
     ) -> Result<(), Self::Error>;
 }
 
@@ -151,3 +219,48 @@ impl std::fmt::Display for PlatformError {
 }
 
 impl std::error::Error for PlatformError {}
+
+// ---------- Renderer Extension (non-breaking) ----------
+// Provide higher-level helpers built on top of PlatformRenderer primitives.
+pub trait RendererExt: PlatformRenderer {
+    /// Draw 8 square handles around a rectangle (corners + edges' midpoints)
+    fn draw_handles_for_rect(
+        &mut self,
+        rect: Rectangle,
+        handle_size: f32,
+        fill: Color,
+        border: Color,
+        border_width: f32,
+    ) -> Result<(), Self::Error> {
+        let half = handle_size / 2.0;
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        let points = [
+            (rect.x, rect.y),                            // TL
+            (cx, rect.y),                                // TC
+            (rect.x + rect.width, rect.y),               // TR
+            (rect.x + rect.width, cy),                   // MR
+            (rect.x + rect.width, rect.y + rect.height), // BR
+            (cx, rect.y + rect.height),                  // BC
+            (rect.x, rect.y + rect.height),              // BL
+            (rect.x, cy),                                // ML
+        ];
+        let style = DrawStyle {
+            stroke_color: border,
+            fill_color: Some(fill),
+            stroke_width: border_width,
+        };
+        for (px, py) in points.iter() {
+            let hrect = Rectangle {
+                x: *px - half,
+                y: *py - half,
+                width: handle_size,
+                height: handle_size,
+            };
+            self.draw_rectangle(hrect, &style)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: PlatformRenderer + ?Sized> RendererExt for T {}

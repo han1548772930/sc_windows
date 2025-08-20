@@ -7,7 +7,7 @@
 // 4. 错误处理和状态管理
 
 use crate::drawing::DrawingManager;
-use crate::message::{Command, DrawingMessage, Message, ScreenshotMessage};
+use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::screenshot::ScreenshotManager;
 use crate::system::SystemManager;
@@ -115,7 +115,29 @@ impl App {
             .render(&mut *self.platform, selection_rect.as_ref())
             .map_err(|e| AppError::RenderError(format!("Failed to render drawing: {:?}", e)))?;
 
-        // 渲染UI覆盖层
+        // 渲染选区相关的UI元素（遮罩、边框、手柄）- 在工具栏之前渲染
+        let screen_size = (
+            self.screenshot.get_screen_width(),
+            self.screenshot.get_screen_height(),
+        );
+        let show_handles = self.screenshot.should_show_selection_handles();
+        let hide_ui_for_capture = self.screenshot.is_hiding_ui_for_capture();
+        let has_auto_highlight = self.screenshot.has_auto_highlight();
+
+        self.ui
+            .render_selection_ui(
+                &mut *self.platform,
+                screen_size,
+                selection_rect.as_ref(),
+                show_handles,
+                hide_ui_for_capture,
+                has_auto_highlight,
+            )
+            .map_err(|e| {
+                AppError::RenderError(format!("Failed to render selection UI: {:?}", e))
+            })?;
+
+        // 渲染UI覆盖层（工具栏、对话框等）- 在遮罩之后渲染，确保工具栏在最上层
         self.ui
             .render(&mut *self.platform)
             .map_err(|e| AppError::RenderError(format!("Failed to render UI: {:?}", e)))?;
@@ -236,9 +258,10 @@ impl App {
 
     /// 处理键盘输入（从原始代码迁移，统一处理所有按键）
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
         match key {
-            0x1B => {
-                // VK_ESCAPE - ESC键清除所有状态并隐藏窗口
+            k if k == VK_ESCAPE.0 as u32 => {
+                // ESC键清除所有状态并隐藏窗口
                 self.reset_to_initial_state();
                 vec![Command::HideWindow]
             }
@@ -315,19 +338,23 @@ impl App {
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
         let mut commands = Vec::new();
 
-        // 1) UI优先
-        let ui_commands = self.ui.handle_mouse_move(x, y);
-        if !ui_commands.is_empty() {
-            commands.extend(ui_commands);
-            return commands;
-        }
+        // 1) UI优先 - 使用事件消费机制
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_move(x, y);
+        commands.extend(ui_commands);
 
-        // 2) 将事件优先交给 Drawing（元素拖拽/调整/绘制）。如果 Drawing 正在拖拽，则不要继续传递给 Screenshot，避免冲突
-        let selection_rect = self.screenshot.get_selection();
-        commands.extend(self.drawing.handle_mouse_move(x, y, selection_rect));
-        if !self.drawing.is_dragging() {
-            // 3) 若Drawing未接管拖拽，再交给 Screenshot（用于自动高亮/选择框拖拽）
-            commands.extend(self.screenshot.handle_mouse_move(x, y));
+        if !ui_consumed {
+            // 2) 将事件优先交给 Drawing（元素拖拽/调整/绘制）
+            let selection_rect = self.screenshot.get_selection();
+            let (drawing_commands, drawing_consumed) =
+                self.drawing.handle_mouse_move(x, y, selection_rect);
+            commands.extend(drawing_commands);
+
+            if !drawing_consumed && !self.drawing.is_dragging() {
+                // 3) 若Drawing未消费且未拖拽，再交给Screenshot（用于自动高亮/选择框拖拽）
+                let (screenshot_commands, _screenshot_consumed) =
+                    self.screenshot.handle_mouse_move(x, y);
+                commands.extend(screenshot_commands);
+            }
         }
 
         // 4) 统一设置鼠标指针（使用光标管理器）
@@ -386,36 +413,28 @@ impl App {
 
         commands
     }
-    /// 内部辅助：绘图管理器是否处于鼠标按下（用于拖拽元素）
-    fn drawing_mouse_pressed(&self) -> bool {
-        // 通过检查拖拽模式是否为元素拖拽或绘制
-        // 暴露一个最小接口：当前简化为检测是否存在正在绘制的元素或内部标志
-        // 这里采用保守策略：若有选中元素且App层没有更细粒度信息，则认为可能在拖拽
-        // 更精确可通过给DrawingManager添加只读查询方法（后续优化）
-        // 目前返回false以保持兼容，真正的冲突通过mouse_down路由修复
-        false
-    }
 
     /// 处理鼠标按下
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
         let mut commands = Vec::new();
 
-        // UI层优先处理（按钮点击等）
-        commands.extend(self.ui.handle_mouse_down(x, y));
+        // UI层优先处理（按钮点击等）- 使用事件消费机制
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_down(x, y);
+        commands.extend(ui_commands);
 
-        // 如果UI没有处理，则传递给其他管理器
-        if commands.is_empty() {
+        // 如果UI没有消费事件，则传递给其他管理器
+        if !ui_consumed {
             let selection_rect = self.screenshot.get_selection();
             // 先让Drawing尝试接管（元素手柄/移动/绘制）
-            let drawing_cmds = self.drawing.handle_mouse_down(x, y, selection_rect);
-            let drawing_consumed = !drawing_cmds.is_empty();
-            commands.extend(drawing_cmds);
+            let (drawing_commands, drawing_consumed) =
+                self.drawing.handle_mouse_down(x, y, selection_rect);
+            commands.extend(drawing_commands);
 
             // 若未被Drawing消费，再交给Screenshot（选择框手柄/新建选择等）
             if !drawing_consumed {
-                let screenshot_cmds = self.screenshot.handle_mouse_down(x, y);
-                let screenshot_consumed = !screenshot_cmds.is_empty();
-                commands.extend(screenshot_cmds);
+                let (screenshot_commands, screenshot_consumed) =
+                    self.screenshot.handle_mouse_down(x, y);
+                commands.extend(screenshot_commands);
 
                 // 如果Drawing和Screenshot都没有消耗事件，清除元素选中状态（保持与原始逻辑一致）
                 if !screenshot_consumed {
@@ -434,11 +453,21 @@ impl App {
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
         let mut commands = Vec::new();
 
-        commands.extend(self.ui.handle_mouse_up(x, y));
-        // 先结束Drawing的拖拽，再让Screenshot基于点击/拖拽状态更新
-        let drawing_cmds = self.drawing.handle_mouse_up(x, y);
-        commands.extend(drawing_cmds.clone());
-        commands.extend(self.screenshot.handle_mouse_up(x, y));
+        // 使用事件消费机制处理鼠标释放
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_up(x, y);
+        commands.extend(ui_commands);
+
+        if !ui_consumed {
+            // 先结束Drawing的拖拽，再让Screenshot基于点击/拖拽状态更新
+            let (drawing_commands, drawing_consumed) = self.drawing.handle_mouse_up(x, y);
+            commands.extend(drawing_commands);
+
+            if !drawing_consumed {
+                let (screenshot_commands, _screenshot_consumed) =
+                    self.screenshot.handle_mouse_up(x, y);
+                commands.extend(screenshot_commands);
+            }
+        }
 
         commands
     }
@@ -793,10 +822,9 @@ impl App {
         use windows::Win32::UI::WindowsAndMessaging::*;
 
         unsafe {
-            // 获取选择区域的屏幕截图（包含绘图内容）
-            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
-                selection_rect,
-            ) {
+            // 获取选择区域的屏幕截图（通过 screenshot 统一入口，包含绘图内容）
+            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
+            {
                 Ok(b) => b,
                 Err(e) => {
                     return Err(AppError::InitError(format!(

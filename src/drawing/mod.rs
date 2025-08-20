@@ -7,7 +7,6 @@
 use crate::message::{Command, DrawingMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::{DrawingElement, DrawingTool};
-use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
 pub mod elements;
 pub mod history;
@@ -49,14 +48,6 @@ impl ElementInteractionMode {
             }
             // 选择框相关的拖拽模式不应该在DrawingManager中处理
             _ => ElementInteractionMode::None,
-        }
-    }
-
-    /// 获取调整大小的具体方向（如果是调整大小模式）
-    fn get_resize_mode(&self) -> Option<crate::types::DragMode> {
-        match self {
-            ElementInteractionMode::ResizingElement(mode) => Some(*mode),
-            _ => None,
         }
     }
 }
@@ -352,8 +343,8 @@ impl DrawingManager {
                 self.draw_element_d2d(element, d2d_renderer)?;
             }
 
-            // 渲染元素选择（从原始代码迁移）
-            self.draw_element_selection_d2d(d2d_renderer, selection_rect)?;
+            // 渲染元素选择（平台无关路径）
+            self.draw_element_selection(renderer, selection_rect)?;
         } else {
             // 抽象接口已移除，现在只支持 Direct2D
             return Err(DrawingError::RenderError(
@@ -371,257 +362,222 @@ impl DrawingManager {
         Ok(())
     }
 
-    // render_element 函数已移除，使用 draw_element_d2d 代替
-
-    /// 渲染元素选择（从原始代码迁移）
-    fn draw_element_selection_d2d(
+    /// 使用平台无关接口渲染元素选择指示（虚线边框 + 手柄）
+    fn draw_element_selection(
         &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
+        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
         selection_rect: Option<&windows::Win32::Foundation::RECT>,
     ) -> Result<(), DrawingError> {
         // 只有当有选中元素时才绘制选择指示器
-        if let Some(element_index) = self.selected_element {
-            if element_index < self.elements.get_elements().len() {
-                let element = &self.elements.get_elements()[element_index];
+        if self.selected_element.is_none() {
+            return Ok(());
+        }
 
-                // 检查元素是否被选中且可见
-                if element.selected {
-                    self.draw_selected_element_indicators_d2d(
-                        element,
-                        d2d_renderer,
-                        selection_rect,
-                    )?;
-                }
+        for element in self.elements.get_elements() {
+            if element.selected {
+                self.draw_selected_element_indicators(renderer, element, selection_rect)?;
             }
         }
         Ok(())
     }
 
-    /// 绘制选中元素的指示器（虚线边框和手柄）
-    fn draw_selected_element_indicators_d2d(
+    /// 平台无关的选中指示器绘制
+    fn draw_selected_element_indicators(
         &self,
+        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
         element: &DrawingElement,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        selection_rect: Option<&windows::Win32::Foundation::RECT>,
-    ) -> Result<(), DrawingError> {
-        use windows::Win32::Graphics::Direct2D::Common::*;
-        use windows::Win32::Graphics::Direct2D::*;
-
-        // 文本元素：只有在“文本编辑模式且正在编辑该元素”时才显示边框和手柄
-        if element.tool == DrawingTool::Text {
-            let is_editing_this = self.text_editing
-                && self.editing_element_index.map_or(false, |idx| {
-                    let elems = self.elements.get_elements();
-                    idx < elems.len() && std::ptr::eq(element, &elems[idx])
-                });
-            if !is_editing_this {
-                return Ok(());
-            }
-        }
-
-        if let Some(ref render_target) = d2d_renderer.render_target {
-            unsafe {
-                // 箭头元素特殊处理：只显示手柄，不显示虚线边框（与旧代码保持一致）
-                if element.tool == crate::types::DrawingTool::Arrow {
-                    // 箭头只绘制手柄
-                    self.draw_element_handles_d2d(element, render_target, selection_rect)?;
-                    return Ok(());
-                }
-
-                // 其他元素：绘制虚线边框和手柄
-                // 创建虚线样式（从原始代码迁移）
-                if let Some(ref d2d_factory) = d2d_renderer.d2d_factory {
-                    let stroke_style_properties = D2D1_STROKE_STYLE_PROPERTIES {
-                        startCap: D2D1_CAP_STYLE_FLAT,
-                        endCap: D2D1_CAP_STYLE_FLAT,
-                        dashCap: D2D1_CAP_STYLE_FLAT,
-                        lineJoin: D2D1_LINE_JOIN_MITER,
-                        miterLimit: 10.0,
-                        dashStyle: D2D1_DASH_STYLE_DASH,
-                        dashOffset: 0.0,
-                    };
-
-                    if let Ok(stroke_style) =
-                        d2d_factory.CreateStrokeStyle(&stroke_style_properties, None)
-                    {
-                        // 创建虚线边框画刷（从原始代码迁移）
-                        let dashed_color = D2D1_COLOR_F {
-                            r: 0.0,
-                            g: 0.5,
-                            b: 1.0,
-                            a: 1.0,
-                        }; // 蓝色虚线
-
-                        if let Ok(dashed_brush) =
-                            render_target.CreateSolidColorBrush(&dashed_color, None)
-                        {
-                            // 绘制虚线边框
-                            self.draw_dashed_border_d2d(
-                                element,
-                                render_target,
-                                &dashed_brush,
-                                &stroke_style,
-                            )?;
-
-                            // 绘制手柄
-                            self.draw_element_handles_d2d(element, render_target, selection_rect)?;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制虚线边框（从原始代码迁移）
-    fn draw_dashed_border_d2d(
-        &self,
-        element: &DrawingElement,
-        render_target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
-        brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush,
-        stroke_style: &windows::Win32::Graphics::Direct2D::ID2D1StrokeStyle,
-    ) -> Result<(), DrawingError> {
-        use windows::Win32::Graphics::Direct2D::Common::*;
-
-        // Unified selection visualization: always draw a dashed rectangle around
-        // the element's bounding box regardless of its shape.
-        unsafe {
-            let rect = D2D_RECT_F {
-                left: element.rect.left as f32,
-                top: element.rect.top as f32,
-                right: element.rect.right as f32,
-                bottom: element.rect.bottom as f32,
-            };
-            render_target.DrawRectangle(&rect, brush, 1.0, Some(stroke_style));
-        }
-        Ok(())
-    }
-
-    /// 绘制元素手柄（从原始代码迁移）
-    fn draw_element_handles_d2d(
-        &self,
-        element: &DrawingElement,
-        render_target: &windows::Win32::Graphics::Direct2D::ID2D1HwndRenderTarget,
         _selection_rect: Option<&windows::Win32::Foundation::RECT>,
     ) -> Result<(), DrawingError> {
-        use windows::Win32::Graphics::Direct2D::Common::*;
-        use windows::Win32::Graphics::Direct2D::*;
+        use crate::platform::traits::{Color, DrawStyle, Point, Rectangle};
 
-        unsafe {
-            // 创建手柄画刷
-            let handle_fill_color = D2D1_COLOR_F {
+        // 箭头特殊：只绘制端点手柄（圆形），不绘制虚线边框（保持原行为）
+        if element.tool == DrawingTool::Arrow {
+            let radius = 3.0_f32;
+            let fill = Color {
                 r: 1.0,
                 g: 1.0,
                 b: 1.0,
                 a: 1.0,
-            }; // 白色填充
-            let handle_border_color = D2D1_COLOR_F {
+            };
+            let border = Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
-            }; // 黑色边框
-
-            if let (Ok(fill_brush), Ok(border_brush)) = (
-                render_target.CreateSolidColorBrush(&handle_fill_color, None),
-                render_target.CreateSolidColorBrush(&handle_border_color, None),
-            ) {
-                let handle_size = 6.0; // 手柄大小
-                let half_handle = handle_size / 2.0;
-
-                match element.tool {
-                    crate::types::DrawingTool::Arrow => {
-                        // 箭头只显示起点和终点手柄
-                        if element.points.len() >= 2 {
-                            for point in &element.points[..2] {
-                                let handle_ellipse = D2D1_ELLIPSE {
-                                    point: windows_numerics::Vector2 {
-                                        X: point.x as f32,
-                                        Y: point.y as f32,
-                                    },
-                                    radiusX: half_handle,
-                                    radiusY: half_handle,
-                                };
-
-                                render_target.FillEllipse(&handle_ellipse, &fill_brush);
-                                render_target.DrawEllipse(
-                                    &handle_ellipse,
-                                    &border_brush,
-                                    1.0,
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                    crate::types::DrawingTool::Text => {
-                        // 文本元素显示4个角手柄
-                        let handles = vec![
-                            (element.rect.left, element.rect.top),
-                            (element.rect.right, element.rect.top),
-                            (element.rect.right, element.rect.bottom),
-                            (element.rect.left, element.rect.bottom),
-                        ];
-
-                        for (hx, hy) in handles {
-                            let handle_ellipse = D2D1_ELLIPSE {
-                                point: windows_numerics::Vector2 {
-                                    X: hx as f32,
-                                    Y: hy as f32,
-                                },
-                                radiusX: half_handle,
-                                radiusY: half_handle,
-                            };
-
-                            render_target.FillEllipse(&handle_ellipse, &fill_brush);
-                            render_target.DrawEllipse(&handle_ellipse, &border_brush, 1.0, None);
-                        }
-                    }
-                    _ => {
-                        // 其他元素显示8个手柄（4个角 + 4个边中点）
-                        if element.points.len() >= 2 {
-                            let left = element.points[0].x.min(element.points[1].x);
-                            let top = element.points[0].y.min(element.points[1].y);
-                            let right = element.points[0].x.max(element.points[1].x);
-                            let bottom = element.points[0].y.max(element.points[1].y);
-                            let center_x = (left + right) / 2;
-                            let center_y = (top + bottom) / 2;
-
-                            let handles = vec![
-                                (left, top),
-                                (center_x, top),
-                                (right, top),
-                                (right, center_y),
-                                (right, bottom),
-                                (center_x, bottom),
-                                (left, bottom),
-                                (left, center_y),
-                            ];
-
-                            for (hx, hy) in handles {
-                                let handle_ellipse = D2D1_ELLIPSE {
-                                    point: windows_numerics::Vector2 {
-                                        X: hx as f32,
-                                        Y: hy as f32,
-                                    },
-                                    radiusX: half_handle,
-                                    radiusY: half_handle,
-                                };
-
-                                render_target.FillEllipse(&handle_ellipse, &fill_brush);
-                                render_target.DrawEllipse(
-                                    &handle_ellipse,
-                                    &border_brush,
-                                    1.0,
-                                    None,
-                                );
-                            }
-                        }
-                    }
+            };
+            let style = DrawStyle {
+                stroke_color: border,
+                fill_color: Some(fill),
+                stroke_width: 1.0,
+            };
+            if element.points.len() >= 2 {
+                let pts = [
+                    Point {
+                        x: element.points[0].x as f32,
+                        y: element.points[0].y as f32,
+                    },
+                    Point {
+                        x: element.points[1].x as f32,
+                        y: element.points[1].y as f32,
+                    },
+                ];
+                for p in pts.iter() {
+                    renderer.draw_circle(*p, radius, &style).map_err(|e| {
+                        DrawingError::RenderError(format!("draw circle handle failed: {}", e))
+                    })?;
                 }
             }
+            return Ok(());
         }
+
+        // 其他元素的处理
+        let rect = Rectangle {
+            x: element.rect.left as f32,
+            y: element.rect.top as f32,
+            width: (element.rect.right - element.rect.left) as f32,
+            height: (element.rect.bottom - element.rect.top) as f32,
+        };
+
+        // 检查是否是文本元素且正在拖动
+        let is_text_dragging = element.tool == DrawingTool::Text
+            && self.mouse_pressed
+            && self.interaction_mode == ElementInteractionMode::MovingElement;
+
+        // 检查是否是文本元素且正在编辑
+        let is_text_editing = element.tool == DrawingTool::Text && self.text_editing;
+
+        // 文本元素的特殊处理：只有在编辑模式时才显示边框和手柄
+        if element.tool == DrawingTool::Text {
+            // 文本元素只有在编辑模式时才显示UI
+            if is_text_editing && !is_text_dragging {
+                // 虚线边框（使用高层接口）
+                let dashed_color = Color {
+                    r: 0.0,
+                    g: 0.5,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                let dash_pattern: [f32; 2] = [4.0, 2.0];
+                renderer
+                    .draw_selection_border(rect, dashed_color, 1.0, Some(&dash_pattern))
+                    .map_err(|e| {
+                        DrawingError::RenderError(format!("draw dashed border failed: {}", e))
+                    })?;
+
+                // 手柄绘制 - 文本编辑时只显示4个角的手柄
+                let handle_radius = 3.0_f32;
+                let fill_color = Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                let border_color = Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                };
+
+                self.draw_corner_handles_only(
+                    renderer,
+                    rect,
+                    handle_radius,
+                    fill_color,
+                    border_color,
+                )?;
+            }
+            // 文本选中但未编辑时，或者拖动时，不显示任何UI
+        } else {
+            // 非文本元素：正常显示边框和8个手柄
+            // 虚线边框（使用高层接口）
+            let dashed_color = Color {
+                r: 0.0,
+                g: 0.5,
+                b: 1.0,
+                a: 1.0,
+            };
+            let dash_pattern: [f32; 2] = [4.0, 2.0];
+            renderer
+                .draw_selection_border(rect, dashed_color, 1.0, Some(&dash_pattern))
+                .map_err(|e| {
+                    DrawingError::RenderError(format!("draw dashed border failed: {}", e))
+                })?;
+
+            // 手柄绘制 - 非文本元素显示8个手柄
+            let handle_radius = 3.0_f32;
+            let fill_color = Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
+            let border_color = Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            };
+
+            renderer
+                .draw_element_handles(rect, handle_radius, fill_color, border_color, 1.0)
+                .map_err(|e| {
+                    DrawingError::RenderError(format!("draw element handles failed: {}", e))
+                })?;
+        }
+
         Ok(())
     }
+
+    /// 只绘制4个角的手柄（用于文本编辑时）
+    fn draw_corner_handles_only(
+        &self,
+        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
+        rect: crate::platform::traits::Rectangle,
+        handle_radius: f32,
+        fill_color: crate::platform::traits::Color,
+        border_color: crate::platform::traits::Color,
+    ) -> Result<(), DrawingError> {
+        use crate::platform::traits::{DrawStyle, Point};
+
+        let style = DrawStyle {
+            stroke_color: border_color,
+            fill_color: Some(fill_color),
+            stroke_width: 1.0,
+        };
+
+        // 只绘制4个角的手柄
+        let corner_positions = [
+            Point {
+                x: rect.x,
+                y: rect.y,
+            }, // 左上
+            Point {
+                x: rect.x + rect.width,
+                y: rect.y,
+            }, // 右上
+            Point {
+                x: rect.x + rect.width,
+                y: rect.y + rect.height,
+            }, // 右下
+            Point {
+                x: rect.x,
+                y: rect.y + rect.height,
+            }, // 左下
+        ];
+
+        for pos in corner_positions.iter() {
+            renderer
+                .draw_circle(*pos, handle_radius, &style)
+                .map_err(|e| {
+                    DrawingError::RenderError(format!("draw corner handle failed: {}", e))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    // render_element 函数已移除，使用 draw_element_d2d 代替
 
     /// 使用Direct2D渲染单个元素（从原始代码迁移）
     fn draw_element_d2d(
@@ -1027,33 +983,33 @@ impl DrawingManager {
     // 移除 legacy 接口，统一使用 ElementManager/HistoryManager
 
     /// 处理鼠标移动（从原始代码迁移，支持拖拽模式）
+    /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_move(
         &mut self,
         x: i32,
         y: i32,
         selection_rect: Option<windows::Win32::Foundation::RECT>,
-    ) -> Vec<Command> {
+    ) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
             // 添加拖拽距离阈值检查（与旧代码保持一致）
-            const DRAG_THRESHOLD: i32 = 5;
             let dx = (x - self.interaction_start_pos.x).abs();
             let dy = (y - self.interaction_start_pos.y).abs();
 
             // 只有当移动距离超过阈值时才开始真正的拖拽
-            if dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD {
+            if dx > crate::constants::DRAG_THRESHOLD || dy > crate::constants::DRAG_THRESHOLD {
                 self.update_drag(x, y, selection_rect);
-                vec![Command::RequestRedraw]
+                (vec![Command::RequestRedraw], true)
             } else {
-                // 移动距离不够，不进行拖拽
-                vec![]
+                // 移动距离不够，不进行拖拽，但仍然消费事件（因为鼠标已按下）
+                (vec![], true)
             }
         } else {
             // 检查是否悬停在元素上（用于改变光标/预览）
             if let Some(_index) = self.elements.get_element_at_position(x, y) {
-                // 可在后续添加悬停反馈
-                vec![]
+                // 可在后续添加悬停反馈，但不消费事件
+                (vec![], false)
             } else {
-                vec![]
+                (vec![], false)
             }
         }
     }
@@ -1287,12 +1243,13 @@ impl DrawingManager {
     }
 
     /// 处理鼠标按下（从原始代码迁移，支持拖拽模式）
+    /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_down(
         &mut self,
         x: i32,
         y: i32,
         selection_rect: Option<windows::Win32::Foundation::RECT>,
-    ) -> Vec<Command> {
+    ) -> (Vec<Command>, bool) {
         // 重置标志，下次点击可以创建新文本（与原代码保持一致）
         // 注意：这必须在函数开始时重置，确保每次新的点击事件都会重置状态
         self.just_saved_text = false;
@@ -1325,16 +1282,16 @@ impl DrawingManager {
                             self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                             self.interaction_start_rect = element.rect;
                             self.interaction_start_font_size = element.font_size;
-                            return vec![Command::RequestRedraw];
+                            return (vec![Command::RequestRedraw], true);
                         }
                         // 点击文本内容区域，继续编辑；返回重绘以消费事件，避免上层退出
-                        return vec![Command::RequestRedraw];
+                        return (vec![Command::RequestRedraw], true);
                     }
                 }
                 // 点击了其他地方，停止编辑并立即返回（修复空文本框删除问题）
                 // 避免后续逻辑干扰 stop_text_editing 的清理操作
                 let stop_commands = self.stop_text_editing();
-                return stop_commands;
+                return (stop_commands, true);
             }
         }
 
@@ -1363,7 +1320,7 @@ impl DrawingManager {
                         self.interaction_start_rect = element_rect;
                         self.interaction_start_font_size = element_font_size;
 
-                        return vec![Command::UpdateToolbar, Command::RequestRedraw];
+                        return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                     }
                 }
                 // 点击了其他类型元素：不在此处处理，继续后续通用元素命中逻辑（允许选择并拖动该元素）
@@ -1377,7 +1334,7 @@ impl DrawingManager {
         if !inside_selection {
             // 但如果当前没有选择框（None），仍应允许绘图交互
             if selection_rect.is_some() {
-                return vec![];
+                return (vec![], false);
             }
         }
 
@@ -1401,7 +1358,7 @@ impl DrawingManager {
                             self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                             self.interaction_start_rect = element.rect;
                             self.interaction_start_font_size = element.font_size;
-                            return vec![Command::RequestRedraw];
+                            return (vec![Command::RequestRedraw], true);
                         }
                         // 2) 已选元素内部（移动）- 也必须在选择框内且元素可见
                         if element.contains_point(x, y) {
@@ -1419,7 +1376,7 @@ impl DrawingManager {
                                 self.interaction_start_pos =
                                     windows::Win32::Foundation::POINT { x, y };
                                 self.interaction_start_rect = element.rect;
-                                return vec![Command::RequestRedraw];
+                                return (vec![Command::RequestRedraw], true);
                             }
                         }
                     }
@@ -1437,19 +1394,19 @@ impl DrawingManager {
                 let (element_tool, element_rect, element_font_size) = {
                     if let Some(element) = self.elements.get_elements().get(idx) {
                         if element.tool == DrawingTool::Pen {
-                            return vec![]; // 返回空命令，不消费此事件
+                            return (vec![], false); // 返回空命令，不消费此事件
                         }
 
                         (element.tool, element.rect, element.font_size)
                     } else {
-                        return vec![];
+                        return (vec![], false);
                     }
                 };
 
                 // 如果是画笔元素，不允许选择（与旧代码保持一致）
                 if element_tool == DrawingTool::Pen {
                     // 笔画不能被选择，直接返回空命令
-                    return vec![];
+                    return (vec![], false);
                 }
 
                 // 选择该元素（仅非笔画元素）
@@ -1468,12 +1425,12 @@ impl DrawingManager {
                     // 点击了手柄，开始手柄拖拽
                     self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
                     self.mouse_pressed = true;
-                    return vec![Command::UpdateToolbar, Command::RequestRedraw];
+                    return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                 } else {
                     // 没有点击手柄，立即开始移动元素（与原代码逻辑一致）
                     self.interaction_mode = ElementInteractionMode::MovingElement;
                     self.mouse_pressed = true;
-                    return vec![Command::UpdateToolbar, Command::RequestRedraw];
+                    return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                 }
             }
         }
@@ -1484,10 +1441,10 @@ impl DrawingManager {
                 self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                 self.start_drawing_shape(x, y);
                 self.mouse_pressed = true;
-                return vec![Command::RequestRedraw];
+                return (vec![Command::RequestRedraw], true);
             }
             // 不在选择框内，不消费事件
-            return vec![];
+            return (vec![], false);
         }
 
         // 5) 工具为None且未命中元素：清除选中，但不消费事件（让 ScreenshotManager 有机会处理）
@@ -1495,10 +1452,10 @@ impl DrawingManager {
             // 只有当确实有选中元素需要清除时才处理
             self.selected_element = None;
             self.elements.set_selected(None);
-            vec![Command::UpdateToolbar, Command::RequestRedraw]
+            (vec![Command::UpdateToolbar, Command::RequestRedraw], true)
         } else {
             // 没有选中元素，不消费事件
-            vec![]
+            (vec![], false)
         }
     }
 
@@ -1561,14 +1518,15 @@ impl DrawingManager {
     }
 
     /// 处理鼠标释放（从原始代码迁移，支持拖拽模式）
-    pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
             self.end_drag();
             self.mouse_pressed = false;
             self.interaction_mode = ElementInteractionMode::None;
-            vec![Command::RequestRedraw]
+            (vec![Command::RequestRedraw], true)
         } else {
-            vec![]
+            (vec![], false)
         }
     }
 
@@ -1845,7 +1803,7 @@ impl DrawingManager {
     }
 
     /// 创建新文本元素并开始编辑
-    fn create_and_edit_text_element(&mut self, x: i32, y: i32) -> Vec<Command> {
+    fn create_and_edit_text_element(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         // 清除所有元素的选择状态
         self.elements.set_selected(None);
         self.selected_element = None;
@@ -1907,10 +1865,13 @@ impl DrawingManager {
         self.selected_element = Some(element_index);
         self.elements.set_selected(self.selected_element);
 
-        vec![
-            Command::StartTimer(self.cursor_timer_id as u32, 500), // 启动光标闪烁定时器
-            Command::RequestRedraw,
-        ]
+        (
+            vec![
+                Command::StartTimer(self.cursor_timer_id as u32, 500), // 启动光标闪烁定时器
+                Command::RequestRedraw,
+            ],
+            true,
+        )
     }
 
     /// 停止文本编辑模式

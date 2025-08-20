@@ -2,6 +2,7 @@
 //
 // 负责屏幕捕获、选择区域管理、保存和导出功能
 
+use crate::interaction::InteractionController;
 use crate::message::{Command, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
@@ -18,6 +19,8 @@ use selection::SelectionState;
 pub struct ScreenshotManager {
     /// 选择状态
     selection: SelectionState,
+    /// 交互控制器（阶段1，仅用于选择框）
+    selection_interaction: InteractionController,
     /// 当前截图数据
     current_screenshot: Option<ScreenshotData>,
 
@@ -103,6 +106,7 @@ impl ScreenshotManager {
         Ok(Self {
             selection: SelectionState::new(),
             current_screenshot: None,
+            selection_interaction: InteractionController::new(),
 
             // 初始化从WindowState迁移的字段
             screenshot_dc,
@@ -125,6 +129,31 @@ impl ScreenshotManager {
     /// 与绘图工具联动：控制是否显示选择框手柄
     pub fn set_show_selection_handles(&mut self, show: bool) {
         self.show_selection_handles = show;
+    }
+
+    /// 获取屏幕宽度
+    pub fn get_screen_width(&self) -> i32 {
+        self.screen_width
+    }
+
+    /// 获取屏幕高度
+    pub fn get_screen_height(&self) -> i32 {
+        self.screen_height
+    }
+
+    /// 是否应该显示选择框手柄
+    pub fn should_show_selection_handles(&self) -> bool {
+        self.show_selection_handles
+    }
+
+    /// 是否因截图而隐藏UI
+    pub fn is_hiding_ui_for_capture(&self) -> bool {
+        self.hide_ui_for_capture
+    }
+
+    /// 是否有自动高亮
+    pub fn has_auto_highlight(&self) -> bool {
+        self.selection.has_auto_highlight()
     }
 
     /// 处理截图消息
@@ -203,36 +232,8 @@ impl ScreenshotManager {
                         );
                     }
 
-                    // 如果有选择区域，绘制遮罩和边框
-                    if let Some(selection_rect) = self.selection.get_effective_selection() {
-                        // 绘制遮罩和边框在截图时需要隐藏（避免被捕获到）
-                        if !self.hide_ui_for_capture {
-                            // 绘制遮罩覆盖层
-                            self.draw_dimmed_overlay_impl(d2d_renderer, &selection_rect)?;
-
-                            // 绘制选择框边框（自动高亮用不同颜色）
-                            if self.selection.has_auto_highlight() {
-                                self.draw_auto_highlight_border_impl(
-                                    d2d_renderer,
-                                    &selection_rect,
-                                )?;
-                            } else {
-                                self.draw_selection_border_impl(d2d_renderer, &selection_rect)?;
-                            }
-                        }
-
-                        // 绘制选择框手柄（当未选择绘图工具时才显示）
-                        if !self.hide_ui_for_capture && self.show_selection_handles {
-                            self.draw_handles_impl(d2d_renderer, &selection_rect)?;
-                        }
-
-                        // 当前正在绘制的元素由Drawing模块处理
-                    } else {
-                        // 绘制全屏遮罩（截图时隐藏UI，不绘制遮罩）
-                        if !self.hide_ui_for_capture {
-                            self.draw_full_screen_mask_impl(d2d_renderer)?;
-                        }
-                    }
+                    // UI渲染（遮罩、边框、手柄）现在由UIManager负责
+                    // ScreenshotManager只负责截图背景绘制
                 }
             }
         }
@@ -412,7 +413,8 @@ impl ScreenshotManager {
     }
 
     /// 处理鼠标移动（完全按照原始代码逻辑，包含拖拽检测）
-    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         // 绘图工具处理已移至Drawing模块
 
         // 第二优先级：检测拖拽开始（从原始代码迁移）
@@ -431,30 +433,32 @@ impl ScreenshotManager {
                     self.selection.clear_selection();
                     self.selection.start_selection(drag_start.x, drag_start.y);
                 }
-                return vec![Command::RequestRedraw];
+                return (vec![Command::RequestRedraw], true);
             }
         }
 
         if self.selection.is_selecting() {
             // 正在创建新选择框
             self.selection.update_end_point(x, y);
-            vec![Command::RequestRedraw]
+            (vec![Command::RequestRedraw], true)
         } else if self.selection.is_dragging() {
-            // 正在拖拽选择框或调整大小
-            if self.selection.handle_interaction(x, y) {
+            // 正在拖拽选择框或调整大小（统一交互控制器）
+            if self
+                .selection_interaction
+                .mouse_move(&mut self.selection, x, y)
+            {
                 let mut commands = vec![Command::RequestRedraw];
 
-                // 修复：拖拽已有选择框时，更新工具栏位置（按照原始代码逻辑）
-                // 这里发送UpdateToolbarPosition命令，UI层会检查工具栏是否可见再决定是否更新
+                // 拖拽已有选择框时，更新工具栏位置
                 if let Some(selection_rect) = self.selection.get_selection() {
                     commands.push(Command::UI(
                         crate::message::UIMessage::UpdateToolbarPosition(selection_rect),
                     ));
                 }
 
-                commands
+                (commands, true)
             } else {
-                vec![]
+                (vec![], false)
             }
         } else {
             // 窗口自动高亮检测（仅在启用自动高亮且没有按下鼠标时）（完全按照原始代码逻辑）
@@ -472,7 +476,7 @@ impl ScreenshotManager {
                     };
                     // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
-                    vec![Command::RequestRedraw]
+                    (vec![Command::RequestRedraw], true)
                 } else if let Some(window) = window_info {
                     // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内（按照原始代码逻辑）
                     let limited_rect = windows::Win32::Foundation::RECT {
@@ -483,26 +487,27 @@ impl ScreenshotManager {
                     };
                     // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
-                    vec![Command::RequestRedraw]
+                    (vec![Command::RequestRedraw], true)
                 } else {
                     // 如果没有检测到窗口或子控件，清除自动高亮（按照原始代码逻辑）
                     if self.selection.has_selection() {
                         self.selection.clear_selection();
-                        vec![Command::RequestRedraw]
+                        (vec![Command::RequestRedraw], true)
                     } else {
-                        vec![]
+                        (vec![], false)
                     }
                 }
             } else {
-                vec![]
+                (vec![], false)
             }
         }
     }
 
     /// 处理鼠标按下（完全按照原始代码逻辑）
-    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         if self.current_screenshot.is_none() {
-            return vec![];
+            return (vec![], false);
         }
 
         // 设置鼠标按下状态（从原始代码迁移）
@@ -517,18 +522,17 @@ impl ScreenshotManager {
             // 这里暂时跳过，让UI管理器在App层处理工具栏点击
         }
 
-        // 检查手柄点击（从原始代码迁移）
+        // 检查手柄/内部点击：通过统一交互控制器
         if self.selection.has_selection() {
-            let handle_mode = self.selection.get_handle_at_position(x, y);
-            if handle_mode != crate::types::DragMode::None {
-                // 点击了手柄，开始拖拽
-                self.selection.start_interaction(x, y, handle_mode);
-                return vec![Command::RequestRedraw];
+            let consumed = self
+                .selection_interaction
+                .mouse_down(&mut self.selection, x, y);
+            if consumed {
+                return (vec![Command::RequestRedraw], true);
             } else {
-                // 修复：如果有选区但没有点击手柄，重置鼠标状态并忽略此次点击
-                // 这是关键的保护逻辑，防止在已有选区外点击时创建新选区
+                // 有选区但未命中手柄/内部：保持原行为，忽略此次点击
                 self.selection.set_mouse_pressed(false);
-                return vec![];
+                return (vec![], false);
             }
         }
 
@@ -538,9 +542,9 @@ impl ScreenshotManager {
         // 以避免小幅移动被误判为“单击确认”。
         if !self.auto_highlight_enabled {
             self.start_drag_internal(x, y);
-            vec![Command::RequestRedraw]
+            (vec![Command::RequestRedraw], true)
         } else {
-            vec![]
+            (vec![], false)
         }
     }
 
@@ -548,10 +552,10 @@ impl ScreenshotManager {
     fn start_drag_internal(&mut self, x: i32, y: i32) {
         // 如果已经有选择框，不允许在外面重新框选（从原始代码迁移）
         if self.selection.has_selection() {
-            let handle_mode = self.selection.get_handle_at_position(x, y);
-            if handle_mode != crate::types::DragMode::None {
-                self.selection.start_interaction(x, y, handle_mode);
-            }
+            let _ = self
+                .selection_interaction
+                .mouse_down(&mut self.selection, x, y);
+            // 未命中时不开始新选择，保持原行为
         } else {
             // 只有在没有选择框时才允许创建新的选择框（从原始代码迁移）
             self.selection.start_selection(x, y);
@@ -559,7 +563,8 @@ impl ScreenshotManager {
     }
 
     /// 处理鼠标释放（完全按照原始代码逻辑）
-    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
+    /// 返回 (命令列表, 是否消费了事件)
+    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
         // 绘图工具完成处理已移至Drawing模块
@@ -582,8 +587,10 @@ impl ScreenshotManager {
                 }
             }
         } else if self.selection.is_dragging() {
-            // 结束拖拽操作
-            self.selection.end_interaction();
+            // 结束拖拽操作（统一交互控制器）
+            let _ = self
+                .selection_interaction
+                .mouse_up(&mut self.selection, x, y);
             commands.push(Command::RequestRedraw);
 
             // 更新工具栏位置（如果有选择框）
@@ -615,7 +622,8 @@ impl ScreenshotManager {
         // 重置鼠标按下状态
         self.selection.set_mouse_pressed(false);
 
-        commands
+        let consumed = !commands.is_empty();
+        (commands, consumed)
     }
 
     /// 获取D2D位图
@@ -671,318 +679,8 @@ impl ScreenshotManager {
         self.screenshot_dc.unwrap_or_default()
     }
 
-    /// 绘制遮罩覆盖层实现（从原始代码迁移）
-    fn draw_dimmed_overlay_impl(
-        &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        selection_rect: &windows::Win32::Foundation::RECT,
-    ) -> Result<(), ScreenshotError> {
-        unsafe {
-            if let Some(render_target) = &d2d_renderer.render_target {
-                // 创建遮罩画刷（半透明黑色）
-                let mask_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.6, // 60%透明度
-                };
-
-                if let Ok(mask_brush) = render_target.CreateSolidColorBrush(&mask_color, None) {
-                    let screen_width = d2d_renderer.get_screen_width() as f32;
-                    let screen_height = d2d_renderer.get_screen_height() as f32;
-
-                    // 绘制四个遮罩矩形（选择区域外的部分）
-                    // 上方遮罩
-                    if selection_rect.top > 0 {
-                        let top_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: 0.0,
-                            top: 0.0,
-                            right: screen_width,
-                            bottom: selection_rect.top as f32,
-                        };
-                        render_target.FillRectangle(&top_rect, &mask_brush);
-                    }
-
-                    // 下方遮罩
-                    if selection_rect.bottom < screen_height as i32 {
-                        let bottom_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: 0.0,
-                            top: selection_rect.bottom as f32,
-                            right: screen_width,
-                            bottom: screen_height,
-                        };
-                        render_target.FillRectangle(&bottom_rect, &mask_brush);
-                    }
-
-                    // 左侧遮罩
-                    if selection_rect.left > 0 {
-                        let left_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: 0.0,
-                            top: selection_rect.top as f32,
-                            right: selection_rect.left as f32,
-                            bottom: selection_rect.bottom as f32,
-                        };
-                        render_target.FillRectangle(&left_rect, &mask_brush);
-                    }
-
-                    // 右侧遮罩
-                    if selection_rect.right < screen_width as i32 {
-                        let right_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: selection_rect.right as f32,
-                            top: selection_rect.top as f32,
-                            right: screen_width,
-                            bottom: selection_rect.bottom as f32,
-                        };
-                        render_target.FillRectangle(&right_rect, &mask_brush);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制选择框边框实现（从原始代码迁移）
-    fn draw_selection_border_impl(
-        &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        selection_rect: &windows::Win32::Foundation::RECT,
-    ) -> Result<(), ScreenshotError> {
-        unsafe {
-            if let Some(render_target) = &d2d_renderer.render_target {
-                // 创建选择框边框画刷（蓝色）
-                let border_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                    r: 0.0,
-                    g: 0.5,
-                    b: 1.0,
-                    a: 1.0,
-                };
-
-                if let Ok(border_brush) = render_target.CreateSolidColorBrush(&border_color, None) {
-                    let rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: selection_rect.left as f32,
-                        top: selection_rect.top as f32,
-                        right: selection_rect.right as f32,
-                        bottom: selection_rect.bottom as f32,
-                    };
-
-                    render_target.DrawRectangle(&rect, &border_brush, 2.0, None);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制自动高亮边框实现（从原始代码迁移）
-    fn draw_auto_highlight_border_impl(
-        &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        selection_rect: &windows::Win32::Foundation::RECT,
-    ) -> Result<(), ScreenshotError> {
-        unsafe {
-            if let Some(render_target) = &d2d_renderer.render_target {
-                // 创建自动高亮边框画刷（红色，更醒目）
-                let border_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 0.2,
-                    b: 0.2,
-                    a: 1.0,
-                };
-
-                if let Ok(border_brush) = render_target.CreateSolidColorBrush(&border_color, None) {
-                    let rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: selection_rect.left as f32,
-                        top: selection_rect.top as f32,
-                        right: selection_rect.right as f32,
-                        bottom: selection_rect.bottom as f32,
-                    };
-
-                    render_target.DrawRectangle(&rect, &border_brush, 3.0, None); // 稍微粗一点
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制全屏遮罩实现（从原始代码迁移）
-    fn draw_full_screen_mask_impl(
-        &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-    ) -> Result<(), ScreenshotError> {
-        unsafe {
-            if let Some(render_target) = &d2d_renderer.render_target {
-                // 创建全屏遮罩画刷（半透明黑色）
-                let mask_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.6, // 60%透明度
-                };
-
-                if let Ok(mask_brush) = render_target.CreateSolidColorBrush(&mask_color, None) {
-                    let screen_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: 0.0,
-                        top: 0.0,
-                        right: d2d_renderer.get_screen_width() as f32,
-                        bottom: d2d_renderer.get_screen_height() as f32,
-                    };
-
-                    render_target.FillRectangle(&screen_rect, &mask_brush);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制选择框手柄实现（从原始代码迁移）
-    fn draw_handles_impl(
-        &self,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        selection_rect: &windows::Win32::Foundation::RECT,
-    ) -> Result<(), ScreenshotError> {
-        unsafe {
-            if let Some(render_target) = &d2d_renderer.render_target {
-                let center_x = (selection_rect.left + selection_rect.right) / 2;
-                let center_y = (selection_rect.top + selection_rect.bottom) / 2;
-                let half_handle = crate::constants::HANDLE_SIZE / 2.0;
-
-                let handles = [
-                    (selection_rect.left, selection_rect.top),
-                    (center_x, selection_rect.top),
-                    (selection_rect.right, selection_rect.top),
-                    (selection_rect.right, center_y),
-                    (selection_rect.right, selection_rect.bottom),
-                    (center_x, selection_rect.bottom),
-                    (selection_rect.left, selection_rect.bottom),
-                    (selection_rect.left, center_y),
-                ];
-
-                // 获取手柄画刷
-                let handle_fill_brush = d2d_renderer.get_brush(&2).ok_or_else(|| {
-                    ScreenshotError::RenderError("Handle fill brush not found".to_string())
-                })?;
-                let handle_border_brush = d2d_renderer.get_brush(&3).ok_or_else(|| {
-                    ScreenshotError::RenderError("Handle border brush not found".to_string())
-                })?;
-
-                for (hx, hy) in handles.iter() {
-                    let handle_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: *hx as f32 - half_handle,
-                        top: *hy as f32 - half_handle,
-                        right: *hx as f32 + half_handle,
-                        bottom: *hy as f32 + half_handle,
-                    };
-
-                    render_target.FillRectangle(&handle_rect, handle_fill_brush);
-                    render_target.DrawRectangle(&handle_rect, handle_border_brush, 1.0, None);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制选择框边框（从原始代码迁移）
-    pub fn draw_selection_border(
-        &self,
-        renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-    ) -> Result<(), ScreenshotError> {
-        // 截图时隐藏选择框边框
-        if self.hide_ui_for_capture {
-            return Ok(());
-        }
-
-        if let Some(selection_rect) = self.selection.get_selection() {
-            if let Some(ref render_target) = renderer.render_target {
-                unsafe {
-                    // 创建选择框边框画刷
-                    let selection_border_brush = render_target
-                        .CreateSolidColorBrush(&crate::constants::COLOR_SELECTION_BORDER, None)
-                        .map_err(|e| {
-                            ScreenshotError::RenderError(format!(
-                                "Failed to create selection border brush: {:?}",
-                                e
-                            ))
-                        })?;
-
-                    let rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: selection_rect.left as f32,
-                        top: selection_rect.top as f32,
-                        right: selection_rect.right as f32,
-                        bottom: selection_rect.bottom as f32,
-                    };
-
-                    render_target.DrawRectangle(&rect, &selection_border_brush, 2.0, None);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 绘制选择框手柄（从原始代码迁移）
-    pub fn draw_handles(
-        &self,
-        renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-    ) -> Result<(), ScreenshotError> {
-        // 截图时隐藏选择框手柄
-        if self.hide_ui_for_capture {
-            return Ok(());
-        }
-
-        if let Some(selection_rect) = self.selection.get_selection() {
-            if let Some(ref render_target) = renderer.render_target {
-                unsafe {
-                    // 创建手柄画刷
-                    let handle_fill_brush = render_target
-                        .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_FILL, None)
-                        .map_err(|e| {
-                            ScreenshotError::RenderError(format!(
-                                "Failed to create handle fill brush: {:?}",
-                                e
-                            ))
-                        })?;
-
-                    let handle_border_brush = render_target
-                        .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_BORDER, None)
-                        .map_err(|e| {
-                            ScreenshotError::RenderError(format!(
-                                "Failed to create handle border brush: {:?}",
-                                e
-                            ))
-                        })?;
-
-                    let center_x = (selection_rect.left + selection_rect.right) / 2;
-                    let center_y = (selection_rect.top + selection_rect.bottom) / 2;
-                    let half_handle = crate::constants::HANDLE_SIZE / 2.0;
-
-                    let handles = [
-                        (selection_rect.left, selection_rect.top),
-                        (center_x, selection_rect.top),
-                        (selection_rect.right, selection_rect.top),
-                        (selection_rect.right, center_y),
-                        (selection_rect.right, selection_rect.bottom),
-                        (center_x, selection_rect.bottom),
-                        (selection_rect.left, selection_rect.bottom),
-                        (selection_rect.left, center_y),
-                    ];
-
-                    for (hx, hy) in handles.iter() {
-                        let handle_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: *hx as f32 - half_handle,
-                            top: *hy as f32 - half_handle,
-                            right: *hx as f32 + half_handle,
-                            bottom: *hy as f32 + half_handle,
-                        };
-
-                        render_target.FillRectangle(&handle_rect, &handle_fill_brush);
-                        render_target.DrawRectangle(&handle_rect, &handle_border_brush, 1.0, None);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// 处理双击事件（从原始代码迁移）
-    pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
+    pub fn handle_double_click(&mut self, _x: i32, _y: i32) -> Vec<Command> {
         // 双击可能用于确认选择或快速操作
         // 如果有选择区域，双击可能表示确认选择
         if let Some(_selection_rect) = self.selection.get_selection() {
