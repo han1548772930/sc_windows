@@ -27,6 +27,8 @@ pub struct Direct2DRenderer {
 
     // 画刷缓存（真正的Direct2D画刷）
     brushes: HashMap<BrushId, ID2D1SolidColorBrush>,
+    // 颜色到画刷的缓存（避免每帧创建）
+    brush_cache: HashMap<u32, ID2D1SolidColorBrush>,
     /// 字体缓存
     fonts: HashMap<FontId, String>, // 临时保留
     /// 下一个画刷ID
@@ -48,6 +50,7 @@ impl Direct2DRenderer {
             dwrite_factory: None,
             text_format: None,
             brushes: HashMap::new(),
+            brush_cache: HashMap::new(),
             fonts: HashMap::new(),
             next_brush_id: 1,
             next_font_id: 1,
@@ -251,6 +254,9 @@ impl Direct2DRenderer {
         self.dwrite_factory = Some(dwrite_factory);
         self.text_format = Some(text_format);
 
+        // 渲染目标重建时清空颜色画刷缓存
+        self.brush_cache.clear();
+
         println!("D2D bitmap created successfully");
         Ok(())
     }
@@ -345,31 +351,42 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 获取或创建画刷（从原始代码迁移）
-    fn get_or_create_brush(
+    /// 将颜色量化为缓存键（ARGB 8bit）
+    fn color_key(color: Color) -> u32 {
+        let r = (color.r.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        let g = (color.g.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        let b = (color.b.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        let a = (color.a.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+        (a << 24) | (r << 16) | (g << 8) | b
+    }
+
+    /// 获取或创建画刷（带缓存）
+    pub(crate) fn get_or_create_brush(
         &mut self,
         color: Color,
     ) -> std::result::Result<ID2D1SolidColorBrush, PlatformError> {
-        // 简化实现：每次都创建新画刷
-        if let Some(ref render_target) = self.render_target {
-            let d2d_color = D2D1_COLOR_F {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-                a: color.a,
-            };
-
-            let brush =
-                unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }.map_err(|e| {
-                    PlatformError::ResourceError(format!("Failed to create brush: {:?}", e))
-                })?;
-
-            Ok(brush)
-        } else {
-            Err(PlatformError::ResourceError(
+        if self.render_target.is_none() {
+            return Err(PlatformError::ResourceError(
                 "No render target available".to_string(),
-            ))
+            ));
         }
+        let key = Self::color_key(color);
+        if let Some(brush) = self.brush_cache.get(&key) {
+            return Ok(brush.clone());
+        }
+        let render_target = self.render_target.as_ref().unwrap();
+        let d2d_color = D2D1_COLOR_F {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: color.a,
+        };
+        let brush =
+            unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }.map_err(|e| {
+                PlatformError::ResourceError(format!("Failed to create brush: {:?}", e))
+            })?;
+        self.brush_cache.insert(key, brush.clone());
+        Ok(brush)
     }
 
     /// 绘制GDI位图作为背景（从原始代码迁移）
@@ -467,7 +484,6 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-
     fn draw_rectangle(
         &mut self,
         rect: Rectangle,
@@ -521,33 +537,19 @@ impl PlatformRenderer for Direct2DRenderer {
         style: &DrawStyle,
     ) -> std::result::Result<(), Self::Error> {
         // 实现Direct2D的DrawEllipse（从原始代码迁移）
+        // 先创建需要的画刷，避免借用冲突
+        let fill_brush = if let Some(fill_color) = style.fill_color {
+            Some(self.get_or_create_brush(fill_color)?)
+        } else {
+            None
+        };
+        let stroke_brush = if style.stroke_width > 0.0 {
+            Some(self.get_or_create_brush(style.stroke_color)?)
+        } else {
+            None
+        };
+
         if let Some(ref render_target) = self.render_target {
-            // 创建填充画刷
-            let fill_brush = if let Some(fill_color) = style.fill_color {
-                let d2d_color = D2D1_COLOR_F {
-                    r: fill_color.r,
-                    g: fill_color.g,
-                    b: fill_color.b,
-                    a: fill_color.a,
-                };
-                unsafe { render_target.CreateSolidColorBrush(&d2d_color, None).ok() }
-            } else {
-                None
-            };
-
-            // 创建描边画刷
-            let stroke_brush = if style.stroke_width > 0.0 {
-                let d2d_color = D2D1_COLOR_F {
-                    r: style.stroke_color.r,
-                    g: style.stroke_color.g,
-                    b: style.stroke_color.b,
-                    a: style.stroke_color.a,
-                };
-                unsafe { render_target.CreateSolidColorBrush(&d2d_color, None).ok() }
-            } else {
-                None
-            };
-
             // 创建椭圆
             let ellipse = D2D1_ELLIPSE {
                 point: windows_numerics::Vector2 {
@@ -582,31 +584,16 @@ impl PlatformRenderer for Direct2DRenderer {
         style: &DrawStyle,
     ) -> std::result::Result<(), Self::Error> {
         // 实现Direct2D的DrawLine（从原始代码迁移）
+        // 先取画刷，避免与render_target借用冲突
+        let brush = self.get_or_create_brush(style.stroke_color)?;
         if let Some(ref render_target) = self.render_target {
-            // 创建描边画刷
-            let d2d_color = D2D1_COLOR_F {
-                r: style.stroke_color.r,
-                g: style.stroke_color.g,
-                b: style.stroke_color.b,
-                a: style.stroke_color.a,
+            let start_point = windows_numerics::Vector2 {
+                X: start.x,
+                Y: start.y,
             };
-
-            if let Ok(brush) = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) } {
-                let start_point = windows_numerics::Vector2 {
-                    X: start.x,
-                    Y: start.y,
-                };
-                let end_point = windows_numerics::Vector2 { X: end.x, Y: end.y };
-
-                unsafe {
-                    render_target.DrawLine(
-                        start_point,
-                        end_point,
-                        &brush,
-                        style.stroke_width,
-                        None,
-                    );
-                }
+            let end_point = windows_numerics::Vector2 { X: end.x, Y: end.y };
+            unsafe {
+                render_target.DrawLine(start_point, end_point, &brush, style.stroke_width, None);
             }
         }
         Ok(())
@@ -682,61 +669,53 @@ impl PlatformRenderer for Direct2DRenderer {
         style: &TextStyle,
     ) -> std::result::Result<(), Self::Error> {
         // 实现Direct2D的DrawText（从原始代码迁移）
-        if let Some(ref render_target) = self.render_target {
-            if let Some(ref dwrite_factory) = self.dwrite_factory {
-                // 创建文本格式
-                let text_format = unsafe {
-                    dwrite_factory
-                        .CreateTextFormat(
-                            w!("Microsoft YaHei"),
-                            None,
-                            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
-                            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
-                            windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
-                            style.font_size,
-                            w!(""),
-                        )
-                        .map_err(|e| {
-                            PlatformError::RenderError(format!(
-                                "Failed to create text format: {:?}",
-                                e
-                            ))
-                        })?
-                };
+        if self.render_target.is_none() || self.dwrite_factory.is_none() {
+            return Ok(());
+        }
+        let _render_target = self.render_target.as_ref().unwrap();
+        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        // 创建文本格式
+        let text_format = unsafe {
+            dwrite_factory
+                .CreateTextFormat(
+                    w!("Microsoft YaHei"),
+                    None,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
+                    style.font_size,
+                    w!(""),
+                )
+                .map_err(|e| {
+                    PlatformError::RenderError(format!("Failed to create text format: {:?}", e))
+                })?
+        };
 
-                // 创建文本画刷
-                let d2d_color = D2D1_COLOR_F {
-                    r: style.color.r,
-                    g: style.color.g,
-                    b: style.color.b,
-                    a: style.color.a,
-                };
+        // 创建文本布局矩形
+        let text_rect = D2D_RECT_F {
+            left: position.x,
+            top: position.y,
+            right: position.x + 1000.0,
+            bottom: position.y + style.font_size * 2.0,
+        };
 
-                if let Ok(brush) = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }
-                {
-                    // 创建文本布局矩形
-                    let text_rect = D2D_RECT_F {
-                        left: position.x,
-                        top: position.y,
-                        right: position.x + 1000.0, // 足够大的宽度
-                        bottom: position.y + style.font_size * 2.0, // 足够的高度
-                    };
+        // 转换文本为UTF-16
+        let text_utf16: Vec<u16> = text.encode_utf16().collect();
 
-                    // 转换文本为UTF-16
-                    let text_utf16: Vec<u16> = text.encode_utf16().collect();
+        // 获取画刷后再用，避免借用冲突
+        let brush = self.get_or_create_brush(style.color)?;
 
-                    unsafe {
-                        render_target.DrawText(
-                            &text_utf16,
-                            &text_format,
-                            &text_rect,
-                            &brush,
-                            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                            windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-                        );
-                    }
-                }
-            }
+        // 为避免同时借用self和render_target，改为重新获取render_target局部变量
+        let rt = self.render_target.as_ref().unwrap();
+        unsafe {
+            rt.DrawText(
+                &text_utf16,
+                &text_format,
+                &text_rect,
+                &brush,
+                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+            );
         }
         Ok(())
     }

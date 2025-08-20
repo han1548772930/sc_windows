@@ -10,28 +10,13 @@ use windows::Win32::UI::HiDpi::SetProcessDpiAwareness;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// 自定义标题栏常量
-const LEFTEXTENDWIDTH: i32 = 0;
-const RIGHTEXTENDWIDTH: i32 = 0;
-const BOTTOMEXTENDWIDTH: i32 = 0;
-const TOPEXTENDWIDTH: i32 = 60; // 标准标题栏高度
-const TOPEXTENDWIDTHMAX: i32 = 70; // 最大化时的标题栏高度（更大以补偿偏移）
-const MAXIMIZE_OFFSET: i32 = 15; // 最大化时的偏移量
-
-// SVG 图标常量
-const ICON_SIZE: i32 = 24; // 图标大小
-const ICON_SPACING: i32 = 20; // 图标间距
-const ICON_START_X: i32 = 12; // 图标起始位置 - 左对齐
-const ICON_HOVER_PADDING: i32 = 8; // 图标悬停背景padding
-const ICON_CLICK_PADDING: i32 = 16; // 图标点击检测区域padding
-const ICON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE1, 0xF3, 0xFF); // 悬停背景颜色（浅蓝色）
-const ICON_HOVER_RADIUS: f32 = 6.0; // 悬停背景圆角半径
-
-// 标题栏按钮常量
-const TITLE_BAR_BUTTON_WIDTH: i32 = 70; // 标题栏按钮宽度
-const TITLE_BAR_BUTTON_HOVER_PADDING: i32 = 20; // 标题栏按钮悬停背景的padding
-const TITLE_BAR_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE0, 0xE0, 0xE0); // 标题栏按钮悬停背景颜色（灰色）
-const CLOSE_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE8, 0x11, 0x23); // 关闭按钮悬停背景颜色（红色）
+// 自定义标题栏/图标常量集中到 crate::constants
+use crate::constants::{
+    BOTTOMEXTENDWIDTH, CLOSE_BUTTON_HOVER_BG_COLOR, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR,
+    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_SPACING, ICON_START_X, LEFTEXTENDWIDTH,
+    MAXIMIZE_OFFSET, RIGHTEXTENDWIDTH, TITLE_BAR_BUTTON_HOVER_BG_COLOR,
+    TITLE_BAR_BUTTON_HOVER_PADDING, TITLE_BAR_BUTTON_WIDTH, TOPEXTENDWIDTH, TOPEXTENDWIDTHMAX,
+};
 
 // SVG 图标结构
 #[derive(Clone)]
@@ -410,8 +395,7 @@ impl OcrResultWindow {
         let is_fullscreen = unsafe {
             let mut window_rect = RECT::default();
             let _ = GetWindowRect(self.hwnd, &mut window_rect);
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
 
             window_rect.left <= 0
                 && window_rect.top <= 0
@@ -1177,8 +1161,7 @@ impl OcrResultWindow {
             let (bitmap, actual_width, actual_height) = Self::create_bitmap_from_data(&image_data)?;
 
             // 获取屏幕尺寸
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
 
             // 右边文字区域宽度（固定350像素）
             let text_area_width = 350;
@@ -1192,10 +1175,10 @@ impl OcrResultWindow {
             // 总窗口宽度
             let window_width = image_area_width + text_area_width + 20; // 中间分隔20像素
 
-            // 使用Windows API获取准确的窗口装饰尺寸
-            let caption_height = GetSystemMetrics(SM_CYCAPTION); // 标题栏高度
-            let border_height = GetSystemMetrics(SM_CYBORDER); // 边框高度
-            let frame_height = GetSystemMetrics(SM_CYFRAME); // 窗口框架高度
+            // 使用平台封装获取准确的窗口装饰尺寸
+            let caption_height = crate::platform::windows::system::get_caption_height();
+            let border_height = crate::platform::windows::system::get_border_height();
+            let frame_height = crate::platform::windows::system::get_frame_height();
 
             // 计算窗口装饰的总高度
             let window_decoration_height =
@@ -1562,8 +1545,8 @@ impl OcrResultWindow {
             let is_fullscreen = {
                 let mut window_rect = RECT::default();
                 let _ = GetWindowRect(self.hwnd, &mut window_rect);
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                let (screen_width, screen_height) =
+                    crate::platform::windows::system::get_screen_size();
 
                 window_rect.left <= 0
                     && window_rect.top <= 0
@@ -2058,8 +2041,8 @@ impl OcrResultWindow {
             let is_fullscreen = {
                 let mut window_rect = RECT::default();
                 let _ = GetWindowRect(self.hwnd, &mut window_rect);
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                let (screen_width, screen_height) =
+                    crate::platform::windows::system::get_screen_size();
 
                 window_rect.left <= 0
                     && window_rect.top <= 0
@@ -2524,8 +2507,8 @@ impl OcrResultWindow {
 
             // 检查窗口是否真正全屏
             let is_fullscreen = {
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                let (screen_width, screen_height) =
+                    crate::platform::windows::system::get_screen_size();
 
                 rc_window.left <= 0
                     && rc_window.top <= 0
@@ -2718,8 +2701,8 @@ impl OcrResultWindow {
                         let is_fullscreen = {
                             let mut window_rect = RECT::default();
                             let _ = GetWindowRect(hwnd, &mut window_rect);
-                            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                            let (screen_width, screen_height) =
+                                crate::platform::windows::system::get_screen_size();
 
                             window_rect.left <= 0
                                 && window_rect.top <= 0
@@ -2871,8 +2854,8 @@ impl OcrResultWindow {
                         let is_fullscreen = {
                             let mut window_rect = RECT::default();
                             let _ = GetWindowRect(hwnd, &mut window_rect);
-                            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                            let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                            let (screen_width, screen_height) =
+                                crate::platform::windows::system::get_screen_size();
 
                             window_rect.left <= 0
                                 && window_rect.top <= 0

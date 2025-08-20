@@ -33,7 +33,10 @@ impl SvgIconManager {
                 ToolbarButton::Rectangle,
                 include_str!("../../icons/square.svg"),
             ),
-            (ToolbarButton::Circle, include_str!("../../icons/circle.svg")),
+            (
+                ToolbarButton::Circle,
+                include_str!("../../icons/circle.svg"),
+            ),
             (ToolbarButton::Pen, include_str!("../../icons/pen.svg")),
             (ToolbarButton::Text, include_str!("../../icons/type.svg")),
             (ToolbarButton::Undo, include_str!("../../icons/undo-2.svg")),
@@ -45,9 +48,15 @@ impl SvgIconManager {
                 ToolbarButton::Languages,
                 include_str!("../../icons/languages.svg"),
             ),
-            (ToolbarButton::Save, include_str!("../../icons/download.svg")),
+            (
+                ToolbarButton::Save,
+                include_str!("../../icons/download.svg"),
+            ),
             (ToolbarButton::Pin, include_str!("../../icons/pin.svg")),
-            (ToolbarButton::Confirm, include_str!("../../icons/check.svg")),
+            (
+                ToolbarButton::Confirm,
+                include_str!("../../icons/check.svg"),
+            ),
             (ToolbarButton::Cancel, include_str!("../../icons/x.svg")),
         ];
 

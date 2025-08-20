@@ -141,3 +141,26 @@ pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, 
         toolbar_bg_color,
     )
 }
+
+// OCR 结果窗口相关常量（从 ocr_result_window.rs 集中至此）
+pub const LEFTEXTENDWIDTH: i32 = 0;
+pub const RIGHTEXTENDWIDTH: i32 = 0;
+pub const BOTTOMEXTENDWIDTH: i32 = 0;
+pub const TOPEXTENDWIDTH: i32 = 60; // 标准标题栏高度
+pub const TOPEXTENDWIDTHMAX: i32 = 70; // 最大化时标题栏高度
+pub const MAXIMIZE_OFFSET: i32 = 15; // 最大化时的偏移量
+
+// SVG 图标常量
+pub const ICON_SIZE: i32 = 24; // 图标大小
+pub const ICON_SPACING: i32 = 20; // 图标间距
+pub const ICON_START_X: i32 = 12; // 图标起始位置 - 左对齐
+pub const ICON_HOVER_PADDING: i32 = 8; // 图标悬停背景 padding
+pub const ICON_CLICK_PADDING: i32 = 16; // 图标点击检测区域 padding
+pub const ICON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE1, 0xF3, 0xFF); // 悬停背景颜色（浅蓝色）
+pub const ICON_HOVER_RADIUS: f32 = 6.0; // 悬停背景圆角半径
+
+// 标题栏按钮常量
+pub const TITLE_BAR_BUTTON_WIDTH: i32 = 70; // 标题栏按钮宽度
+pub const TITLE_BAR_BUTTON_HOVER_PADDING: i32 = 20; // 标题栏按钮悬停背景 padding
+pub const TITLE_BAR_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE0, 0xE0, 0xE0); // 悬停背景颜色（灰色）
+pub const CLOSE_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE8, 0x11, 0x23); // 关闭按钮悬停背景颜色（红色）

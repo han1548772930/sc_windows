@@ -20,5 +20,5 @@ pub use app::App;
 pub use message::{Command, Message};
 pub use types::*;
 
-// 常量定义
-pub const WINDOW_CLASS_NAME: &str = "SC_WINDOWS_NEW";
+// 常量定义统一到 constants.rs
+pub use crate::constants::WINDOW_CLASS_NAME;

@@ -188,9 +188,9 @@ fn main() -> Result<()> {
 
         RegisterClassW(&window_class);
 
-        // 获取屏幕尺寸（与原始程序一致）
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        // 获取屏幕尺寸（集中到platform::windows::system）
+        let (screen_width, screen_height) =
+            sc_windows::platform::windows::system::get_screen_size();
 
         // 创建窗口（与原始程序完全一致）
         let hwnd = CreateWindowExW(
@@ -236,9 +236,9 @@ unsafe extern "system" fn window_proc(
                 // 初始化COM
                 let _ = windows::Win32::System::Com::CoInitialize(None);
 
-                // 获取屏幕尺寸
-                let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                // 获取屏幕尺寸（集中到platform::windows::system）
+                let (screen_width, screen_height) =
+                    sc_windows::platform::windows::system::get_screen_size();
 
                 // 创建并初始化渲染器
                 match Direct2DRenderer::new() {

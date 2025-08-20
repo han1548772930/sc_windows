@@ -65,10 +65,7 @@ impl ScreenshotManager {
         use windows::Win32::Graphics::Gdi::{
             CreateCompatibleBitmap, CreateCompatibleDC, GetDC, ReleaseDC, SelectObject,
         };
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-
-        let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-        let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
 
         // 初始化GDI资源（从原始代码迁移）
         let (screenshot_dc, gdi_screenshot_bitmap) = unsafe {
@@ -278,13 +275,9 @@ impl ScreenshotManager {
         // 工具状态由Drawing模块管理
 
         // 重置屏幕尺寸（如果之前被pin功能修改过）
-        unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-            };
-            self.screen_width = GetSystemMetrics(SM_CXSCREEN);
-            self.screen_height = GetSystemMetrics(SM_CYSCREEN);
-        }
+        let (w, h) = crate::platform::windows::system::get_screen_size();
+        self.screen_width = w;
+        self.screen_height = h;
 
         // 重置UI隐藏状态
         self.hide_ui_for_capture = false;
@@ -321,12 +314,10 @@ impl ScreenshotManager {
             BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
             ReleaseDC, SRCCOPY, SelectObject,
         };
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-
         unsafe {
             // 获取当前屏幕尺寸（可能在pin后发生了变化）
-            let current_screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let current_screen_height = GetSystemMetrics(SM_CYSCREEN);
+            let (current_screen_width, current_screen_height) =
+                crate::platform::windows::system::get_screen_size();
 
             // 如果屏幕尺寸发生了变化，需要重新创建资源
             if current_screen_width != self.screen_width

@@ -346,9 +346,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
         }
 
         // 修正全屏窗口的矩形坐标，确保不超出屏幕边界（从原始代码迁移）
-        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
 
         // 限制窗口矩形在屏幕范围内
         rect.left = rect.left.max(0);

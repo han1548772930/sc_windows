@@ -60,9 +60,6 @@ impl App {
 
         // 重置UI管理器状态
         self.ui.reset_state();
-
-        // 重置系统管理器状态
-        self.system.reset_state();
     }
 
     /// 获取当前的GDI截图位图句柄（用于简单显示）
@@ -566,10 +563,7 @@ impl App {
         hwnd: windows::Win32::Foundation::HWND,
     ) -> Result<(), AppError> {
         use windows::Win32::Foundation::{HANDLE, HWND};
-        use windows::Win32::Graphics::Gdi::{
-            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            ReleaseDC, SRCCOPY, SelectObject,
-        };
+        use windows::Win32::Graphics::Gdi::DeleteObject;
         use windows::Win32::System::DataExchange::{
             CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
         };
@@ -593,23 +587,14 @@ impl App {
             }
 
             // 截取屏幕的完整选择区域（包含所有内容但不包含UI元素）
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-            let mem_dc = CreateCompatibleDC(Some(screen_dc));
-            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-            let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-            // 从屏幕复制选择区域
-            let _ = BitBlt(
-                mem_dc,
-                0,
-                0,
-                width,
-                height,
-                Some(screen_dc),
-                selection_rect.left,
-                selection_rect.top,
-                SRCCOPY,
-            );
+            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
+                selection_rect,
+            ) {
+                Ok(b) => b,
+                Err(_) => {
+                    return Ok(());
+                }
+            };
 
             // 复制到剪贴板（CF_BITMAP = 2）
             if OpenClipboard(Some(HWND(std::ptr::null_mut()))).is_ok() {
@@ -619,12 +604,6 @@ impl App {
             } else {
                 let _ = DeleteObject(bitmap.into());
             }
-
-            // 清理DC资源（位图句柄如已放入剪贴板，则由系统管理）
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteDC(mem_dc);
-            // 释放屏幕DC
-            let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
 
             Ok(())
         };
@@ -640,11 +619,7 @@ impl App {
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
     ) -> Result<bool, AppError> {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Gdi::{
-            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            ReleaseDC, SRCCOPY, SelectObject,
-        };
+        use windows::Win32::Graphics::Gdi::DeleteObject;
 
         // 没有有效选择则直接返回
         let Some(selection_rect) = self.screenshot.get_selection() else {
@@ -667,32 +642,23 @@ impl App {
         self.screenshot.hide_ui_for_capture(hwnd);
 
         let result = unsafe {
-            // 截取屏幕选择区域
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-            let mem_dc = CreateCompatibleDC(Some(screen_dc));
-            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-            let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-            // 从屏幕复制选择区域
-            let _ = BitBlt(
-                mem_dc,
-                0,
-                0,
-                width,
-                height,
-                Some(screen_dc),
-                selection_rect.left,
-                selection_rect.top,
-                SRCCOPY,
-            );
+            // 截取屏幕选择区域（通过平台GDI工具）
+            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
+                selection_rect,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Err(AppError::InitError(format!(
+                        "Failed to capture region: {:?}",
+                        e
+                    )));
+                }
+            };
 
             // 保存位图到文件（使用备份代码中的实现）
             let save_res = Self::save_bitmap_to_file_internal(bitmap, &file_path, width, height);
 
-            // 清理资源
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteDC(mem_dc);
-            let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+            // 清理资源（保存后释放位图）
             let _ = DeleteObject(bitmap.into());
 
             save_res
@@ -936,23 +902,17 @@ impl App {
 
         unsafe {
             // 获取选择区域的屏幕截图（包含绘图内容）
-            let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-            let mem_dc = CreateCompatibleDC(Some(screen_dc));
-            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-            let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-            // 直接从屏幕复制选择区域（包含窗口内容和绘图）
-            let _ = BitBlt(
-                mem_dc,
-                0,
-                0,
-                width,
-                height,
-                Some(screen_dc),
-                selection_rect.left,
-                selection_rect.top,
-                SRCCOPY,
-            );
+            let bitmap = match crate::platform::windows::gdi::capture_screen_region_to_hbitmap(
+                selection_rect,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Err(AppError::InitError(format!(
+                        "Failed to capture pin image: {:?}",
+                        e
+                    )));
+                }
+            };
 
             // 注册固钉窗口类
             let hinstance = GetModuleHandleW(None).map_err(|e| {
@@ -1002,11 +962,6 @@ impl App {
 
             // 将位图句柄存储到窗口数据中
             SetWindowLongPtrW(pin_hwnd, GWLP_USERDATA, bitmap.0 as isize);
-
-            // 清理临时DC资源，但保留位图
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteDC(mem_dc);
-            ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
 
             // 显示固钉窗口
             let _ = ShowWindow(pin_hwnd, SW_SHOW);

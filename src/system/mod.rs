@@ -37,13 +37,6 @@ impl SystemManager {
         })
     }
 
-    /// 重置状态（从原始reset_to_initial_state迁移）
-    pub fn reset_state(&mut self) {
-        // 系统管理器通常不需要重置状态
-        // 托盘、热键、窗口检测等都是持久性的
-        // OCR状态保持不变
-    }
-
     /// 处理系统消息
     pub fn handle_message(&mut self, message: SystemMessage) -> Vec<Command> {
         match message {
