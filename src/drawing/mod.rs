@@ -1504,7 +1504,7 @@ impl DrawingManager {
         let mut new_element = DrawingElement::new(self.current_tool);
         if self.current_tool == DrawingTool::Text {
             // 文本元素使用字体颜色与字体设置（修复：使用正确的font_color而不是text_color）
-            let settings = crate::simple_settings::SimpleSettings::load();
+            let settings = crate::settings::Settings::load();
             new_element.color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
                 r: settings.font_color.0 as f32 / 255.0,
                 g: settings.font_color.1 as f32 / 255.0,
@@ -1835,7 +1835,7 @@ impl DrawingManager {
             .push(windows::Win32::Foundation::POINT { x, y });
 
         // 使用设置中的字体大小、颜色和样式（仅在创建时读取一次并保存到元素上）
-        let settings = crate::simple_settings::SimpleSettings::load();
+        let settings = crate::settings::Settings::load();
         text_element.color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
             r: settings.font_color.0 as f32 / 255.0,
             g: settings.font_color.1 as f32 / 255.0,

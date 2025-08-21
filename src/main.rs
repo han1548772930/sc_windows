@@ -3,7 +3,7 @@
 // 使用重构后的模块化架构，严格按照原始代码逻辑
 
 use sc_windows::platform::windows::Direct2DRenderer;
-use sc_windows::simple_settings::SimpleSettings;
+use sc_windows::settings::Settings;
 use sc_windows::utils::to_wide_chars;
 use sc_windows::{App, Command, WINDOW_CLASS_NAME};
 
@@ -130,7 +130,7 @@ unsafe extern "system" fn window_proc(
                                 app.start_async_ocr_check(hwnd);
 
                                 // 从设置中读取热键配置并注册全局热键
-                                let settings = SimpleSettings::load();
+                                let settings = Settings::load();
                                 let hotkey_id = 1001;
                                 let _ = RegisterHotKey(
                                     Some(hwnd),

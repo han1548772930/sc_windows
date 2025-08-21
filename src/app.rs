@@ -10,6 +10,7 @@ use crate::drawing::DrawingManager;
 use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::screenshot::ScreenshotManager;
+use crate::settings::SettingsWindow;
 use crate::system::SystemManager;
 use crate::ui::UIManager;
 
@@ -408,8 +409,8 @@ impl App {
                 vec![]
             }
             Command::ShowSettings => {
-                // 显示设置窗口（从原始代码迁移）
-                let _ = crate::simple_settings::show_settings_window();
+                // 显示设置窗口（使用传统的 Win32 实现）
+                let _ = SettingsWindow::show(windows::Win32::Foundation::HWND::default());
                 vec![]
             }
             Command::TakeScreenshot => {

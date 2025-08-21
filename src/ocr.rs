@@ -310,7 +310,7 @@ impl PaddleOcrEngine {
     /// 根据用户设置选择对应的OCR语言配置
     fn get_language_config_path() -> Option<PathBuf> {
         // 从设置中读取用户选择的语言
-        let settings = crate::simple_settings::SimpleSettings::load();
+        let settings = crate::settings::Settings::load();
         let language = &settings.ocr_language;
 
         let config_path = match language.as_str() {

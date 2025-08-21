@@ -26,7 +26,7 @@ impl HotkeyManager {
     /// 注册全局热键（从原始代码迁移）
     pub fn register_hotkeys(&mut self, hwnd: HWND) -> Result<(), SystemError> {
         // 从设置中读取热键配置
-        let settings = crate::simple_settings::SimpleSettings::load();
+        let settings = crate::settings::Settings::load();
         let hotkey_id = 1001;
 
         // 注册全局热键

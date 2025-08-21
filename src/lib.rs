@@ -10,11 +10,12 @@ pub mod platform;
 
 pub mod interaction;
 pub mod screenshot;
-pub mod simple_settings; // 从原始代码复制
+pub mod settings;
 pub mod system;
 pub mod types;
 pub mod ui;
 pub mod utils;
+// pub mod winrt_settings_window; // WinRT 设置窗口
 
 // 重新导出主要类型
 pub use app::App;

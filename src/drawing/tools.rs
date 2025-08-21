@@ -40,13 +40,13 @@ impl ToolManager {
 
     /// 获取画笔粗细（直接从设置读取）
     pub fn get_line_thickness(&self) -> f32 {
-        let settings = crate::simple_settings::SimpleSettings::load();
+        let settings = crate::settings::Settings::load();
         settings.line_thickness
     }
 
     /// 获取文字大小（直接从设置读取）
     pub fn get_text_size(&self) -> f32 {
-        let settings = crate::simple_settings::SimpleSettings::load();
+        let settings = crate::settings::Settings::load();
         settings.font_size
     }
 

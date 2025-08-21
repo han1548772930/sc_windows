@@ -104,7 +104,7 @@ pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压
 
 /// 从设置文件加载颜色，如果加载失败则使用默认值
 pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
-    let settings = crate::simple_settings::SimpleSettings::load();
+    let settings = crate::settings::Settings::load();
 
     // 绘图颜色（用于画笔、矩形、圆形、箭头等）
     let drawing_color = D2D1_COLOR_F {

@@ -136,7 +136,7 @@ impl TrayManager {
                 }
                 1002 => {
                     // 设置
-                    let _ = crate::simple_settings::show_settings_window();
+                    let _ = crate::settings::show_settings_window();
                 }
                 1003 => {
                     // 退出
