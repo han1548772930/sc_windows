@@ -1,7 +1,10 @@
 // SC Windows - 新架构主程序
 //
 // 使用重构后的模块化架构，严格按照原始代码逻辑
-
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 use sc_windows::platform::windows::Direct2DRenderer;
 use sc_windows::settings::Settings;
 use sc_windows::utils::to_wide_chars;
