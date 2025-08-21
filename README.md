@@ -2,6 +2,8 @@
 
 一个功能丰富的Windows原生截图工具，支持截图、标注、OCR文字识别等功能。
 
+> 🚀 **最新更新**: 项目已完成重大架构重构，从单体应用升级为现代化的模块化架构，提供更好的代码组织、可维护性和扩展性。
+
 ## ✨ 主要功能
 
 ### 📸 截图功能
@@ -70,7 +72,17 @@
 └── README.md                        # 说明文档
 
 开发环境文件结构/
-├── src/                             # 主程序源代码
+├── src/                             # 主程序源代码（模块化架构）
+│   ├── app.rs                       # 应用程序协调器
+│   ├── message.rs                   # 消息系统
+│   ├── drawing/                     # 绘图功能模块
+│   ├── platform/                    # 平台抽象层
+│   ├── screenshot/                  # 截图管理模块
+│   ├── system/                      # 系统功能模块
+│   ├── ui/                          # UI组件模块
+│   ├── interaction/                 # 交互处理模块
+│   └── utils/                       # 工具函数模块
+├── src_backup/                      # 旧版本源代码备份
 ├── paddleocr/                       # 本地PaddleOCR库
 │   ├── src/lib.rs                   # PaddleOCR Rust封装
 │   └── Cargo.toml                   # 本地库配置
@@ -119,13 +131,25 @@
 
 ## 🛠️ 技术特性
 
+### 🏗️ 现代化架构设计
+- **模块化架构**: 采用领域驱动设计（DDD），按功能域分离模块
+- **应用协调器模式**: 使用`App`结构体统一协调各个业务领域
+- **消息驱动架构**: 通过`Command`/`Message`系统实现组件解耦
+- **平台抽象层**: `PlatformRenderer` trait支持未来跨平台扩展
+- **关注点分离**: 每个模块专注于特定功能域，提高代码可维护性
+
+### 🔧 核心技术栈
 - **Rust语言**: 使用Rust开发，性能优异，内存安全
 - **Windows API**: 直接调用Windows原生API，系统集成度高
 - **Direct2D**: 使用Direct2D进行高性能图形渲染
+- **异步运行时**: 基于tokio的异步处理能力
+
+### 🎯 功能特性
 - **PaddleOCR集成**: 集成PaddleOCR-json引擎，高精度文字识别
 - **异步处理**: OCR引擎异步启动和状态检查，不阻塞UI
 - **智能状态管理**: 按钮状态根据OCR引擎可用性自动更新
 - **SVG图标**: 使用SVG矢量图标，界面清晰美观
+- **统一错误处理**: 使用anyhow库提供一致的错误处理体验
 
 ## 📋 系统要求
 
@@ -137,6 +161,12 @@
 
 ## 🔧 编译说明
 
+### 环境要求
+- **Rust**: 1.70+ (支持2024 edition)
+- **Windows SDK**: Windows 10 SDK 或更高版本
+- **Visual Studio**: 推荐 Visual Studio 2019/2022 或 Build Tools
+
+### 编译步骤
 ```bash
 # 克隆项目
 git clone https://github.com/han1548772930/sc_windows.git
@@ -161,9 +191,47 @@ cargo build --release
 
 本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
+## 👨‍💻 开发者指南
+
+### 🏗️ 架构概览
+
+本项目采用现代化的模块化架构设计，从传统的单体应用重构为领域驱动的模块化系统：
+
+#### 核心组件
+- **App (app.rs)**: 应用程序协调器，负责统一管理各个业务领域
+- **Message System (message.rs)**: 消息驱动架构，通过Command/Message实现组件解耦
+- **Platform Layer (platform/)**: 平台抽象层，支持未来跨平台扩展
+
+#### 业务模块
+- **Screenshot (screenshot/)**: 截图捕获和管理
+- **Drawing (drawing/)**: 绘图工具和图形渲染
+- **System (system/)**: 系统集成功能（热键、托盘、窗口检测）
+- **UI (ui/)**: 用户界面组件
+- **Interaction (interaction/)**: 用户交互处理
+
+#### 设计原则
+1. **单一职责**: 每个模块专注于特定功能域
+2. **依赖注入**: 通过trait抽象实现松耦合
+3. **消息驱动**: 使用Command模式协调组件交互
+4. **错误处理**: 统一的错误处理和传播机制
+
+### 🔄 架构迁移
+
+项目经历了重大架构重构：
+- **旧架构**: 单体文件结构，功能混合
+- **新架构**: 模块化目录结构，关注点分离
+- **迁移策略**: 保持核心功能不变，重构代码组织
+
 ## 🤝 贡献
 
 欢迎提交Issue和Pull Request来改进这个项目！
+
+### 贡献指南
+1. Fork 项目
+2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
 
 ## ⚠️ 重要说明
 

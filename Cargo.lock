@@ -1016,9 +1016,7 @@ dependencies = [
  "tokio",
  "usvg",
  "windows",
- "windows-core",
  "windows-numerics",
- "winui3",
 ]
 
 [[package]]
@@ -1941,18 +1939,6 @@ checksum = "a277a57398d4bfa075df44f501a17cfdf8542d224f0d36095a2adc7aee4ef0a5"
 dependencies = [
  "cfg-if",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "winui3"
-version = "0.107.0"
-source = "git+https://github.com/Alovchin91/winui3-rs.git#83cb3eb67e34f2984c4c3c9b0a0e808d593aa774"
-dependencies = [
- "windows",
- "windows-collections",
- "windows-core",
- "windows-future",
- "windows-numerics",
 ]
 
 [[package]]

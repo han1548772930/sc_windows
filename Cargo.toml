@@ -18,12 +18,12 @@ paddleocr = { path = "paddleocr" }
 base64 = "0.21"
 reqwest = { version = "0.11", features = ["json"] }
 
-windows-core = "0.61.2"
-# cppwinrt = "0.3.2"
+# windows-core = "0.61.2"
 
-[dependencies.winui3]
-git = "https://github.com/Alovchin91/winui3-rs.git"
-features = ["XamlApp", "XamlNavigation"]
+
+# [dependencies.winui3]
+# git = "https://github.com/Alovchin91/winui3-rs.git"
+# features = ["XamlApp", "XamlNavigation"]
 
 
 [target.'cfg(windows)'.dependencies]
