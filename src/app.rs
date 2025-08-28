@@ -349,7 +349,9 @@ impl App {
             }
             Command::ShowOverlay => {
                 // 显示覆盖层（截图成功）
-                // 这个命令在热键处理中已经处理了
+                // 覆盖层显示时再次异步预热OCR引擎，避免后续再次使用时冷启动卡顿
+                crate::ocr::PaddleOcrEngine::start_ocr_engine_async();
+                self.start_async_ocr_check(hwnd);
                 vec![]
             }
             Command::HideOverlay => {
@@ -1007,10 +1009,10 @@ impl App {
         self.drawing.can_undo()
     }
 
-    /// 检查OCR引擎是否可用（从原始代码迁移）
+    /// 检查OCR引擎是否可用（非阻塞，基于缓存状态）
     pub fn is_ocr_engine_available(&self) -> bool {
-        // 使用原始代码的OCR引擎状态检查
-        crate::ocr::PaddleOcrEngine::is_engine_available()
+        // 使用 SystemManager 中缓存的引擎可用状态，避免阻塞 UI
+        self.system.ocr_is_available()
     }
 
     /// 检查工具栏按钮是否应该被禁用（从原始代码迁移）

@@ -130,6 +130,11 @@ impl SystemManager {
         // 可以在这里添加状态更新后的其他逻辑
     }
 
+    /// 查询OCR引擎可用性缓存（供UI非阻塞使用）
+    pub fn ocr_is_available(&self) -> bool {
+        self.ocr.is_available()
+    }
+
     /// 从选择区域识别文本（委托给OcrManager）
     pub fn recognize_text_from_selection(
         &mut self,

@@ -43,7 +43,6 @@ struct MARGINS {
 /// OCR 结果显示窗口
 pub struct OcrResultWindow {
     hwnd: HWND,
-    ocr_results: Vec<OcrResult>,
     image_bitmap: Option<HBITMAP>,
     image_width: i32,
     image_height: i32,
@@ -78,7 +77,11 @@ pub struct OcrResultWindow {
     selection_end_pixel: Option<(i32, i32)>,   // 选择结束的像素位置
     last_click_time: std::time::Instant,       // 上次点击时间，用于双击检测
     last_click_pos: Option<(i32, i32)>,        // 上次点击位置
-    hovered_icon: Option<String>,              // 当前悬停的图标名称
+
+    // 置顶/Pin 状态与激活图标
+    is_pinned: bool,                          // 是否置顶
+    pin_active_bitmap: Option<HBITMAP>,       // Pin 激活（绿色）普通位图
+    pin_active_hover_bitmap: Option<HBITMAP>, // Pin 激活（绿色）悬停位图
 }
 
 impl OcrResultWindow {
@@ -119,6 +122,14 @@ impl OcrResultWindow {
                 }
             }
             self.left_icons_cache = None;
+
+            // 清理 Pin 激活位图
+            if let Some(bmp) = self.pin_active_bitmap.take() {
+                let _ = DeleteObject(bmp.into());
+            }
+            if let Some(bmp) = self.pin_active_hover_bitmap.take() {
+                let _ = DeleteObject(bmp.into());
+            }
         }
     }
     /// 检查并创建内容缓冲区（仅在尺寸变化时重建）
@@ -323,18 +334,7 @@ impl OcrResultWindow {
 
     /// 加载所有SVG图标并转换为位图
     fn load_all_svg_icons() -> Vec<SvgIcon> {
-        let svg_files = vec![
-            "pin.svg",
-            "circle.svg",
-            "move-up-right.svg",
-            "pen.svg",
-            "extracttext.svg",
-            "languages.svg",
-            "download.svg",
-            "type.svg",
-            "undo-2.svg",
-            "check.svg",
-        ];
+        let svg_files = vec!["pin.svg"];
 
         let mut icons = Vec::new();
 
@@ -1072,6 +1072,210 @@ impl OcrResultWindow {
         }
     }
 
+    /// 加载带指定颜色的SVG位图（用于Pin激活为绿色）
+    fn load_colored_pin_bitmaps(
+        filename: &str,
+        size: i32,
+        icon_rgb: (u8, u8, u8),
+    ) -> Option<(HBITMAP, HBITMAP)> {
+        unsafe {
+            let svg_path = format!("icons/{}", filename);
+            let svg_data = std::fs::read_to_string(&svg_path).ok()?;
+            let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default()).ok()?;
+
+            let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            let svg_size = tree.size();
+            let render_ts = tiny_skia::Transform::from_scale(
+                size as f32 / svg_size.width(),
+                size as f32 / svg_size.height(),
+            );
+            resvg::render(&tree, render_ts, &mut pixmap.as_mut());
+
+            let screen_dc = GetDC(None);
+
+            // 普通状态（透明背景） + 绿色图标
+            let normal_bitmap = OcrResultWindow::create_transparent_icon_bitmap_colored(
+                &screen_dc, &pixmap, size, icon_rgb,
+            )?;
+
+            // 悬停状态（浅蓝背景） + 绿色图标
+            let hover_bitmap = OcrResultWindow::create_icon_bitmap_colored(
+                &screen_dc,
+                &pixmap,
+                size,
+                ICON_HOVER_BG_COLOR,
+                icon_rgb,
+            )?;
+
+            let _ = ReleaseDC(None, screen_dc);
+
+            Some((normal_bitmap, hover_bitmap))
+        }
+    }
+
+    /// 创建带指定背景色且图标为指定颜色的位图（用于hover）
+    fn create_icon_bitmap_colored(
+        screen_dc: &HDC,
+        pixmap: &tiny_skia::Pixmap,
+        size: i32,
+        bg_color: (u8, u8, u8),
+        icon_rgb: (u8, u8, u8),
+    ) -> Option<HBITMAP> {
+        unsafe {
+            let padding = ICON_HOVER_PADDING;
+            let total_size = size + padding * 2;
+            let bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: total_size,
+                    biHeight: -total_size,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
+            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(
+                Some(*screen_dc),
+                &bitmap_info,
+                DIB_RGB_COLORS,
+                &mut bits_ptr,
+                None,
+                0,
+            )
+            .ok()?;
+
+            let pixel_data = pixmap.data();
+            let bits_slice = std::slice::from_raw_parts_mut(
+                bits_ptr as *mut u8,
+                (total_size * total_size * 4) as usize,
+            );
+
+            // 背景（带圆角）
+            let radius = ICON_HOVER_RADIUS;
+            for y in 0..total_size {
+                for x in 0..total_size {
+                    let dst_idx = (y * total_size + x) as usize * 4;
+                    let in_rounded_rect = OcrResultWindow::is_point_in_rounded_rect(
+                        x as f32,
+                        y as f32,
+                        total_size as f32,
+                        total_size as f32,
+                        radius,
+                    );
+                    if in_rounded_rect {
+                        bits_slice[dst_idx] = bg_color.2;
+                        bits_slice[dst_idx + 1] = bg_color.1;
+                        bits_slice[dst_idx + 2] = bg_color.0;
+                        bits_slice[dst_idx + 3] = 255;
+                    } else {
+                        // 标题栏背景
+                        bits_slice[dst_idx] = 0xED;
+                        bits_slice[dst_idx + 1] = 0xED;
+                        bits_slice[dst_idx + 2] = 0xED;
+                        bits_slice[dst_idx + 3] = 255;
+                    }
+                }
+            }
+
+            // 图标（居中，使用指定颜色）
+            for y in 0..size {
+                for x in 0..size {
+                    let src_idx = (y * size + x) as usize * 4;
+                    let dst_x = x + padding;
+                    let dst_y = y + padding;
+                    let dst_idx = (dst_y * total_size + dst_x) as usize * 4;
+                    if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
+                        let alpha = pixel_data[src_idx + 3];
+                        if alpha > 0 {
+                            bits_slice[dst_idx] = icon_rgb.2;
+                            bits_slice[dst_idx + 1] = icon_rgb.1;
+                            bits_slice[dst_idx + 2] = icon_rgb.0;
+                            bits_slice[dst_idx + 3] = alpha;
+                        }
+                    }
+                }
+            }
+
+            Some(bitmap)
+        }
+    }
+
+    /// 创建透明背景且图标为指定颜色的位图（用于普通状态）
+    fn create_transparent_icon_bitmap_colored(
+        screen_dc: &HDC,
+        pixmap: &tiny_skia::Pixmap,
+        size: i32,
+        icon_rgb: (u8, u8, u8),
+    ) -> Option<HBITMAP> {
+        unsafe {
+            let bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: size,
+                    biHeight: -size,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
+            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(
+                Some(*screen_dc),
+                &bitmap_info,
+                DIB_RGB_COLORS,
+                &mut bits_ptr,
+                None,
+                0,
+            )
+            .ok()?;
+
+            let pixel_data = pixmap.data();
+            let bits_slice =
+                std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
+
+            // 填充标题栏背景色
+            for i in 0..(size * size) as usize {
+                let dst_idx = i * 4;
+                bits_slice[dst_idx] = 0xED;
+                bits_slice[dst_idx + 1] = 0xED;
+                bits_slice[dst_idx + 2] = 0xED;
+                bits_slice[dst_idx + 3] = 255;
+            }
+
+            // 绘制图标像素为指定颜色
+            for i in 0..(size * size) as usize {
+                let src_idx = i * 4;
+                let dst_idx = i * 4;
+                if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
+                    let alpha = pixel_data[src_idx + 3];
+
+                    if alpha > 0 {
+                        bits_slice[dst_idx] = icon_rgb.2;
+                        bits_slice[dst_idx + 1] = icon_rgb.1;
+                        bits_slice[dst_idx + 2] = icon_rgb.0;
+                        bits_slice[dst_idx + 3] = alpha;
+                    }
+                }
+            }
+
+            Some(bitmap)
+        }
+    }
+
     /// 创建并显示 OCR 结果窗口
     pub fn show(
         image_data: Vec<u8>,
@@ -1155,12 +1359,18 @@ impl OcrResultWindow {
                 }
             }
 
-            // 创建自定义标题栏窗口样式 - 完全禁用原生的最小化、最大化、关闭按钮
+            // 创建自定义标题栏窗口样式 - 使用无框自绘标题栏（参考test.rs）
             let hwnd = CreateWindowExW(
                 WS_EX_APPWINDOW, // 显示在任务栏
                 class_name,
                 windows::core::w!("识别结果"), // 窗口标题
-                WS_OVERLAPPED | WS_THICKFRAME | WS_VISIBLE | WS_MAXIMIZEBOX | WS_MINIMIZEBOX, // 允许最大化和最小化
+                WS_POPUP
+                    | WS_THICKFRAME
+                    | WS_MINIMIZEBOX
+                    | WS_MAXIMIZEBOX
+                    | WS_SYSMENU
+                    | WS_VISIBLE
+                    | WS_CLIPCHILDREN, // 使用无框样式，保留系统动画所需的样式
                 window_x,
                 window_y,
                 window_width,
@@ -1266,7 +1476,6 @@ impl OcrResultWindow {
             // 创建窗口实例
             let window = Self {
                 hwnd,
-                ocr_results,
                 image_bitmap: Some(bitmap),
                 image_width: width,
                 image_height: height,
@@ -1277,6 +1486,21 @@ impl OcrResultWindow {
                 is_no_text_detected,
                 is_maximized: false,
                 svg_icons,
+
+                // 置顶与激活位图
+                is_pinned: false,
+                pin_active_bitmap: OcrResultWindow::load_colored_pin_bitmaps(
+                    "pin.svg",
+                    ICON_SIZE,
+                    (33, 196, 94),
+                )
+                .map(|(n, _)| n),
+                pin_active_hover_bitmap: OcrResultWindow::load_colored_pin_bitmaps(
+                    "pin.svg",
+                    ICON_SIZE,
+                    (33, 196, 94),
+                )
+                .map(|(_, h)| h),
 
                 // 初始化缓冲相关字段
                 content_buffer: None,
@@ -1301,7 +1525,6 @@ impl OcrResultWindow {
                 selection_end_pixel: None,
                 last_click_time: std::time::Instant::now(),
                 last_click_pos: None,
-                hovered_icon: None,
             };
 
             // 将窗口实例指针存储到窗口数据中
@@ -1779,12 +2002,18 @@ impl OcrResultWindow {
 
                 // 标题文字已移除，保持简洁的标题栏
 
-                // 绘制所有SVG图标到内存DC（包括标题栏按钮）
+                // 绘制所有SVG图标到内存DC（包括标题栏按钮）。Pin 置顶时为绿色
                 for icon in &window.svg_icons {
                     let icon_size = icon.rect.right - icon.rect.left;
 
-                    // 根据悬停状态选择正确的位图
-                    let bitmap_to_use = if icon.hovered {
+                    // 根据悬停状态和是否置顶选择正确的位图（Pin使用绿色激活位图）
+                    let bitmap_to_use = if icon.name == "pin" && window.is_pinned {
+                        if icon.hovered {
+                            window.pin_active_hover_bitmap.unwrap_or(icon.hover_bitmap)
+                        } else {
+                            window.pin_active_bitmap.unwrap_or(icon.bitmap)
+                        }
+                    } else if icon.hovered {
                         icon.hover_bitmap
                     } else {
                         icon.bitmap
@@ -2526,6 +2755,16 @@ impl OcrResultWindow {
     fn app_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
             match msg {
+                // 自绘无框：告诉系统整个区域是客户区，从而隐藏原生标题栏与边框（参考test.rs）
+                WM_NCCALCSIZE => {
+                    if wparam.0 == 1 {
+                        return LRESULT(0);
+                    }
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+                // 自绘无框：拦截非客户区绘制/激活，避免系统重绘（参考test.rs）
+                WM_NCPAINT => LRESULT(0),
+                WM_NCACTIVATE => LRESULT(1),
                 WM_GETMINMAXINFO => {
                     // 参考test.rs的完整实现，确保最大化时正确显示
                     let minmax_info = lparam.0 as *mut MINMAXINFO;
@@ -2603,6 +2842,25 @@ impl OcrResultWindow {
                                     "minus" => {
                                         // 执行最小化
                                         let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                                        return LRESULT(0);
+                                    }
+                                    "pin" => {
+                                        // 切换置顶
+                                        window.is_pinned = !window.is_pinned;
+                                        let _ = SetWindowPos(
+                                            hwnd,
+                                            if window.is_pinned {
+                                                Some(HWND_TOPMOST)
+                                            } else {
+                                                Some(HWND_NOTOPMOST)
+                                            },
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                                        );
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
                                     "square" => {

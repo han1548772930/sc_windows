@@ -89,6 +89,11 @@ impl OcrManager {
         self.engine_available = available;
     }
 
+    /// 查询缓存的OCR引擎可用性（不阻塞，供UI使用）
+    pub fn is_available(&self) -> bool {
+        self.engine_available
+    }
+
     /// 执行OCR识别
     pub fn perform_ocr(&mut self, image_data: &[u8]) -> Result<String, SystemError> {
         if !self.engine_available {

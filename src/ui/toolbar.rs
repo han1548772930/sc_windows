@@ -265,7 +265,6 @@ impl ToolbarManager {
                         render_target.FillRoundedRectangle(&rounded_rect, &bg_brush);
                     }
 
-                   
                     for (button_rect, button_type) in &self.buttons {
                         // 创建按钮画刷
                         // 绘制按钮背景状态 - 只有 hover 时才显示背景（从原始代码迁移）

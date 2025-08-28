@@ -301,6 +301,12 @@ unsafe extern "system" fn window_proc(
                 if let Some(ref mut app) = APP {
                     let available = wparam.0 != 0; // wparam为1表示可用，0表示不可用
                     app.update_ocr_engine_status(available, hwnd);
+                    // 引擎状态变化时同步刷新工具栏，使 OCR 按钮即时启用/禁用
+                    let commands = vec![
+                        sc_windows::message::Command::UpdateToolbar,
+                        sc_windows::message::Command::RequestRedraw,
+                    ];
+                    handle_commands(app, commands, hwnd);
                 }
                 LRESULT(0)
             }

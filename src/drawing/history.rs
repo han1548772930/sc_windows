@@ -61,15 +61,14 @@ impl HistoryManager {
         }
     }
 
-    /// 撤销操作
+    /// 撤销操作（逐步撤销）
+    /// 语义：current_position 始终指向“当前状态之后”的位置，范围 [0..=len]
+    /// - 当 > 0 时，向前移动一格，并返回对应的历史状态
     pub fn undo(&mut self) -> Option<(Vec<DrawingElement>, Option<usize>)> {
-        if self.current_position > 1 {
+        if self.current_position > 0 {
             self.current_position -= 1;
-            let state = &self.history_stack[self.current_position - 1];
+            let state = &self.history_stack[self.current_position];
             Some((state.elements.clone(), state.selected_element))
-        } else if self.current_position == 1 {
-            self.current_position = 0;
-            Some((Vec::new(), None)) // 返回空状态
         } else {
             None
         }
