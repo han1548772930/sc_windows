@@ -12,10 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 // 自定义标题栏/图标常量集中到 crate::constants
 use crate::constants::{
-    BOTTOMEXTENDWIDTH, CLOSE_BUTTON_HOVER_BG_COLOR, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR,
-    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_SPACING, ICON_START_X, LEFTEXTENDWIDTH,
-    MAXIMIZE_OFFSET, RIGHTEXTENDWIDTH, TITLE_BAR_BUTTON_HOVER_BG_COLOR,
-    TITLE_BAR_BUTTON_HOVER_PADDING, TITLE_BAR_BUTTON_WIDTH, TOPEXTENDWIDTH, TOPEXTENDWIDTHMAX,
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR,
+    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_SPACING, ICON_START_X,
+    TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT,
 };
 
 // SVG 图标结构
@@ -339,13 +338,13 @@ impl OcrResultWindow {
 
         let mut icons = Vec::new();
 
-        // 创建左侧的常规图标
+        // 创建左侧的常规图标（简化版本）
         for (i, filename) in svg_files.iter().enumerate() {
             if let Some((normal_bitmap, hover_bitmap)) =
                 Self::load_svg_icon_from_file(filename, ICON_SIZE)
             {
                 let icon_x = ICON_START_X + i as i32 * (ICON_SIZE + ICON_SPACING);
-                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
 
                 icons.push(SvgIcon {
                     name: filename.replace(".svg", "").to_string(),
@@ -367,19 +366,19 @@ impl OcrResultWindow {
         icons
     }
 
-    /// 调整图标位置使其居中（特别是最大化后）
+    /// 调整图标位置使其居中（简化版本，参考test.rs）
     fn center_icons(&mut self) {
         // 重新计算图标位置，确保在标题栏中居中
         for icon in &mut self.svg_icons {
             if !icon.is_title_bar_button {
                 // 对于左侧图标，重新计算Y位置使其居中
-                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
                 let icon_height = icon.rect.bottom - icon.rect.top;
                 icon.rect.top = icon_y;
                 icon.rect.bottom = icon.rect.top + icon_height;
             } else {
                 // 对于标题栏按钮，也重新计算Y位置
-                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
                 let icon_height = icon.rect.bottom - icon.rect.top;
                 icon.rect.top = icon_y;
                 icon.rect.bottom = icon.rect.top + icon_height;
@@ -387,23 +386,9 @@ impl OcrResultWindow {
         }
     }
 
-    /// 更新标题栏按钮状态
+    /// 更新标题栏按钮状态（简化版本，参考test.rs）
     fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
-
-        // 检查是否全屏
-        let is_fullscreen = unsafe {
-            let mut window_rect = RECT::default();
-            let _ = GetWindowRect(self.hwnd, &mut window_rect);
-            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
-
-            window_rect.left <= 0
-                && window_rect.top <= 0
-                && window_rect.right >= screen_width
-                && window_rect.bottom >= screen_height
-        };
-
-        let title_bar_top_offset = 0; // 不再使用偏移量
 
         // 先释放旧的标题栏按钮的位图资源，避免内存泄漏
         unsafe {
@@ -444,11 +429,11 @@ impl OcrResultWindow {
             }
         }
 
-        // 更新所有左侧图标的位置（使用相对坐标）
+        // 更新所有左侧图标的位置（简化版本）
         for icon in &mut self.svg_icons {
             if !icon.is_title_bar_button {
-                // 左侧图标在标题栏内垂直居中（相对坐标）
-                let new_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                // 左侧图标在标题栏内垂直居中
+                let new_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
                 let icon_height = icon.rect.bottom - icon.rect.top;
                 icon.rect.top = new_y;
                 icon.rect.bottom = new_y + icon_height;
@@ -456,23 +441,17 @@ impl OcrResultWindow {
         }
 
         // 创建新的标题栏按钮，根据窗口状态选择合适的按钮
-        let mut title_bar_buttons =
-            Self::create_title_bar_buttons(window_width, title_bar_top_offset, self.is_maximized);
+        let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, self.is_maximized);
 
         self.svg_icons.append(&mut title_bar_buttons);
     }
 
-    /// 创建标题栏按钮（合并版本）
+    /// 创建标题栏按钮（简化版本，参考test.rs）
     ///
     /// # 参数
     /// * `window_width` - 窗口宽度
-    /// * `_title_bar_top_offset` - 标题栏顶部偏移（暂未使用）
     /// * `is_maximized` - 是否为最大化状态
-    fn create_title_bar_buttons(
-        window_width: i32,
-        _title_bar_top_offset: i32,
-        is_maximized: bool,
-    ) -> Vec<SvgIcon> {
+    fn create_title_bar_buttons(window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
         // 根据窗口状态选择按钮文件列表
@@ -492,18 +471,18 @@ impl OcrResultWindow {
             ]
         };
 
-        // 从右到左创建按钮
+        // 从右到左创建按钮（参考test.rs的简单计算方式）
         for (i, filename) in button_files.iter().enumerate() {
             if let Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized)) =
                 Self::load_title_bar_button_from_file(filename)
             {
-                // 按钮位置计算（从右边开始，关闭按钮贴边）
-                let button_x = window_width - (i as i32 + 1) * TITLE_BAR_BUTTON_WIDTH;
+                // 按钮位置计算（参考test.rs）
+                let button_x = window_width - (i as i32 + 1) * BUTTON_WIDTH_OCR;
 
-                // 图标在按钮中心，相对于标题栏的坐标系
-                let icon_x = button_x + (TITLE_BAR_BUTTON_WIDTH - ICON_SIZE) / 2;
-                // 在标题栏内垂直居中（相对坐标，不包含屏幕偏移）
-                let icon_y = (TOPEXTENDWIDTH - ICON_SIZE) / 2;
+                // 图标在按钮中心
+                let icon_x = button_x + (BUTTON_WIDTH_OCR - ICON_SIZE) / 2;
+                // 在标题栏内垂直居中（参考test.rs，top: 0）
+                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
 
                 buttons.push(SvgIcon {
                     name: filename.replace(".svg", "").to_string(),
@@ -583,12 +562,8 @@ impl OcrResultWindow {
             // 左边图像区域宽度
             let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
 
-            // 计算文字显示区域，最大化时使用更大的标题栏高度
-            let title_bar_height = if self.is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
+            // 计算文字显示区域（简化版本）
+            let title_bar_height = TITLE_BAR_HEIGHT;
             let text_padding_left = 20;
             let text_padding_right = 20;
             let text_padding_top = title_bar_height + 15;
@@ -712,11 +687,11 @@ impl OcrResultWindow {
             // 使用标题栏按钮的实际宽度和标题栏高度，撑满标题栏
             // 关闭按钮使用更宽的宽度以便延伸到窗口右边缘
             let button_width = if is_close_button {
-                TITLE_BAR_BUTTON_WIDTH * 2 // 关闭按钮使用更宽的位图
+                BUTTON_WIDTH_OCR * 2 // 关闭按钮使用更宽的位图
             } else {
-                TITLE_BAR_BUTTON_WIDTH
+                BUTTON_WIDTH_OCR
             };
-            let button_height = TOPEXTENDWIDTH; // 使用标题栏高度
+            let button_height = TITLE_BAR_HEIGHT; // 使用标题栏高度
 
             // 创建DIB段位图以支持Alpha通道
             let bitmap_info = BITMAPINFO {
@@ -770,7 +745,7 @@ impl OcrResultWindow {
             // 绘制图标：居中显示
             let icon_x_offset = if is_close_button {
                 // 关闭按钮：在左边部分居中（因为位图比按钮宽）
-                (TITLE_BAR_BUTTON_WIDTH - size) / 2
+                (BUTTON_WIDTH_OCR - size) / 2
             } else {
                 // 其他按钮：正常居中
                 (button_width - size) / 2
@@ -1196,31 +1171,12 @@ impl OcrResultWindow {
                 None,
             )?;
 
-            // 检查窗口是否最大化
-            let is_maximized = {
-                let placement = {
-                    let mut placement = WINDOWPLACEMENT {
-                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-                        ..Default::default()
-                    };
-                    let _ = GetWindowPlacement(hwnd, &mut placement);
-                    placement
-                };
-                placement.showCmd == SW_SHOWMAXIMIZED.0 as u32
-            };
-
-            // 最大化时使用更大的标题栏高度
-            let top_height = if is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
-
+            // 简化的DWM扩展区域设置（参考test.rs的简洁方式）
             let margins = MARGINS {
-                cxLeftWidth: LEFTEXTENDWIDTH,
-                cxRightWidth: RIGHTEXTENDWIDTH,
-                cyTopHeight: top_height,
-                cyBottomHeight: BOTTOMEXTENDWIDTH,
+                cxLeftWidth: 0,
+                cxRightWidth: 0,
+                cyTopHeight: TITLE_BAR_HEIGHT,
+                cyBottomHeight: 0,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
 
@@ -1251,7 +1207,7 @@ impl OcrResultWindow {
             );
 
             // 计算文字显示区域，适应新的标题栏高度
-            let title_bar_height = TOPEXTENDWIDTH; // 使用实际的标题栏高度
+            let title_bar_height = TITLE_BAR_HEIGHT; // 使用实际的标题栏高度
             let text_padding_left = 20; // 左侧padding
             let text_padding_right = 20; // 右侧padding
             let text_padding_top = title_bar_height + 15; // 顶部padding（包含标题栏高度）
@@ -1304,7 +1260,7 @@ impl OcrResultWindow {
 
             // 加载所有SVG图标（普通图标 + 标题栏按钮）
             let mut svg_icons = Self::load_all_svg_icons();
-            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, 0, false); // 初始化时不是最大化
+            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, false); // 初始化时不是最大化
             svg_icons.append(&mut title_bar_buttons);
 
             // 创建窗口实例
@@ -1522,27 +1478,11 @@ impl OcrResultWindow {
                     && window_rect.bottom >= screen_height
             };
 
-            let title_bar_offset = if is_fullscreen { 10 } else { 0 };
-            // 最大化时使用正确的标题栏高度
-            let title_bar_height = if self.is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
-            let actual_content_start = title_bar_height + title_bar_offset;
+            // 简化的标题栏高度（参考test.rs，不使用偏移）
+            let title_bar_height = TITLE_BAR_HEIGHT;
+            let actual_content_start = title_bar_height;
 
-            // 在全屏模式下，填充标题栏和内容区域之间的间隙
-            if is_fullscreen && title_bar_offset > 0 {
-                let gap_brush = CreateSolidBrush(COLORREF(0x00EDEDED)); // 使用标题栏相同的背景色
-                let gap_rect = RECT {
-                    left: 0,
-                    top: TOPEXTENDWIDTH,
-                    right: rect.right,
-                    bottom: actual_content_start,
-                };
-                let _ = FillRect(hdc, &gap_rect, gap_brush);
-                let _ = DeleteObject(gap_brush.into());
-            }
+            // 去掉全屏间隙填充逻辑（参考test.rs的简洁方式）
 
             // 计算内容区域尺寸（去除标题栏和偏移量）
             let content_width = rect.right - rect.left;
@@ -1682,12 +1622,12 @@ impl OcrResultWindow {
                     LRESULT(0)
                 }
                 WM_ACTIVATE => {
-                    // 扩展框架到客户端区域
+                    // 扩展框架到客户端区域（简化版本）
                     let margins = MARGINS {
-                        cxLeftWidth: LEFTEXTENDWIDTH,
-                        cxRightWidth: RIGHTEXTENDWIDTH,
-                        cyTopHeight: TOPEXTENDWIDTH,
-                        cyBottomHeight: BOTTOMEXTENDWIDTH,
+                        cxLeftWidth: 0,
+                        cxRightWidth: 0,
+                        cyTopHeight: TITLE_BAR_HEIGHT,
+                        cyBottomHeight: 0,
                     };
 
                     let _ =
@@ -1758,40 +1698,21 @@ impl OcrResultWindow {
 
             // 获取窗口实例来检查最大化状态
             let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-            let is_maximized = if !window_ptr.is_null() {
+            let _is_maximized = if !window_ptr.is_null() {
                 let window = &*window_ptr;
                 window.is_maximized
             } else {
                 false
             };
 
-            // 计算标题栏的实际绘制位置
-            // 全屏时也从顶部开始绘制，不留空白
-            let _title_bar_top_offset = 0; // 始终从顶部开始
-            // 最大化时使用更大的标题栏高度
-            let actual_title_bar_height = if is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
-
-            // 创建支持Alpha通道的DIB位图，最大化时需要额外的边距
-            let buffer_width = if is_maximized {
-                rect.right + MAXIMIZE_OFFSET * 2
-            } else {
-                rect.right
-            };
-            let buffer_height = if is_maximized {
-                actual_title_bar_height + MAXIMIZE_OFFSET * 2
-            } else {
-                actual_title_bar_height
-            };
+            // 创建支持Alpha通道的DIB位图（简化版本）
+            let buffer_width = rect.right;
 
             let bitmap_info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: buffer_width,
-                    biHeight: -buffer_height, // 使用调整后的高度
+                    biHeight: -TITLE_BAR_HEIGHT, // 使用调整后的高度
                     biPlanes: 1,
                     biBitCount: 32, // 32位支持Alpha通道
                     biCompression: BI_RGB.0,
@@ -1833,7 +1754,7 @@ impl OcrResultWindow {
                 let window = &*window_ptr;
 
                 // 手动填充像素数据，使用预乘Alpha格式
-                let pixel_count = (buffer_width * buffer_height) as usize;
+                let pixel_count = (buffer_width * TITLE_BAR_HEIGHT) as usize;
                 let bits_slice =
                     std::slice::from_raw_parts_mut(bits_ptr as *mut u8, pixel_count * 4);
 
@@ -1874,16 +1795,8 @@ impl OcrResultWindow {
                     let old_icon_bitmap = SelectObject(icon_mem_dc, bitmap_to_use.into());
 
                     if icon.hovered && icon.is_title_bar_button {
-                        // 标题栏按钮hover状态：直接绘制hover位图（包含背景和图标）
-                        let button_width = TITLE_BAR_BUTTON_WIDTH;
-                        let button_height = if is_maximized {
-                            TOPEXTENDWIDTHMAX
-                        } else {
-                            TOPEXTENDWIDTH
-                        };
-
-                        // 计算按钮区域的左边界
-                        let button_left = icon.rect.left - (button_width - icon_size) / 2;
+                        // 计算按钮区域的左边界（简化版本）
+                        let button_left = icon.rect.left - (BUTTON_WIDTH_OCR - icon_size) / 2;
 
                         // 关闭按钮延伸到窗口右边缘，去掉右边间隙
                         let (draw_x, draw_width) = if icon.name == "x" {
@@ -1892,35 +1805,29 @@ impl OcrResultWindow {
                             (button_left, window_right - button_left)
                         } else {
                             // 其他按钮：正常的按钮宽度
-                            (button_left, button_width)
+                            (button_left, BUTTON_WIDTH_OCR)
                         };
 
-                        // 应用最大化时的偏移（与普通状态保持一致）
-                        let offset_x = if is_maximized { -MAXIMIZE_OFFSET } else { 0 }; // 标题栏按钮往左偏移
-                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
-
-                        // 绘制hover位图（已包含背景和图标）
+                        // 绘制hover位图（简化版本，参考test.rs）
                         let _ = BitBlt(
                             mem_dc,
-                            draw_x + offset_x,
-                            offset_y, // 从偏移位置开始绘制
+                            draw_x,
+                            0, // 从顶部开始绘制
                             draw_width,
-                            button_height - offset_y, // 高度需要减去偏移
+                            TITLE_BAR_HEIGHT, // 使用标题栏高度
                             Some(icon_mem_dc),
                             0,
                             0,
                             SRCCOPY,
                         );
                     } else if icon.hovered && !icon.is_title_bar_button {
-                        // 普通图标悬停状态：绘制圆角背景，最大化时保留偏移
                         let padding = ICON_HOVER_PADDING;
                         let total_size = icon_size + padding * 2;
-                        let offset_x = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 左边图标往右偏移
-                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
+
                         let _ = BitBlt(
                             mem_dc,
-                            icon.rect.left - padding + offset_x,
-                            icon.rect.top - padding + offset_y,
+                            icon.rect.left - padding,
+                            icon.rect.top - padding,
                             total_size,
                             total_size,
                             Some(icon_mem_dc),
@@ -1929,21 +1836,10 @@ impl OcrResultWindow {
                             SRCCOPY,
                         );
                     } else {
-                        // 普通状态：最大化时保留必要的偏移（往下和往中间）
-                        let offset_x = if is_maximized {
-                            if icon.is_title_bar_button {
-                                -MAXIMIZE_OFFSET // 右边标题栏按钮往左偏移
-                            } else {
-                                MAXIMIZE_OFFSET // 左边图标往右偏移
-                            }
-                        } else {
-                            0
-                        };
-                        let offset_y = if is_maximized { MAXIMIZE_OFFSET } else { 0 }; // 往下偏移
                         let _ = BitBlt(
                             mem_dc,
-                            icon.rect.left + offset_x,
-                            icon.rect.top + offset_y,
+                            icon.rect.left,
+                            icon.rect.top,
                             icon_size,
                             icon_size,
                             Some(icon_mem_dc),
@@ -1958,25 +1854,15 @@ impl OcrResultWindow {
                 }
             }
 
-            // 最大化时使用更大的绘制高度，但不能超过客户端区域
-            let max_draw_height = if is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
-            // 确保绘制高度不超过客户端区域高度
-            let draw_height = std::cmp::min(max_draw_height, rect.bottom);
-
-            // 标题栏整个不偏移，始终填满整个宽度
-            let draw_x = 0;
-            let draw_y = 0;
+            // 简化的绘制参数（参考test.rs）
+            let draw_height = std::cmp::min(TITLE_BAR_HEIGHT, rect.bottom);
             let draw_width = rect.right;
 
             // 一次性将整个缓冲区复制到屏幕DC，减少闪烁
             let _ = BitBlt(
                 hdc,
-                draw_x,
-                draw_y,
+                0,
+                0,
                 draw_width,
                 draw_height,
                 Some(mem_dc),
@@ -2018,8 +1904,8 @@ impl OcrResultWindow {
                     && window_rect.bottom >= screen_height
             };
 
-            let title_bar_offset = if is_fullscreen { 10 } else { 0 };
-            let actual_content_start = TOPEXTENDWIDTH + title_bar_offset;
+            // 简化版本（参考test.rs，不使用偏移）
+            let actual_content_start = TITLE_BAR_HEIGHT;
 
             // 调整重绘区域，确保从实际内容开始位置开始，避免包含标题栏和间隙区域
             RECT {
@@ -2392,12 +2278,8 @@ impl OcrResultWindow {
     /// 绘制文本区域到指定的DC（用于缓冲区绘制）
     fn draw_text_area_to_dc(&self, hdc: HDC) {
         unsafe {
-            // 计算文本区域在缓冲区中的位置，最大化时使用正确的标题栏高度
-            let title_bar_height = if self.is_maximized {
-                TOPEXTENDWIDTHMAX
-            } else {
-                TOPEXTENDWIDTH
-            };
+            // 计算文本区域在缓冲区中的位置（简化版本）
+            let title_bar_height = TITLE_BAR_HEIGHT;
             let text_rect = RECT {
                 left: self.text_area_rect.left,
                 top: self.text_area_rect.top - title_bar_height, // 减去实际的标题栏高度
@@ -2484,8 +2366,7 @@ impl OcrResultWindow {
                     && rc_window.bottom >= screen_height
             };
 
-            // 计算全屏时的偏移量
-            let title_bar_top_offset = if is_fullscreen { 10 } else { 0 };
+            // 简化版本（参考test.rs，不使用偏移）
 
             // 转换为客户端坐标
             let client_x = pt_mouse_x - rc_window.left;
@@ -2496,20 +2377,18 @@ impl OcrResultWindow {
             if !window_ptr.is_null() {
                 let window = &*window_ptr;
 
-                // 检查是否在标题栏区域（考虑全屏偏移）
-                if client_y >= title_bar_top_offset
-                    && client_y <= (TOPEXTENDWIDTH + title_bar_top_offset)
-                {
+                // 检查是否在标题栏区域（参考test.rs的简洁方式）
+                if client_y >= 0 && client_y < TITLE_BAR_HEIGHT {
                     for icon in &window.svg_icons {
                         let in_click_area = if icon.is_title_bar_button {
                             // 标题栏按钮：使用按钮的完整宽度区域进行点击检测
-                            let button_width = TITLE_BAR_BUTTON_WIDTH;
+                            let button_width = BUTTON_WIDTH_OCR;
                             let button_left = icon.rect.left - (button_width - ICON_SIZE) / 2;
                             let button_right = button_left + button_width;
                             client_x >= button_left
                                 && client_x <= button_right
                                 && client_y >= 0
-                                && client_y <= TOPEXTENDWIDTH
+                                && client_y <= TITLE_BAR_HEIGHT
                         } else {
                             // 普通图标：使用图标矩形区域加padding
                             let click_padding = ICON_CLICK_PADDING;
@@ -2541,7 +2420,7 @@ impl OcrResultWindow {
             let mut f_on_resize_border = false;
 
             // 确定点是否在窗口的顶部或底部
-            if pt_mouse_y >= rc_window.top && pt_mouse_y < rc_window.top + TOPEXTENDWIDTH {
+            if pt_mouse_y >= rc_window.top && pt_mouse_y < rc_window.top + TITLE_BAR_HEIGHT {
                 f_on_resize_border = pt_mouse_y < (rc_window.top - rc_frame.top);
                 u_row = 0;
             } else if pt_mouse_y < rc_window.bottom && pt_mouse_y >= rc_window.bottom - 5
@@ -2648,12 +2527,30 @@ impl OcrResultWindow {
         unsafe {
             match msg {
                 WM_GETMINMAXINFO => {
-                    // 设置窗口最小尺寸为800*500
+                    // 参考test.rs的完整实现，确保最大化时正确显示
                     let minmax_info = lparam.0 as *mut MINMAXINFO;
                     if !minmax_info.is_null() {
                         let info = &mut *minmax_info;
+
+                        // 设置窗口最小尺寸为800*500
                         info.ptMinTrackSize.x = 800;
                         info.ptMinTrackSize.y = 500;
+
+                        // 参考test.rs：设置最大化时的位置和大小为监视器的工作区
+                        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        let mut monitor_info = MONITORINFO {
+                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                            ..Default::default()
+                        };
+                        let _ = GetMonitorInfoW(monitor, &mut monitor_info);
+
+                        // 设置最大化时的位置和大小为监视器的工作区 (不包括任务栏)
+                        info.ptMaxPosition = POINT {
+                            x: monitor_info.rcWork.left,
+                            y: monitor_info.rcWork.top,
+                        };
+                        info.ptMaxSize.x = monitor_info.rcWork.right - monitor_info.rcWork.left;
+                        info.ptMaxSize.y = monitor_info.rcWork.bottom - monitor_info.rcWork.top;
                     }
                     LRESULT(0)
                 }
@@ -2678,29 +2575,26 @@ impl OcrResultWindow {
                                 && window_rect.bottom >= screen_height
                         };
 
-                        // 计算全屏时的偏移量
-                        let title_bar_top_offset = if is_fullscreen { 10 } else { 0 };
+                        // 简化版本（参考test.rs，不使用偏移）
 
                         // 处理SVG图标点击（包括标题栏按钮）
                         for icon in &mut window.svg_icons {
                             let in_click_area = if icon.is_title_bar_button {
                                 // 标题栏按钮：使用按钮的完整宽度区域进行点击检测
-                                let button_width = TITLE_BAR_BUTTON_WIDTH;
+                                let button_width = BUTTON_WIDTH_OCR;
                                 let button_left = icon.rect.left - (button_width - ICON_SIZE) / 2;
                                 let button_right = button_left + button_width;
                                 x >= button_left
                                     && x <= button_right
-                                    && y >= title_bar_top_offset
-                                    && y <= (TOPEXTENDWIDTH + title_bar_top_offset)
+                                    && y >= 0
+                                    && y < TITLE_BAR_HEIGHT
                             } else {
                                 // 普通图标：使用图标矩形区域加padding
                                 let click_padding = ICON_CLICK_PADDING;
                                 x >= (icon.rect.left - click_padding)
                                     && x <= (icon.rect.right + click_padding)
-                                    && y >= (icon.rect.top - click_padding + title_bar_top_offset)
-                                    && y <= (icon.rect.bottom
-                                        + click_padding
-                                        + title_bar_top_offset)
+                                    && y >= (icon.rect.top - click_padding)
+                                    && y <= (icon.rect.bottom + click_padding)
                             };
 
                             if in_click_area {
@@ -2819,7 +2713,7 @@ impl OcrResultWindow {
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
                         // 检查窗口是否真正全屏
-                        let is_fullscreen = {
+                        let _is_fullscreen = {
                             let mut window_rect = RECT::default();
                             let _ = GetWindowRect(hwnd, &mut window_rect);
                             let (screen_width, screen_height) =
@@ -2830,9 +2724,6 @@ impl OcrResultWindow {
                                 && window_rect.right >= screen_width
                                 && window_rect.bottom >= screen_height
                         };
-
-                        // 不再使用偏移量，标题栏始终从顶部开始
-                        let title_bar_top_offset = 0;
 
                         // 启用鼠标跟踪以确保接收到 WM_MOUSELEAVE 消息
                         let mut tme = TRACKMOUSEEVENT {
@@ -2845,62 +2736,29 @@ impl OcrResultWindow {
 
                         let mut needs_repaint = false;
 
-                        // 处理SVG图标悬停 - 考虑全屏时的偏移量和正确的标题栏高度
-                        let title_bar_height = if window.is_maximized {
-                            TOPEXTENDWIDTHMAX
-                        } else {
-                            TOPEXTENDWIDTH
-                        };
-                        let adjusted_title_bar_bottom = title_bar_height + title_bar_top_offset;
-
-                        if y >= title_bar_top_offset && y <= adjusted_title_bar_bottom {
+                        // 处理SVG图标悬停（简化版本，参考test.rs）
+                        if y >= 0 && y <= TITLE_BAR_HEIGHT {
                             for icon in &mut window.svg_icons {
                                 let hovered = if icon.is_title_bar_button {
-                                    // 标题栏按钮：右边图标往左偏移（往中间偏移），使用专用的padding
-                                    let hover_padding = TITLE_BAR_BUTTON_HOVER_PADDING;
-                                    let offset_x = if window.is_maximized {
-                                        -MAXIMIZE_OFFSET // 右边图标往左偏移
-                                    } else {
-                                        0
-                                    };
-                                    let offset_y = if window.is_maximized {
-                                        MAXIMIZE_OFFSET
-                                    } else {
-                                        0
-                                    };
-
-                                    x >= (icon.rect.left - hover_padding + offset_x)
-                                        && x <= (icon.rect.right + hover_padding + offset_x)
-                                        && y >= (icon.rect.top - hover_padding
-                                            + title_bar_top_offset
-                                            + offset_y)
-                                        && y <= (icon.rect.bottom
-                                            + hover_padding
-                                            + title_bar_top_offset
-                                            + offset_y)
-                                } else {
-                                    // 普通图标：使用padding进行悬停检测，考虑偏移
+                                    // 标题栏按钮：简化版本（参考test.rs）
                                     let hover_padding = ICON_HOVER_PADDING;
-                                    let offset_x = if window.is_maximized {
-                                        MAXIMIZE_OFFSET
-                                    } else {
-                                        0
-                                    };
-                                    let offset_y = if window.is_maximized {
-                                        MAXIMIZE_OFFSET
-                                    } else {
-                                        0
-                                    };
+                                    let offset_x = 0;
+                                    let offset_y = 0;
 
                                     x >= (icon.rect.left - hover_padding + offset_x)
                                         && x <= (icon.rect.right + hover_padding + offset_x)
-                                        && y >= (icon.rect.top - hover_padding
-                                            + title_bar_top_offset
-                                            + offset_y)
-                                        && y <= (icon.rect.bottom
-                                            + hover_padding
-                                            + title_bar_top_offset
-                                            + offset_y)
+                                        && y >= (icon.rect.top - hover_padding + offset_y)
+                                        && y <= (icon.rect.bottom + hover_padding + offset_y)
+                                } else {
+                                    // 普通图标：简化版本（参考test.rs）
+                                    let hover_padding = ICON_HOVER_PADDING;
+                                    let offset_x = 0;
+                                    let offset_y = 0;
+
+                                    x >= (icon.rect.left - hover_padding + offset_x)
+                                        && x <= (icon.rect.right + hover_padding + offset_x)
+                                        && y >= (icon.rect.top - hover_padding + offset_y)
+                                        && y <= (icon.rect.bottom + hover_padding + offset_y)
                                 };
 
                                 if icon.hovered != hovered {
@@ -2952,7 +2810,7 @@ impl OcrResultWindow {
                                 left: 0,
                                 top: 0,
                                 right: window.window_width,
-                                bottom: TOPEXTENDWIDTH,
+                                bottom: TITLE_BAR_HEIGHT,
                             };
                             let _ = InvalidateRect(Some(hwnd), Some(&title_bar_rect), false);
                             // 移除 UpdateWindow 调用，避免强制立即重绘
@@ -2981,7 +2839,7 @@ impl OcrResultWindow {
                                 left: 0,
                                 top: 0,
                                 right: window.window_width,
-                                bottom: TOPEXTENDWIDTH,
+                                bottom: TITLE_BAR_HEIGHT,
                             };
                             let _ = InvalidateRect(Some(hwnd), Some(&title_bar_rect), false);
                             // 移除强制更新，让系统优化重绘时机
