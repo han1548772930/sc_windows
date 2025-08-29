@@ -17,13 +17,115 @@ use crate::constants::{
     TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT,
 };
 
-// SVG 图标结构
+// 图标缓存结构体 - 一次性加载所有图标，避免重复加载
+struct IconCache {
+    // 左侧图标
+    pin_normal: HBITMAP,
+    pin_hover: HBITMAP,
+    pin_active_normal: HBITMAP, // 绿色激活状态
+    pin_active_hover: HBITMAP,  // 绿色激活悬停状态
+
+    // 标题栏按钮 - 普通状态
+    close_normal: HBITMAP,
+    close_hover: HBITMAP,
+    maximize_normal: HBITMAP,
+    maximize_hover: HBITMAP,
+    minimize_normal: HBITMAP,
+    minimize_hover: HBITMAP,
+    restore_normal: HBITMAP,
+    restore_hover: HBITMAP,
+}
+
+impl IconCache {
+    /// 创建图标缓存，一次性加载所有图标
+    fn new() -> Option<Self> {
+        unsafe {
+            // 加载左侧图标
+            let (pin_normal, pin_hover) = Self::load_svg_icon_from_file("pin.svg", ICON_SIZE)?;
+            let (pin_active_normal, pin_active_hover) = Self::load_colored_pin_bitmaps(
+                "pin.svg",
+                ICON_SIZE,
+                (0, 128, 0), // 绿色
+            )?;
+
+            // 加载标题栏按钮
+            let (close_normal, close_hover, _) = Self::load_title_bar_button_from_file("x.svg")?;
+            let (maximize_normal, maximize_hover, _) =
+                Self::load_title_bar_button_from_file("square.svg")?;
+            let (minimize_normal, minimize_hover, _) =
+                Self::load_title_bar_button_from_file("minus.svg")?;
+            let (restore_normal, restore_hover, _) =
+                Self::load_title_bar_button_from_file("reduction.svg")?;
+
+            Some(IconCache {
+                pin_normal,
+                pin_hover,
+                pin_active_normal,
+                pin_active_hover,
+                close_normal,
+                close_hover,
+                maximize_normal,
+                maximize_hover,
+                minimize_normal,
+                minimize_hover,
+                restore_normal,
+                restore_hover,
+            })
+        }
+    }
+
+    // 复用现有的图标加载方法
+    fn load_svg_icon_from_file(filename: &str, size: i32) -> Option<(HBITMAP, HBITMAP)> {
+        OcrResultWindow::load_svg_icon_from_file(filename, size)
+    }
+
+    fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP, HBITMAP)> {
+        OcrResultWindow::load_title_bar_button_from_file(filename)
+    }
+
+    fn load_colored_pin_bitmaps(
+        filename: &str,
+        size: i32,
+        icon_rgb: (u8, u8, u8),
+    ) -> Option<(HBITMAP, HBITMAP)> {
+        OcrResultWindow::load_colored_pin_bitmaps(filename, size, icon_rgb)
+    }
+}
+
+impl Drop for IconCache {
+    fn drop(&mut self) {
+        unsafe {
+            // 清理所有位图资源
+            let bitmaps = [
+                self.pin_normal,
+                self.pin_hover,
+                self.pin_active_normal,
+                self.pin_active_hover,
+                self.close_normal,
+                self.close_hover,
+                self.maximize_normal,
+                self.maximize_hover,
+                self.minimize_normal,
+                self.minimize_hover,
+                self.restore_normal,
+                self.restore_hover,
+            ];
+
+            for bitmap in bitmaps.iter() {
+                if !bitmap.is_invalid() {
+                    let _ = DeleteObject((*bitmap).into());
+                }
+            }
+        }
+    }
+}
+
+// SVG 图标结构 - 简化版，只保存位置和状态信息
 #[derive(Clone)]
 struct SvgIcon {
     name: String,
-    bitmap: HBITMAP,
-    hover_bitmap: HBITMAP,                   // 悬停状态的位图（普通状态）
-    hover_bitmap_maximized: Option<HBITMAP>, // 悬停状态的位图（最大化状态）
+    normal_bitmap: HBITMAP, // 引用IconCache中的位图
+    hover_bitmap: HBITMAP,  // 引用IconCache中的位图
     rect: RECT,
     hovered: bool,
     is_title_bar_button: bool, // 是否是标题栏按钮
@@ -60,8 +162,8 @@ pub struct OcrResultWindow {
     buffer_height: i32,              // 缓冲区高度
     buffer_valid: bool,              // 缓冲区是否有效（只有第一次创建后就一直有效）
 
-    // 图标缓存 - 避免重复创建相同图标
-    left_icons_cache: Option<Vec<SvgIcon>>, // 左侧图标缓存（只创建一次）
+    // 图标缓存 - 一次性加载所有图标，避免重复加载
+    icon_cache: IconCache,
 
     // 自绘文本相关
     text_content: String,    // 文本内容
@@ -78,14 +180,12 @@ pub struct OcrResultWindow {
     last_click_time: std::time::Instant,       // 上次点击时间，用于双击检测
     last_click_pos: Option<(i32, i32)>,        // 上次点击位置
 
-    // 置顶/Pin 状态与激活图标
-    is_pinned: bool,                          // 是否置顶
-    pin_active_bitmap: Option<HBITMAP>,       // Pin 激活（绿色）普通位图
-    pin_active_hover_bitmap: Option<HBITMAP>, // Pin 激活（绿色）悬停位图
+    // 置顶/Pin 状态
+    is_pinned: bool, // 是否置顶
 }
 
 impl OcrResultWindow {
-    /// 清理所有资源
+    /// 清理所有资源（简化版本 - IconCache会自动清理）
     fn cleanup_all_resources(&mut self) {
         unsafe {
             // 清理内容缓冲区
@@ -101,37 +201,13 @@ impl OcrResultWindow {
                 let _ = DeleteObject(self.font.into());
             }
 
-            // 清理SVG图标
-            for icon in &self.svg_icons {
-                let _ = DeleteObject(icon.bitmap.into());
-                let _ = DeleteObject(icon.hover_bitmap.into());
-                if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
-                    let _ = DeleteObject(hover_bitmap_maximized.into());
-                }
-            }
+            // 清理SVG图标列表（不需要清理位图，因为它们来自IconCache）
             self.svg_icons.clear();
 
-            // 清理缓存的左侧图标
-            if let Some(ref cached_icons) = self.left_icons_cache {
-                for icon in cached_icons {
-                    let _ = DeleteObject(icon.bitmap.into());
-                    let _ = DeleteObject(icon.hover_bitmap.into());
-                    if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
-                        let _ = DeleteObject(hover_bitmap_maximized.into());
-                    }
-                }
-            }
-            self.left_icons_cache = None;
-
-            // 清理 Pin 激活位图
-            if let Some(bmp) = self.pin_active_bitmap.take() {
-                let _ = DeleteObject(bmp.into());
-            }
-            if let Some(bmp) = self.pin_active_hover_bitmap.take() {
-                let _ = DeleteObject(bmp.into());
-            }
+            // IconCache会在Drop时自动清理所有位图资源
         }
     }
+
     /// 检查并创建内容缓冲区（仅在尺寸变化时重建）
     fn ensure_content_buffer(&mut self, width: i32, height: i32) -> Result<()> {
         unsafe {
@@ -332,36 +408,26 @@ impl OcrResultWindow {
         }
     }
 
-    /// 加载所有SVG图标并转换为位图
-    fn load_all_svg_icons() -> Vec<SvgIcon> {
-        let svg_files = vec!["pin.svg"];
-
+    /// 创建左侧图标（使用缓存的位图）
+    fn create_left_icons(icon_cache: &IconCache) -> Vec<SvgIcon> {
         let mut icons = Vec::new();
 
-        // 创建左侧的常规图标（简化版本）
-        for (i, filename) in svg_files.iter().enumerate() {
-            if let Some((normal_bitmap, hover_bitmap)) =
-                Self::load_svg_icon_from_file(filename, ICON_SIZE)
-            {
-                let icon_x = ICON_START_X + i as i32 * (ICON_SIZE + ICON_SPACING);
-                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
+        let icon_x = ICON_START_X;
+        let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
 
-                icons.push(SvgIcon {
-                    name: filename.replace(".svg", "").to_string(),
-                    bitmap: normal_bitmap,
-                    hover_bitmap,
-                    hover_bitmap_maximized: None, // 普通图标不需要最大化状态的hover位图
-                    rect: RECT {
-                        left: icon_x,
-                        top: icon_y,
-                        right: icon_x + ICON_SIZE,
-                        bottom: icon_y + ICON_SIZE,
-                    },
-                    hovered: false,
-                    is_title_bar_button: false, // 普通图标不是标题栏按钮
-                });
-            }
-        }
+        icons.push(SvgIcon {
+            name: "pin".to_string(),
+            normal_bitmap: icon_cache.pin_normal,
+            hover_bitmap: icon_cache.pin_hover,
+            rect: RECT {
+                left: icon_x,
+                top: icon_y,
+                right: icon_x + ICON_SIZE,
+                bottom: icon_y + ICON_SIZE,
+            },
+            hovered: false,
+            is_title_bar_button: false,
+        });
 
         icons
     }
@@ -386,50 +452,22 @@ impl OcrResultWindow {
         }
     }
 
-    /// 更新标题栏按钮状态（简化版本，参考test.rs）
+    /// 更新标题栏按钮状态（优化版本 - 不重新加载图标）
     fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
 
-        // 先释放旧的标题栏按钮的位图资源，避免内存泄漏
-        unsafe {
-            for icon in &self.svg_icons {
-                if icon.is_title_bar_button {
-                    let _ = DeleteObject(icon.bitmap.into());
-                    let _ = DeleteObject(icon.hover_bitmap.into());
-                    if let Some(hover_bitmap_maximized) = icon.hover_bitmap_maximized {
-                        let _ = DeleteObject(hover_bitmap_maximized.into());
-                    }
-                }
-            }
-        }
-
-        // 移除旧的标题栏按钮，保留左侧图标
+        // 移除旧的标题栏按钮，保留左侧图标（不需要释放位图，因为它们来自缓存）
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
 
-        // 确保有左侧图标（使用缓存）并更新它们的位置
+        // 确保有左侧图标并更新它们的位置
         let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
         if !has_left_icons {
-            // 获取缓存的左侧图标并克隆到svg_icons中
-            if self.left_icons_cache.is_none() {
-                self.left_icons_cache = Some(Self::load_all_svg_icons());
-            }
-
-            if let Some(ref left_icons) = self.left_icons_cache {
-                for icon in left_icons {
-                    self.svg_icons.push(SvgIcon {
-                        name: icon.name.clone(),
-                        bitmap: icon.bitmap,
-                        hover_bitmap: icon.hover_bitmap,
-                        hover_bitmap_maximized: icon.hover_bitmap_maximized,
-                        rect: icon.rect,
-                        hovered: false, // 重置悬停状态
-                        is_title_bar_button: false,
-                    });
-                }
-            }
+            // 从缓存创建左侧图标
+            let mut left_icons = Self::create_left_icons(&self.icon_cache);
+            self.svg_icons.append(&mut left_icons);
         }
 
-        // 更新所有左侧图标的位置（简化版本）
+        // 更新所有左侧图标的位置
         for icon in &mut self.svg_icons {
             if !icon.is_title_bar_button {
                 // 左侧图标在标题栏内垂直居中
@@ -440,65 +478,81 @@ impl OcrResultWindow {
             }
         }
 
-        // 创建新的标题栏按钮，根据窗口状态选择合适的按钮
-        let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, self.is_maximized);
-
+        // 创建新的标题栏按钮（使用缓存的位图）
+        let mut title_bar_buttons =
+            self.create_title_bar_buttons_from_cache(window_width, self.is_maximized);
         self.svg_icons.append(&mut title_bar_buttons);
     }
 
-    /// 创建标题栏按钮（简化版本，参考test.rs）
-    ///
-    /// # 参数
-    /// * `window_width` - 窗口宽度
-    /// * `is_maximized` - 是否为最大化状态
-    fn create_title_bar_buttons(window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
+    /// 创建标题栏按钮（使用缓存的位图）
+    fn create_title_bar_buttons_from_cache(
+        &self,
+        window_width: i32,
+        is_maximized: bool,
+    ) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
-        // 根据窗口状态选择按钮文件列表
-        let button_files = if is_maximized {
-            // 最大化状态：关闭、还原、最小化（从右到左的正确顺序）
+        // 根据窗口状态选择按钮配置
+        let button_configs = if is_maximized {
+            // 最大化状态：关闭、还原、最小化（从右到左）
             vec![
-                "x.svg",         // 关闭（最右边）
-                "reduction.svg", // 还原
-                "minus.svg",     // 最小化（最左边）
+                (
+                    "x",
+                    self.icon_cache.close_normal,
+                    self.icon_cache.close_hover,
+                ),
+                (
+                    "reduction",
+                    self.icon_cache.restore_normal,
+                    self.icon_cache.restore_hover,
+                ),
+                (
+                    "minus",
+                    self.icon_cache.minimize_normal,
+                    self.icon_cache.minimize_hover,
+                ),
             ]
         } else {
-            // 普通状态：关闭、最大化、最小化（从右到左的正确顺序）
+            // 普通状态：关闭、最大化、最小化（从右到左）
             vec![
-                "x.svg",      // 关闭（最右边）
-                "square.svg", // 最大化
-                "minus.svg",  // 最小化（最左边）
+                (
+                    "x",
+                    self.icon_cache.close_normal,
+                    self.icon_cache.close_hover,
+                ),
+                (
+                    "square",
+                    self.icon_cache.maximize_normal,
+                    self.icon_cache.maximize_hover,
+                ),
+                (
+                    "minus",
+                    self.icon_cache.minimize_normal,
+                    self.icon_cache.minimize_hover,
+                ),
             ]
         };
 
-        // 从右到左创建按钮（参考test.rs的简单计算方式）
-        for (i, filename) in button_files.iter().enumerate() {
-            if let Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized)) =
-                Self::load_title_bar_button_from_file(filename)
-            {
-                // 按钮位置计算（参考test.rs）
-                let button_x = window_width - (i as i32 + 1) * BUTTON_WIDTH_OCR;
+        // 从右到左创建按钮
+        for (i, (name, normal_bitmap, hover_bitmap)) in button_configs.iter().enumerate() {
+            // 按钮位置计算
+            let button_x = window_width - (i as i32 + 1) * BUTTON_WIDTH_OCR;
+            let icon_x = button_x + (BUTTON_WIDTH_OCR - ICON_SIZE) / 2;
+            let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
 
-                // 图标在按钮中心
-                let icon_x = button_x + (BUTTON_WIDTH_OCR - ICON_SIZE) / 2;
-                // 在标题栏内垂直居中（参考test.rs，top: 0）
-                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-
-                buttons.push(SvgIcon {
-                    name: filename.replace(".svg", "").to_string(),
-                    bitmap: normal_bitmap,
-                    hover_bitmap,
-                    hover_bitmap_maximized: Some(hover_bitmap_maximized),
-                    rect: RECT {
-                        left: icon_x,
-                        top: icon_y,
-                        right: icon_x + ICON_SIZE,
-                        bottom: icon_y + ICON_SIZE,
-                    },
-                    hovered: false,
-                    is_title_bar_button: true, // 标记为标题栏按钮
-                });
-            }
+            buttons.push(SvgIcon {
+                name: name.to_string(),
+                normal_bitmap: *normal_bitmap,
+                hover_bitmap: *hover_bitmap,
+                rect: RECT {
+                    left: icon_x,
+                    top: icon_y,
+                    right: icon_x + ICON_SIZE,
+                    bottom: icon_y + ICON_SIZE,
+                },
+                hovered: false,
+                is_title_bar_button: true,
+            });
         }
 
         buttons
@@ -983,11 +1037,17 @@ impl OcrResultWindow {
                     if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
                         let alpha = pixel_data[src_idx + 3];
                         if alpha > 0 {
-                            // 有内容的像素，设置为黑色
-                            bits_slice[dst_idx] = 0; // B - 黑色
-                            bits_slice[dst_idx + 1] = 0; // G - 黑色
-                            bits_slice[dst_idx + 2] = 0; // R - 黑色
-                            bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
+                            // 有内容的像素，使用预乘Alpha格式设置为黑色
+                            let alpha_f = alpha as f32 / 255.0;
+                            let icon_r = 0; // 图标颜色：黑色
+                            let icon_g = 0;
+                            let icon_b = 0;
+
+                            // 预乘Alpha：RGB值需要乘以Alpha值
+                            bits_slice[dst_idx] = (icon_b as f32 * alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_g as f32 * alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_r as f32 * alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = alpha; // A
                         }
                     }
                 }
@@ -1049,21 +1109,29 @@ impl OcrResultWindow {
                 let dst_idx = i * 4;
 
                 if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
+                    let _src_r = pixel_data[src_idx + 2];
+                    let _src_g = pixel_data[src_idx + 1];
+                    let _src_b = pixel_data[src_idx];
                     let alpha = pixel_data[src_idx + 3];
 
                     if alpha == 0 {
-                        // 透明的像素，使用标题栏背景色
-                        let alpha_factor = bg_a as f32 / 255.0;
-                        bits_slice[dst_idx] = (bg_b as f32 * alpha_factor) as u8; // B
-                        bits_slice[dst_idx + 1] = (bg_g as f32 * alpha_factor) as u8; // G
-                        bits_slice[dst_idx + 2] = (bg_r as f32 * alpha_factor) as u8; // R
+                        // 完全透明的像素，使用标题栏背景色（预乘Alpha）
+                        bits_slice[dst_idx] = bg_b; // B
+                        bits_slice[dst_idx + 1] = bg_g; // G
+                        bits_slice[dst_idx + 2] = bg_r; // R
                         bits_slice[dst_idx + 3] = bg_a; // A
                     } else {
-                        // 有内容的像素，设置为黑色
-                        bits_slice[dst_idx] = 0; // B - 黑色
-                        bits_slice[dst_idx + 1] = 0; // G - 黑色
-                        bits_slice[dst_idx + 2] = 0; // R - 黑色
-                        bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
+                        // 有内容的像素，使用预乘Alpha格式
+                        let alpha_f = alpha as f32 / 255.0;
+                        let icon_r = 0; // 图标颜色：黑色
+                        let icon_g = 0;
+                        let icon_b = 0;
+
+                        // 预乘Alpha：RGB值需要乘以Alpha值
+                        bits_slice[dst_idx] = (icon_b as f32 * alpha_f) as u8; // B
+                        bits_slice[dst_idx + 1] = (icon_g as f32 * alpha_f) as u8; // G
+                        bits_slice[dst_idx + 2] = (icon_r as f32 * alpha_f) as u8; // R
+                        bits_slice[dst_idx + 3] = alpha; // A
                     }
                 }
             }
@@ -1195,10 +1263,12 @@ impl OcrResultWindow {
                     if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
                         let alpha = pixel_data[src_idx + 3];
                         if alpha > 0 {
-                            bits_slice[dst_idx] = icon_rgb.2;
-                            bits_slice[dst_idx + 1] = icon_rgb.1;
-                            bits_slice[dst_idx + 2] = icon_rgb.0;
-                            bits_slice[dst_idx + 3] = alpha;
+                            // 使用预乘Alpha格式
+                            let alpha_f = alpha as f32 / 255.0;
+                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = alpha; // A
                         }
                     }
                 }
@@ -1264,10 +1334,12 @@ impl OcrResultWindow {
                     let alpha = pixel_data[src_idx + 3];
 
                     if alpha > 0 {
-                        bits_slice[dst_idx] = icon_rgb.2;
-                        bits_slice[dst_idx + 1] = icon_rgb.1;
-                        bits_slice[dst_idx + 2] = icon_rgb.0;
-                        bits_slice[dst_idx + 3] = alpha;
+                        // 使用预乘Alpha格式
+                        let alpha_f = alpha as f32 / 255.0;
+                        bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f) as u8; // B
+                        bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f) as u8; // G
+                        bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f) as u8; // R
+                        bits_slice[dst_idx + 3] = alpha; // A
                     }
                 }
             }
@@ -1468,13 +1540,14 @@ impl OcrResultWindow {
             // 分行处理文本
             let text_lines = Self::wrap_text_lines(&all_text, &text_area_rect, font, hwnd);
 
-            // 加载所有SVG图标（普通图标 + 标题栏按钮）
-            let mut svg_icons = Self::load_all_svg_icons();
-            let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, false); // 初始化时不是最大化
-            svg_icons.append(&mut title_bar_buttons);
+            // 创建图标缓存
+            let icon_cache = IconCache::new().ok_or_else(|| anyhow::anyhow!("无法创建图标缓存"))?;
+
+            // 创建左侧图标
+            let svg_icons = Self::create_left_icons(&icon_cache);
 
             // 创建窗口实例
-            let window = Self {
+            let mut window = Self {
                 hwnd,
                 image_bitmap: Some(bitmap),
                 image_width: width,
@@ -1487,29 +1560,17 @@ impl OcrResultWindow {
                 is_maximized: false,
                 svg_icons,
 
-                // 置顶与激活位图
+                // 图标缓存
+                icon_cache,
+
+                // 置顶状态
                 is_pinned: false,
-                pin_active_bitmap: OcrResultWindow::load_colored_pin_bitmaps(
-                    "pin.svg",
-                    ICON_SIZE,
-                    (33, 196, 94),
-                )
-                .map(|(n, _)| n),
-                pin_active_hover_bitmap: OcrResultWindow::load_colored_pin_bitmaps(
-                    "pin.svg",
-                    ICON_SIZE,
-                    (33, 196, 94),
-                )
-                .map(|(_, h)| h),
 
                 // 初始化缓冲相关字段
                 content_buffer: None,
                 buffer_width: 0,
                 buffer_height: 0,
                 buffer_valid: false,
-
-                // 初始化图标缓存
-                left_icons_cache: None,
 
                 // 初始化自绘文本字段
                 text_content: all_text,
@@ -1526,6 +1587,11 @@ impl OcrResultWindow {
                 last_click_time: std::time::Instant::now(),
                 last_click_pos: None,
             };
+
+            // 添加标题栏按钮
+            let mut title_bar_buttons =
+                window.create_title_bar_buttons_from_cache(window_width, false);
+            window.svg_icons.append(&mut title_bar_buttons);
 
             // 将窗口实例指针存储到窗口数据中
             let window_ptr = Box::into_raw(Box::new(window));
@@ -2009,14 +2075,14 @@ impl OcrResultWindow {
                     // 根据悬停状态和是否置顶选择正确的位图（Pin使用绿色激活位图）
                     let bitmap_to_use = if icon.name == "pin" && window.is_pinned {
                         if icon.hovered {
-                            window.pin_active_hover_bitmap.unwrap_or(icon.hover_bitmap)
+                            window.icon_cache.pin_active_hover
                         } else {
-                            window.pin_active_bitmap.unwrap_or(icon.bitmap)
+                            window.icon_cache.pin_active_normal
                         }
                     } else if icon.hovered {
                         icon.hover_bitmap
                     } else {
-                        icon.bitmap
+                        icon.normal_bitmap
                     };
 
                     // 绘制图标到内存DC
@@ -3206,5 +3272,12 @@ impl OcrResultWindow {
                 _ => DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }
+    }
+}
+
+impl Drop for OcrResultWindow {
+    fn drop(&mut self) {
+        // 使用RAII模式自动清理资源
+        self.cleanup_all_resources();
     }
 }
