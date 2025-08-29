@@ -22,7 +22,9 @@ pub trait InteractionTarget {
     fn is_interacting(&self) -> bool;
 
     /// 可选：暴露矩形，便于通用行为（本阶段不强制使用）
-    fn rect(&self) -> Option<RECT> { None }
+    fn rect(&self) -> Option<RECT> {
+        None
+    }
 }
 
 /// 交互控制器（阶段1：无内部状态，薄封装，仅负责编排调用）
@@ -30,7 +32,9 @@ pub trait InteractionTarget {
 pub struct InteractionController;
 
 impl InteractionController {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// 处理按下：
     /// - 若命中目标手柄/内部，调用 begin_interaction 并返回已消费
@@ -64,4 +68,3 @@ impl InteractionController {
         }
     }
 }
-

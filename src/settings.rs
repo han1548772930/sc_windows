@@ -350,12 +350,10 @@ pub struct SettingsWindow {
     settings: Settings,
     // 控件句柄
     line_thickness_edit: HWND,
-    font_size_edit: HWND,
     font_choose_button: HWND,
     // 颜色相关控件
     drawing_color_button: HWND,
     drawing_color_preview: HWND,
-    text_color_button: HWND,
     text_color_preview: HWND,
     // 热键控件
     hotkey_edit: HWND,
@@ -373,10 +371,8 @@ pub struct SettingsWindow {
 
 // 控件ID
 const ID_LINE_THICKNESS: i32 = 1001;
-const ID_FONT_SIZE: i32 = 1002;
 const ID_FONT_CHOOSE_BUTTON: i32 = 1003;
 const ID_DRAWING_COLOR_BUTTON: i32 = 1006;
-const ID_TEXT_COLOR_BUTTON: i32 = 1007;
 const ID_HOTKEY_EDIT: i32 = 1008;
 const ID_CONFIG_PATH_EDIT: i32 = 1011;
 const ID_CONFIG_PATH_BROWSE: i32 = 1012;
@@ -668,11 +664,9 @@ impl SettingsWindow {
                         hwnd,
                         settings,
                         line_thickness_edit: HWND::default(),
-                        font_size_edit: HWND::default(),
                         font_choose_button: HWND::default(),
                         drawing_color_button: HWND::default(),
                         drawing_color_preview: HWND::default(),
-                        text_color_button: HWND::default(),
                         text_color_preview: HWND::default(),
                         hotkey_edit: HWND::default(),
                         config_path_edit: HWND::default(),
@@ -890,7 +884,7 @@ impl SettingsWindow {
             // 标准Windows布局参数
             let margin = 15;
             let item_spacing = 30;
-            let group_spacing = 20;
+            let _group_spacing = 20;
             let label_width = 80;
             let input_width = 80;
             let button_width = 90;
@@ -1136,7 +1130,7 @@ impl SettingsWindow {
                 SWP_NOZORDER,
             );
 
-            current_y += item_spacing;
+            let _current_y = current_y + item_spacing;
 
             // === 底部按钮 ===
             let button_spacing = 10;
@@ -1812,9 +1806,6 @@ impl SettingsWindow {
             ID_DRAWING_COLOR_BUTTON => {
                 self.show_drawing_color_dialog();
             }
-            ID_TEXT_COLOR_BUTTON => {
-                self.show_text_color_dialog();
-            }
             ID_CONFIG_PATH_BROWSE => {
                 self.show_folder_browser_dialog();
             }
@@ -1891,11 +1882,6 @@ impl SettingsWindow {
         }
     }
 
-    /// 更新字体显示效果（不修改设置界面字体，只保存设置）
-    fn update_font_display(&mut self) {
-        // 这个方法现在只是一个占位符，实际的字体应用在框选文本时进行
-        // 设置界面保持系统默认字体
-    }
 
     /// 显示绘图颜色选择对话框
     fn show_drawing_color_dialog(&mut self) {

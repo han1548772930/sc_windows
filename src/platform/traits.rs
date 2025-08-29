@@ -1,7 +1,3 @@
-// 平台渲染器trait定义
-//
-// 定义了平台无关的渲染接口
-
 /// 颜色定义
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
@@ -104,8 +100,8 @@ pub type FontId = u32;
 pub type BitmapId = u64;
 
 /// 平台渲染器trait
-pub trait PlatformRenderer {
-    type Error: std::error::Error;
+pub trait PlatformRenderer: Send + Sync {
+    type Error: std::error::Error + Send + Sync;
 
     /// 开始渲染帧
     fn begin_frame(&mut self) -> Result<(), Self::Error>;
@@ -173,12 +169,7 @@ pub trait PlatformRenderer {
     // ---------- 高层绘图接口 ----------
     // 这些方法封装了常见的UI绘图操作，隐藏底层实现细节
 
-    /// 绘制选择区域遮罩（选择区域外的半透明覆盖）
-    ///
-    /// # 参数
-    /// * `screen_rect` - 整个屏幕区域
-    /// * `selection_rect` - 选择区域（此区域不被遮罩覆盖）
-    /// * `mask_color` - 遮罩颜色（通常是半透明黑色）
+    /// 绘制选择区域遮罩
     fn draw_selection_mask(
         &mut self,
         screen_rect: Rectangle,
@@ -187,12 +178,6 @@ pub trait PlatformRenderer {
     ) -> Result<(), Self::Error>;
 
     /// 绘制选择区域边框
-    ///
-    /// # 参数
-    /// * `rect` - 选择区域矩形
-    /// * `color` - 边框颜色
-    /// * `width` - 边框宽度
-    /// * `dash_pattern` - 虚线模式，None表示实线
     fn draw_selection_border(
         &mut self,
         rect: Rectangle,
@@ -201,14 +186,7 @@ pub trait PlatformRenderer {
         dash_pattern: Option<&[f32]>,
     ) -> Result<(), Self::Error>;
 
-    /// 绘制选择区域手柄（8个调整手柄）
-    ///
-    /// # 参数
-    /// * `rect` - 选择区域矩形
-    /// * `handle_size` - 手柄大小
-    /// * `fill_color` - 手柄填充颜色
-    /// * `border_color` - 手柄边框颜色
-    /// * `border_width` - 手柄边框宽度
+    /// 绘制选择区域手柄
     fn draw_selection_handles(
         &mut self,
         rect: Rectangle,
@@ -218,14 +196,7 @@ pub trait PlatformRenderer {
         border_width: f32,
     ) -> Result<(), Self::Error>;
 
-    /// 绘制元素手柄（用于绘图元素的选择和调整）
-    ///
-    /// # 参数
-    /// * `rect` - 元素边界矩形
-    /// * `handle_radius` - 手柄半径（圆形手柄）
-    /// * `fill_color` - 手柄填充颜色
-    /// * `border_color` - 手柄边框颜色
-    /// * `border_width` - 手柄边框宽度
+    /// 绘制元素手柄
     fn draw_element_handles(
         &mut self,
         rect: Rectangle,
@@ -244,8 +215,6 @@ pub enum PlatformError {
     /// 资源创建错误
     ResourceError(String),
     /// 初始化错误
-    InitializationError(String),
-    /// 初始化错误
     InitError(String),
 }
 
@@ -254,9 +223,6 @@ impl std::fmt::Display for PlatformError {
         match self {
             PlatformError::RenderError(msg) => write!(f, "Platform render error: {}", msg),
             PlatformError::ResourceError(msg) => write!(f, "Platform resource error: {}", msg),
-            PlatformError::InitializationError(msg) => {
-                write!(f, "Platform initialization error: {}", msg)
-            }
             PlatformError::InitError(msg) => write!(f, "Platform init error: {}", msg),
         }
     }
@@ -264,10 +230,8 @@ impl std::fmt::Display for PlatformError {
 
 impl std::error::Error for PlatformError {}
 
-// ---------- Renderer Extension (non-breaking) ----------
-// Provide higher-level helpers built on top of PlatformRenderer primitives.
 pub trait RendererExt: PlatformRenderer {
-    /// Draw 8 square handles around a rectangle (corners + edges' midpoints)
+    /// Draw 8 square handles around a rectangle
     fn draw_handles_for_rect(
         &mut self,
         rect: Rectangle,

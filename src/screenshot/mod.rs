@@ -4,6 +4,7 @@
 
 use crate::interaction::InteractionController;
 use crate::message::{Command, ScreenshotMessage};
+use crate::platform::windows::SafeHwnd;
 use crate::platform::{PlatformError, PlatformRenderer};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Gdi::HBITMAP;
@@ -44,7 +45,7 @@ pub struct ScreenshotManager {
     auto_highlight_enabled: bool,
 
     /// 当前窗口句柄（用于排除自己的窗口）
-    current_window: Option<windows::Win32::Foundation::HWND>,
+    current_window: SafeHwnd,
 }
 
 /// 截图数据
@@ -79,7 +80,7 @@ impl ScreenshotManager {
                 detector
             },
             auto_highlight_enabled: true, // 默认启用自动高亮
-            current_window: None,
+            current_window: SafeHwnd::default(),
         })
     }
 
@@ -236,7 +237,7 @@ impl ScreenshotManager {
 
     /// 设置当前窗口句柄（用于排除自己的窗口）
     pub fn set_current_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
-        self.current_window = Some(hwnd);
+        self.current_window.set(Some(hwnd));
     }
 
     /// 绘图工具管理已移至Drawing模块
@@ -245,6 +246,7 @@ impl ScreenshotManager {
     pub fn capture_screen(&mut self) -> std::result::Result<(), ScreenshotError> {
         let exclude_hwnd = self
             .current_window
+            .get()
             .unwrap_or(windows::Win32::Foundation::HWND(std::ptr::null_mut()));
         self.capture_screen_with_hwnd(exclude_hwnd)
     }

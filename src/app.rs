@@ -1,11 +1,3 @@
-// 应用程序协调器
-//
-// App结构体是整个应用程序的核心协调器，负责：
-// 1. 管理各个业务领域的管理器
-// 2. 协调组件间的消息传递
-// 3. 统一的渲染流程
-// 4. 错误处理和状态管理
-
 use crate::drawing::DrawingManager;
 use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
@@ -25,16 +17,14 @@ pub struct App {
     /// 系统管理器
     system: SystemManager,
     /// 平台渲染器
-    platform: Box<dyn PlatformRenderer<Error = PlatformError>>,
+    platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
 }
 
 impl App {
     /// 创建新的应用程序实例
     pub fn new(
-        platform: Box<dyn PlatformRenderer<Error = PlatformError>>,
+        platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
     ) -> Result<Self, AppError> {
-        // 创建截图管理器，但不立即捕获屏幕（按照原始代码逻辑）
-        // 原始代码中，WindowState::new只是初始化状态，截图在热键触发时才进行
         let screenshot = ScreenshotManager::new()?;
 
         Ok(Self {
@@ -46,31 +36,24 @@ impl App {
         })
     }
 
-    /// 设置当前窗口句柄（用于排除自己的窗口）
+    /// 设置当前窗口句柄
     pub fn set_current_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
         self.screenshot.set_current_window(hwnd);
     }
 
-    /// 重置到初始状态（从原始reset_to_initial_state迁移）
+    /// 重置到初始状态
     pub fn reset_to_initial_state(&mut self) {
-        // 重置截图管理器状态
         self.screenshot.reset_state();
-
-        // 重置绘图管理器状态
         self.drawing.reset_state();
-
-        // 重置UI管理器状态
         self.ui.reset_state();
     }
 
-    /// 获取当前的GDI截图位图句柄（用于简单显示）
-    /// 注意：调用方负责释放返回的HBITMAP
+    /// 获取当前的GDI截图位图句柄
     pub fn get_gdi_screenshot_bitmap(&self) -> Option<windows::Win32::Graphics::Gdi::HBITMAP> {
-        // 按需捕获屏幕并返回GDI位图
         self.screenshot.capture_screen_to_gdi_bitmap().ok()
     }
 
-    /// 绘制窗口内容（从原始代码迁移）
+    /// 绘制窗口内容
     pub fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> Result<(), AppError> {
         use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 
@@ -78,7 +61,6 @@ impl App {
             let mut ps = PAINTSTRUCT::default();
             BeginPaint(hwnd, &mut ps);
 
-            // 执行渲染
             if let Err(e) = self.render() {
                 eprintln!("Render error: {}", e);
             }
@@ -89,14 +71,12 @@ impl App {
         Ok(())
     }
 
-    /// 渲染所有组件（从原始代码迁移）
+    /// 渲染所有组件
     pub fn render(&mut self) -> Result<(), AppError> {
-        // 开始渲染帧
         self.platform
             .begin_frame()
             .map_err(|e| AppError::RenderError(format!("Failed to begin frame: {:?}", e)))?;
 
-        // 清除背景（透明）
         self.platform
             .clear(crate::platform::Color {
                 r: 0.0,
@@ -106,19 +86,16 @@ impl App {
             })
             .map_err(|e| AppError::RenderError(format!("Failed to clear: {:?}", e)))?;
 
-        // 渲染截图内容
         self.screenshot
             .render(&mut *self.platform)
             .map_err(|e| AppError::RenderError(format!("Failed to render screenshot: {:?}", e)))?;
 
-        // 渲染绘图元素
         let selection_rect = self.screenshot.get_selection();
 
         self.drawing
             .render(&mut *self.platform, selection_rect.as_ref())
             .map_err(|e| AppError::RenderError(format!("Failed to render drawing: {:?}", e)))?;
 
-        // 渲染选区相关的UI元素（遮罩、边框、手柄）- 在工具栏之前渲染
         let screen_size = (
             self.screenshot.get_screen_width(),
             self.screenshot.get_screen_height(),
@@ -140,12 +117,10 @@ impl App {
                 AppError::RenderError(format!("Failed to render selection UI: {:?}", e))
             })?;
 
-        // 渲染UI覆盖层（工具栏、对话框等）- 在遮罩之后渲染，确保工具栏在最上层
         self.ui
             .render(&mut *self.platform)
             .map_err(|e| AppError::RenderError(format!("Failed to render UI: {:?}", e)))?;
 
-        // 结束渲染帧
         self.platform
             .end_frame()
             .map_err(|e| AppError::RenderError(format!("Failed to end frame: {:?}", e)))?;
@@ -157,13 +132,10 @@ impl App {
     pub fn handle_message(&mut self, message: Message) -> Vec<Command> {
         match message {
             Message::Screenshot(msg) => {
-                // 处理截图消息，并在截图成功后创建D2D位图
                 let mut commands = self.screenshot.handle_message(msg.clone());
 
-                // 如果是StartCapture消息且截图成功，创建D2D位图并重置绘图与手柄显示
                 if let ScreenshotMessage::StartCapture = msg {
                     if commands.contains(&Command::ShowOverlay) {
-                        // 截图成功，现在创建D2D位图（使用平台无关接口）
                         if let Err(e) = self
                             .screenshot
                             .create_d2d_bitmap_from_gdi(&mut *self.platform)
@@ -173,7 +145,6 @@ impl App {
                             eprintln!("D2D bitmap created successfully");
                         }
 
-                        // 新一轮截图：重置绘图状态为None，确保显示选择框手柄
                         self.drawing.reset_state();
                         self.update_toolbar_state();
                         commands.push(Command::UpdateToolbar);
@@ -185,7 +156,6 @@ impl App {
             }
             Message::Drawing(msg) => self.drawing.handle_message(msg),
             Message::UI(msg) => {
-                // 获取屏幕尺寸（从原始代码迁移）
                 let screen_width = unsafe {
                     windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
                         windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,

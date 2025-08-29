@@ -1,9 +1,3 @@
-// src/drawing/mod.rs
-
-// 绘图管理器模块
-//
-// 负责绘图工具管理、绘图元素管理、撤销/重做系统
-
 use crate::message::{Command, DrawingMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::{DrawingElement, DrawingTool};
@@ -16,21 +10,15 @@ use elements::ElementManager;
 use history::HistoryManager;
 use tools::ToolManager;
 
-/// 元素交互模式（仅限绘图元素操作）
 #[derive(Debug, Clone, PartialEq)]
 pub enum ElementInteractionMode {
-    /// 无交互
     None,
-    /// 正在绘制新元素
     Drawing,
-    /// 移动元素
     MovingElement,
-    /// 调整元素大小（包含具体的调整方向）
     ResizingElement(crate::types::DragMode),
 }
 
 impl ElementInteractionMode {
-    /// 从旧的DragMode转换为新的ElementInteractionMode
     fn from_drag_mode(drag_mode: crate::types::DragMode) -> Self {
         match drag_mode {
             crate::types::DragMode::None => ElementInteractionMode::None,
@@ -46,53 +34,28 @@ impl ElementInteractionMode {
             | crate::types::DragMode::ResizingMiddleLeft => {
                 ElementInteractionMode::ResizingElement(drag_mode)
             }
-            // 选择框相关的拖拽模式不应该在DrawingManager中处理
             _ => ElementInteractionMode::None,
         }
     }
 }
 
-/// 绘图管理器
 pub struct DrawingManager {
-    /// 工具管理器
     tools: ToolManager,
-    /// 元素管理器
     elements: ElementManager,
-    /// 历史管理器
     history: HistoryManager,
-    /// 当前工具
     current_tool: DrawingTool,
-    /// 当前绘制的元素
     current_element: Option<DrawingElement>,
-    /// 选中的元素索引
     selected_element: Option<usize>,
-
-    // 绘图相关状态已移至 ToolManager
-
-    // 元素交互状态（仅限绘图元素）
-    /// 当前交互模式（仅限绘图元素操作）
     interaction_mode: ElementInteractionMode,
-    /// 鼠标按下状态
     mouse_pressed: bool,
-    /// 交互开始位置
     interaction_start_pos: windows::Win32::Foundation::POINT,
-    /// 交互开始时的元素矩形
     interaction_start_rect: windows::Win32::Foundation::RECT,
-    /// 交互开始时的字体大小（用于文字缩放）
     interaction_start_font_size: f32,
-
-    // 文本编辑状态
-    /// 是否正在编辑文本
     text_editing: bool,
-    /// 正在编辑的元素索引
     editing_element_index: Option<usize>,
-    /// 文本光标位置
     text_cursor_pos: usize,
-    /// 光标是否可见
     text_cursor_visible: bool,
-    /// 光标定时器ID
     cursor_timer_id: usize,
-    /// 刚刚保存了文本（防止立即创建新文本元素）
     just_saved_text: bool,
 }
 
@@ -107,9 +70,6 @@ impl DrawingManager {
             current_element: None,
             selected_element: None,
 
-            // 绘图相关字段已移至 ToolManager
-
-            // 初始化元素交互相关字段
             interaction_mode: ElementInteractionMode::None,
             mouse_pressed: false,
             interaction_start_pos: windows::Win32::Foundation::POINT { x: 0, y: 0 },
@@ -121,36 +81,24 @@ impl DrawingManager {
             },
             interaction_start_font_size: 0.0,
 
-            // 初始化文本编辑相关字段
             text_editing: false,
             editing_element_index: None,
             text_cursor_pos: 0,
             text_cursor_visible: false,
-            cursor_timer_id: 1001, // 使用固定的定时器ID
+            cursor_timer_id: 1001,
             just_saved_text: false,
         })
     }
 
-    /// 重置状态（从原始reset_to_initial_state迁移）
+    /// 重置状态
     pub fn reset_state(&mut self) {
-        // 清除所有绘制元素（统一由 ElementManager 管理）
         self.current_element = None;
         self.selected_element = None;
-
-        // 重置工具状态
         self.current_tool = DrawingTool::None;
-
-        // 清除历史记录
         self.history.clear();
-
-        // 重置元素管理器
         self.elements.clear();
-
-        // 重置交互状态
         self.interaction_mode = ElementInteractionMode::None;
         self.mouse_pressed = false;
-
-        // 重置文本编辑状态
         self.text_editing = false;
         self.editing_element_index = None;
         self.text_cursor_pos = 0;
@@ -164,19 +112,13 @@ impl DrawingManager {
             DrawingMessage::SelectTool(tool) => {
                 let mut commands = Vec::new();
 
-                // 如果正在编辑文本，先停止编辑（与原始代码保持一致）
                 if self.text_editing {
                     commands.extend(self.stop_text_editing());
                 }
 
-                // 设置当前工具（从原始代码迁移）
                 self.current_tool = tool;
                 self.tools.set_current_tool(tool);
-
-                // 清除选中的元素（从原始代码迁移）
                 self.selected_element = None;
-
-                // 将所有绘图元素的selected状态设为false（统一通过ElementManager管理）
                 self.elements.set_selected(None);
 
                 commands.extend(vec![Command::UpdateToolbar, Command::RequestRedraw]);
@@ -221,8 +163,6 @@ impl DrawingManager {
             }
             DrawingMessage::FinishDrawing => {
                 if let Some(element) = self.current_element.take() {
-                    // 注意：历史保存已在操作开始前完成（start_drawing_shape）
-                    // 这里只负责提交元素
                     self.elements.add_element(element);
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
@@ -236,7 +176,6 @@ impl DrawingManager {
                     self.elements.set_selected(self.selected_element);
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
-                    // 即使无法撤销，也需要刷新工具栏禁用状态（保持一致）
                     vec![Command::UpdateToolbar]
                 }
             }
@@ -251,10 +190,8 @@ impl DrawingManager {
                 }
             }
             DrawingMessage::DeleteElement(index) => {
-                // 保存历史状态（包含选择状态）
                 self.history
                     .save_state(&self.elements, self.selected_element);
-                // 删除元素
                 if self.elements.remove_element(index) {
                     self.selected_element = None;
                     vec![Command::RequestRedraw]
@@ -266,43 +203,29 @@ impl DrawingManager {
                 self.selected_element = index;
                 self.elements.set_selected(index);
 
-                // 如果选中了元素，将当前工具切换为该元素的工具类型（与原代码保持一致）
                 if let Some(idx) = index {
                     if let Some(element) = self.elements.get_elements().get(idx) {
-                        // 更新当前工具以匹配选中的元素类型（与原代码第1528-1537行保持一致）
                         self.current_tool = element.tool;
                         self.tools.set_current_tool(element.tool);
                     }
                 }
 
-                // 选中元素时同步工具栏状态（与旧代码保持一致）
                 vec![Command::UpdateToolbar, Command::RequestRedraw]
             }
             DrawingMessage::AddElement(element) => {
-                // 保存历史状态（包含选择状态）
                 self.history
                     .save_state(&self.elements, self.selected_element);
-                // 添加元素
                 self.elements.add_element(element);
-                // 统一由 ElementManager 管理元素列表
                 vec![Command::RequestRedraw]
             }
             DrawingMessage::CheckElementClick(x, y) => {
-                // 检查是否点击了元素（从原始代码迁移）
                 if let Some(element_index) = self.elements.get_element_at_position(x, y) {
-                    // 点击了元素，选择该元素
                     self.selected_element = Some(element_index);
-
-                    // 统一通过 ElementManager 设置选中状态
                     self.elements.set_selected(self.selected_element);
-
-                    // 选中元素时同步工具栏状态（与旧代码保持一致）
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
-                    // 没有点击元素，清除选择
                     self.selected_element = None;
                     self.elements.set_selected(None);
-                    // 清除选择时也需要更新工具栏状态
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 }
             }

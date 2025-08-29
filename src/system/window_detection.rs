@@ -27,6 +27,11 @@ pub struct WindowInfo {
     pub is_minimized: bool,
 }
 
+// HWND is just a pointer wrapper, we can safely send it between threads
+// for our use case (we're not dereferencing it in other threads)
+unsafe impl Send for WindowInfo {}
+unsafe impl Sync for WindowInfo {}
+
 impl WindowInfo {
     /// 检查点是否在窗口内
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
@@ -52,6 +57,11 @@ pub struct ChildControlInfo {
     /// 控件ID
     pub control_id: i32,
 }
+
+// HWND is just a pointer wrapper, we can safely send it between threads
+// for our use case (we're not dereferencing it in other threads)
+unsafe impl Send for ChildControlInfo {}
+unsafe impl Sync for ChildControlInfo {}
 
 impl ChildControlInfo {
     /// 检查点是否在子控件内

@@ -124,7 +124,7 @@ impl SystemManager {
     pub fn update_ocr_engine_status(
         &mut self,
         available: bool,
-        hwnd: windows::Win32::Foundation::HWND,
+        _hwnd: windows::Win32::Foundation::HWND,
     ) {
         self.ocr.update_status(available);
         // 可以在这里添加状态更新后的其他逻辑

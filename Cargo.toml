@@ -14,16 +14,11 @@ tiny-skia = "0.11"
 resvg = "0.42"
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 anyhow = "1.0"
+thiserror = "1.0"
+parking_lot = "0.12"
 paddleocr = { path = "paddleocr" }
 base64 = "0.21"
 reqwest = { version = "0.11", features = ["json"] }
-
-# windows-core = "0.61.2"
-
-
-# [dependencies.winui3]
-# git = "https://github.com/Alovchin91/winui3-rs.git"
-# features = ["XamlApp", "XamlNavigation"]
 
 
 [target.'cfg(windows)'.dependencies]
@@ -56,7 +51,6 @@ windows = { version = "0.61", features = [
   "Win32_UI_Controls",
   "Win32_Graphics_Gdi",
   "Win32_System_SystemServices",
-  # WinRT 支持
   "Foundation",
   "Foundation_Collections",
   "Foundation_Metadata",
@@ -66,8 +60,6 @@ windows = { version = "0.61", features = [
 embed-resource = "2.4"
 
 [profile.release]
-#panic = "abort"
 codegen-units = 1
 lto = true
-#incremental = false
 opt-level = 3

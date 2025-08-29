@@ -64,7 +64,7 @@ impl Direct2DRenderer {
         unsafe {
             let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if result.is_err() {
-                return Err(PlatformError::InitializationError(format!(
+                return Err(PlatformError::InitError(format!(
                     "COM init failed: {:?}",
                     result
                 )));
@@ -74,7 +74,7 @@ impl Direct2DRenderer {
         // 创建D2D工厂（从原始代码迁移）
         let d2d_factory: ID2D1Factory =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }.map_err(|e| {
-                PlatformError::InitializationError(format!("D2D factory creation failed: {:?}", e))
+                PlatformError::InitError(format!("D2D factory creation failed: {:?}", e))
             })?;
 
         // 创建渲染目标（从原始代码迁移）
@@ -103,7 +103,7 @@ impl Direct2DRenderer {
             d2d_factory
                 .CreateHwndRenderTarget(&render_target_properties, &hwnd_render_target_properties)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Render target creation failed: {:?}",
                         e
                     ))
@@ -113,7 +113,7 @@ impl Direct2DRenderer {
         // 创建DirectWrite工厂（从原始代码迁移）
         let dwrite_factory: IDWriteFactory = unsafe {
             DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(|e| {
-                PlatformError::InitializationError(format!(
+                PlatformError::InitError(format!(
                     "DirectWrite factory creation failed: {:?}",
                     e
                 ))
@@ -133,7 +133,7 @@ impl Direct2DRenderer {
                     w!("en-us"),
                 )
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Text format creation failed: {:?}",
                         e
                     ))
@@ -145,7 +145,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_SELECTION_BORDER, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Selection border brush creation failed: {:?}",
                         e
                     ))
@@ -156,7 +156,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_FILL, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Handle fill brush creation failed: {:?}",
                         e
                     ))
@@ -167,7 +167,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_BORDER, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Handle border brush creation failed: {:?}",
                         e
                     ))
@@ -178,7 +178,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_TOOLBAR_BG, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Toolbar bg brush creation failed: {:?}",
                         e
                     ))
@@ -189,7 +189,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_BUTTON_HOVER, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Button hover brush creation failed: {:?}",
                         e
                     ))
@@ -200,7 +200,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_BUTTON_ACTIVE, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Button active brush creation failed: {:?}",
                         e
                     ))
@@ -211,7 +211,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_TEXT_NORMAL, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Text brush creation failed: {:?}",
                         e
                     ))
@@ -222,7 +222,7 @@ impl Direct2DRenderer {
             render_target
                 .CreateSolidColorBrush(&crate::constants::COLOR_MASK, None)
                 .map_err(|e| {
-                    PlatformError::InitializationError(format!(
+                    PlatformError::InitError(format!(
                         "Mask brush creation failed: {:?}",
                         e
                     ))

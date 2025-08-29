@@ -56,4 +56,3 @@ pub fn show_save_file_dialog(hwnd: HWND, title: &str, default_filename: &str) ->
 pub fn show_image_save_dialog(hwnd: HWND, default_filename: &str) -> Option<String> {
     show_save_file_dialog(hwnd, "保存图片", default_filename)
 }
-

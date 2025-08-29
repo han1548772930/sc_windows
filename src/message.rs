@@ -1,8 +1,3 @@
-// 全局消息系统
-//
-// 定义了应用程序中各个组件之间通信的消息类型和命令类型。
-// 采用事件驱动的架构，避免模块间直接访问状态。
-
 use crate::types::{DrawingTool, ToolbarButton};
 use windows::Win32::Foundation::RECT;
 
@@ -55,7 +50,7 @@ pub enum DrawingMessage {
     DeleteElement(usize),
     /// 选择元素
     SelectElement(Option<usize>),
-    /// 检查元素点击（从原始代码迁移）
+    /// 检查元素点击
     CheckElementClick(i32, i32),
 }
 
@@ -113,35 +108,35 @@ pub enum Command {
     UpdateToolbar,
     /// 显示保存对话框
     ShowSaveDialog,
-    /// 显示设置窗口（从原始代码迁移）
+    /// 显示设置窗口
     ShowSettings,
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     ReloadSettings,
-    /// 执行截图（从原始代码迁移）
+    /// 执行截图
     TakeScreenshot,
     /// 复制到剪贴板
     CopyToClipboard,
     /// 选择绘图工具
     SelectDrawingTool(DrawingTool),
-    /// 保存选择区域到文件（从原始代码迁移）
+    /// 保存选择区域到文件
     SaveSelectionToFile,
-    /// 保存选择区域到剪贴板（从原始代码迁移）
+    /// 保存选择区域到剪贴板
     SaveSelectionToClipboard,
-    /// 固定选择区域（从原始代码迁移）
+    /// 固定选择区域
     PinSelection,
-    /// 提取文本（从原始代码迁移）
+    /// 提取文本
     ExtractText,
-    /// 重置到初始状态（从原始代码迁移）
+    /// 重置到初始状态
     ResetToInitialState,
-    /// 隐藏窗口（从原始代码迁移）
+    /// 隐藏窗口
     HideWindow,
     /// 退出应用
     Quit,
     /// 显示错误消息
     ShowError(String),
-    /// 启动定时器（从原始代码迁移，用于文本编辑光标闪烁）
+    /// 启动定时器
     StartTimer(u32, u32), // (timer_id, interval_ms)
-    /// 停止定时器（从原始代码迁移）
+    /// 停止定时器
     StopTimer(u32), // timer_id
     /// UI相关命令
     UI(UIMessage),

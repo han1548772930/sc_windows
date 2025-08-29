@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 // 自定义标题栏/图标常量集中到 crate::constants
 use crate::constants::{
     BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR,
-    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_SPACING, ICON_START_X,
+    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X,
     TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT,
 };
 
@@ -39,39 +39,37 @@ struct IconCache {
 impl IconCache {
     /// 创建图标缓存，一次性加载所有图标
     fn new() -> Option<Self> {
-        unsafe {
-            // 加载左侧图标
-            let (pin_normal, pin_hover) = Self::load_svg_icon_from_file("pin.svg", ICON_SIZE)?;
-            let (pin_active_normal, pin_active_hover) = Self::load_colored_pin_bitmaps(
-                "pin.svg",
-                ICON_SIZE,
-                (0, 128, 0), // 绿色
-            )?;
+        // 加载左侧图标
+        let (pin_normal, pin_hover) = Self::load_svg_icon_from_file("pin.svg", ICON_SIZE)?;
+        let (pin_active_normal, pin_active_hover) = Self::load_colored_pin_bitmaps(
+            "pin.svg",
+            ICON_SIZE,
+            (0, 128, 0), // 绿色
+        )?;
 
-            // 加载标题栏按钮
-            let (close_normal, close_hover, _) = Self::load_title_bar_button_from_file("x.svg")?;
-            let (maximize_normal, maximize_hover, _) =
-                Self::load_title_bar_button_from_file("square.svg")?;
-            let (minimize_normal, minimize_hover, _) =
-                Self::load_title_bar_button_from_file("minus.svg")?;
-            let (restore_normal, restore_hover, _) =
-                Self::load_title_bar_button_from_file("reduction.svg")?;
+        // 加载标题栏按钮
+        let (close_normal, close_hover, _) = Self::load_title_bar_button_from_file("x.svg")?;
+        let (maximize_normal, maximize_hover, _) =
+            Self::load_title_bar_button_from_file("square.svg")?;
+        let (minimize_normal, minimize_hover, _) =
+            Self::load_title_bar_button_from_file("minus.svg")?;
+        let (restore_normal, restore_hover, _) =
+            Self::load_title_bar_button_from_file("reduction.svg")?;
 
-            Some(IconCache {
-                pin_normal,
-                pin_hover,
-                pin_active_normal,
-                pin_active_hover,
-                close_normal,
-                close_hover,
-                maximize_normal,
-                maximize_hover,
-                minimize_normal,
-                minimize_hover,
-                restore_normal,
-                restore_hover,
-            })
-        }
+        Some(IconCache {
+            pin_normal,
+            pin_hover,
+            pin_active_normal,
+            pin_active_hover,
+            close_normal,
+            close_hover,
+            maximize_normal,
+            maximize_hover,
+            minimize_normal,
+            minimize_hover,
+            restore_normal,
+            restore_hover,
+        })
     }
 
     // 复用现有的图标加载方法
@@ -609,54 +607,52 @@ impl OcrResultWindow {
 
     /// 重新计算窗口布局
     fn recalculate_layout(&mut self) {
-        unsafe {
-            // 右边文字区域宽度（固定350像素）
-            let text_area_width = 350;
+        // 右边文字区域宽度（固定350像素）
+        let text_area_width = 350;
 
-            // 左边图像区域宽度
-            let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
+        // 左边图像区域宽度
+        let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
 
-            // 计算文字显示区域（简化版本）
-            let title_bar_height = TITLE_BAR_HEIGHT;
-            let text_padding_left = 20;
-            let text_padding_right = 20;
-            let text_padding_top = title_bar_height + 15;
-            let text_padding_bottom = 15;
+        // 计算文字显示区域（简化版本）
+        let title_bar_height = TITLE_BAR_HEIGHT;
+        let text_padding_left = 20;
+        let text_padding_right = 20;
+        let text_padding_top = title_bar_height + 15;
+        let text_padding_bottom = 15;
 
-            let new_text_area_rect = RECT {
-                left: image_area_width + text_padding_left,
-                top: text_padding_top,
-                right: self.window_width - text_padding_right,
-                bottom: self.window_height - text_padding_bottom,
-            };
+        let new_text_area_rect = RECT {
+            left: image_area_width + text_padding_left,
+            top: text_padding_top,
+            right: self.window_width - text_padding_right,
+            bottom: self.window_height - text_padding_bottom,
+        };
 
-            // 只有在文本区域真正改变时才重新计算文本布局
-            if new_text_area_rect.left != self.text_area_rect.left
-                || new_text_area_rect.top != self.text_area_rect.top
-                || new_text_area_rect.right != self.text_area_rect.right
-                || new_text_area_rect.bottom != self.text_area_rect.bottom
-            {
-                self.text_area_rect = new_text_area_rect;
+        // 只有在文本区域真正改变时才重新计算文本布局
+        if new_text_area_rect.left != self.text_area_rect.left
+            || new_text_area_rect.top != self.text_area_rect.top
+            || new_text_area_rect.right != self.text_area_rect.right
+            || new_text_area_rect.bottom != self.text_area_rect.bottom
+        {
+            self.text_area_rect = new_text_area_rect;
 
-                // 重新计算文本换行
-                self.text_lines = Self::wrap_text_lines(
-                    &self.text_content,
-                    &self.text_area_rect,
-                    self.font,
-                    self.hwnd,
-                );
+            // 重新计算文本换行
+            self.text_lines = Self::wrap_text_lines(
+                &self.text_content,
+                &self.text_area_rect,
+                self.font,
+                self.hwnd,
+            );
 
-                // 调整滚动偏移量，确保不超出范围
-                let max_scroll = (self.text_lines.len() as i32 * self.line_height)
-                    - (self.text_area_rect.bottom - self.text_area_rect.top);
-                if self.scroll_offset > max_scroll.max(0) {
-                    self.scroll_offset = max_scroll.max(0);
-                }
+            // 调整滚动偏移量，确保不超出范围
+            let max_scroll = (self.text_lines.len() as i32 * self.line_height)
+                - (self.text_area_rect.bottom - self.text_area_rect.top);
+            if self.scroll_offset > max_scroll.max(0) {
+                self.scroll_offset = max_scroll.max(0);
+            }
 
-                // 标记需要重绘
-                unsafe {
-                    let _ = InvalidateRect(Some(self.hwnd), Some(&self.text_area_rect), false);
-                }
+            // 标记需要重绘
+            unsafe {
+                let _ = InvalidateRect(Some(self.hwnd), Some(&self.text_area_rect), false);
             }
         }
     }
@@ -1503,7 +1499,7 @@ impl OcrResultWindow {
             };
 
             // 计算行高（基于字体）
-            let line_height = unsafe {
+            let line_height = {
                 let hdc = GetDC(Some(hwnd));
                 let old_font = SelectObject(hdc, font.into());
                 let mut tm = TEXTMETRICW::default();
@@ -1755,7 +1751,7 @@ impl OcrResultWindow {
             GetClientRect(self.hwnd, &mut rect)?;
 
             // 检查是否全屏，计算实际的内容开始位置
-            let is_fullscreen = {
+            let _is_fullscreen = {
                 let mut window_rect = RECT::default();
                 let _ = GetWindowRect(self.hwnd, &mut window_rect);
                 let (screen_width, screen_height) =
@@ -2187,7 +2183,7 @@ impl OcrResultWindow {
     fn get_adjusted_text_rect_for_redraw(&self) -> RECT {
         unsafe {
             // 检查是否全屏
-            let is_fullscreen = {
+            let _is_fullscreen = {
                 let mut window_rect = RECT::default();
                 let _ = GetWindowRect(self.hwnd, &mut window_rect);
                 let (screen_width, screen_height) =
@@ -2651,7 +2647,7 @@ impl OcrResultWindow {
             let _ = GetWindowRect(hwnd, &mut rc_window);
 
             // 检查窗口是否真正全屏
-            let is_fullscreen = {
+            let _is_fullscreen = {
                 let (screen_width, screen_height) =
                     crate::platform::windows::system::get_screen_size();
 
@@ -2868,7 +2864,7 @@ impl OcrResultWindow {
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
                         // 检查窗口是否真正全屏
-                        let is_fullscreen = {
+                        let _is_fullscreen = {
                             let mut window_rect = RECT::default();
                             let _ = GetWindowRect(hwnd, &mut window_rect);
                             let (screen_width, screen_height) =

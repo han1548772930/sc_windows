@@ -4,6 +4,7 @@
 
 use super::SystemError;
 use crate::message::Command;
+use crate::platform::windows::SafeHwnd;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::{Shell::*, WindowsAndMessaging::*};
 use windows::core::*;
@@ -11,7 +12,7 @@ use windows::core::*;
 /// 系统托盘管理器（从原始代码迁移）
 #[derive(Debug)]
 pub struct TrayManager {
-    hwnd: HWND,
+    hwnd: SafeHwnd,
     icon_id: u32,
     is_added: bool,
 }
@@ -20,7 +21,7 @@ impl TrayManager {
     /// 创建新的托盘管理器
     pub fn new() -> std::result::Result<Self, SystemError> {
         Ok(Self {
-            hwnd: HWND(std::ptr::null_mut()),
+            hwnd: SafeHwnd::default(),
             icon_id: 1001,
             is_added: false,
         })
@@ -28,7 +29,7 @@ impl TrayManager {
 
     /// 初始化系统托盘（从原始代码迁移）
     pub fn initialize(&mut self, hwnd: HWND) -> std::result::Result<(), SystemError> {
-        self.hwnd = hwnd;
+        self.hwnd.set(Some(hwnd));
 
         // 创建托盘图标
         let icon = create_default_icon()?;
@@ -51,9 +52,10 @@ impl TrayManager {
             let copy_len = (tooltip_wide.len() - 1).min(tooltip_array.len() - 1);
             tooltip_array[..copy_len].copy_from_slice(&tooltip_wide[..copy_len]);
 
+            let hwnd = self.hwnd.get().unwrap_or(HWND(std::ptr::null_mut()));
             let mut nid = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: self.hwnd,
+                hWnd: hwnd,
                 uID: self.icon_id,
                 uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
                 uCallbackMessage: WM_USER + 1, // 自定义消息
@@ -115,7 +117,8 @@ impl TrayManager {
             let _ = GetCursorPos(&mut cursor_pos);
 
             // 设置前台窗口以确保菜单正确显示
-            let _ = SetForegroundWindow(self.hwnd);
+            let hwnd = self.hwnd.get().unwrap_or(HWND(std::ptr::null_mut()));
+            let _ = SetForegroundWindow(hwnd);
 
             // 显示菜单
             let cmd = TrackPopupMenu(
@@ -124,7 +127,7 @@ impl TrayManager {
                 cursor_pos.x,
                 cursor_pos.y,
                 Some(0),
-                self.hwnd,
+                hwnd,
                 None,
             );
 
@@ -132,7 +135,8 @@ impl TrayManager {
             match cmd.0 {
                 1001 => {
                     // 截图
-                    let _ = PostMessageW(Some(self.hwnd), WM_HOTKEY, WPARAM(1001), LPARAM(0));
+                    let hwnd = self.hwnd.get();
+                    let _ = PostMessageW(hwnd, WM_HOTKEY, WPARAM(1001), LPARAM(0));
                 }
                 1002 => {
                     // 设置
@@ -140,7 +144,8 @@ impl TrayManager {
                 }
                 1003 => {
                     // 退出
-                    let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    let hwnd = self.hwnd.get();
+                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
                 _ => {}
             }
@@ -159,9 +164,10 @@ impl TrayManager {
     pub fn cleanup(&mut self) {
         if self.is_added {
             unsafe {
+                let hwnd = self.hwnd.get().unwrap_or(HWND(std::ptr::null_mut()));
                 let mut nid = NOTIFYICONDATAW {
                     cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                    hWnd: self.hwnd,
+                    hWnd: hwnd,
                     uID: self.icon_id,
                     uFlags: NIF_ICON,
                     ..Default::default()

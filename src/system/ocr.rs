@@ -235,12 +235,33 @@ impl OcrManager {
             }
         };
 
-        // 显示 OCR 结果窗口
-        let _ = crate::ocr_result_window::OcrResultWindow::show(
-            result,
-            line_results.clone(),
+        // 检查是否有识别结果
+        let has_results = !line_results.is_empty();
+        let is_ocr_failed = line_results.len() == 1 && line_results[0].text == "OCR识别失败";
+
+        // 显示 OCR 结果窗口 - 使用原始的OcrResultWindow
+        // 需要传递BMP数据而不是HBITMAP
+        if let Err(e) = crate::ocr_result_window::OcrResultWindow::show(
+            result.clone(),       // BMP数据
+            line_results.clone(), // 克隆数据以便后续使用
             selection_rect,
-        );
+        ) {
+            eprintln!("Failed to show OCR result window: {:?}", e);
+        }
+
+        // 也复制到剪贴板作为备份
+        if has_results {
+            let text: String = line_results
+                .iter()
+                .map(|r| r.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            // Copy to clipboard
+            if let Err(e) = crate::screenshot::save::copy_text_to_clipboard(&text) {
+                eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
+            }
+        }
 
         // 关闭截图窗口（通知主窗口流程结束）
         unsafe {
@@ -248,9 +269,7 @@ impl OcrManager {
             let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
 
             // 如果没有识别到文本，显示提示消息
-            if line_results.is_empty()
-                || (line_results.len() == 1 && line_results[0].text == "OCR识别失败")
-            {
+            if !has_results || is_ocr_failed {
                 let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
                 let message_w: Vec<u16> =
                     message.encode_utf16().chain(std::iter::once(0)).collect();
