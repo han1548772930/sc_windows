@@ -13,6 +13,12 @@ pub struct ToolManager {
 // 注意：ToolConfigs 结构体已被移除
 // 现在配置直接从 SimpleSettings 读取，避免重复存储和同步问题
 
+impl Default for ToolManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolManager {
     /// 创建新的工具管理器
     pub fn new() -> Self {

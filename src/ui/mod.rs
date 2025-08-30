@@ -26,7 +26,7 @@ impl UIManager {
         let mut svg_icons = SvgIconManager::new();
         // 加载SVG图标
         if let Err(e) = svg_icons.load_icons() {
-            eprintln!("Failed to load SVG icons: {}", e);
+            eprintln!("Failed to load SVG icons: {e}");
         }
 
         Ok(Self {
@@ -146,7 +146,7 @@ impl UIManager {
 
             renderer
                 .draw_selection_mask(screen_rect, selection_rect_platform, mask_color)
-                .map_err(|e| UIError::RenderError(format!("draw selection mask failed: {}", e)))?;
+                .map_err(|e| UIError::RenderError(format!("draw selection mask failed: {e}")))?;
 
             // 绘制选择框边框
             if has_auto_highlight {
@@ -159,7 +159,7 @@ impl UIManager {
                 renderer
                     .draw_selection_border(selection_rect_platform, color, 3.0, None)
                     .map_err(|e| {
-                        UIError::RenderError(format!("draw auto-highlight border failed: {}", e))
+                        UIError::RenderError(format!("draw auto-highlight border failed: {e}"))
                     })?;
             } else {
                 let c = &crate::constants::COLOR_SELECTION_BORDER;
@@ -172,7 +172,7 @@ impl UIManager {
                 renderer
                     .draw_selection_border(selection_rect_platform, color, 2.0, None)
                     .map_err(|e| {
-                        UIError::RenderError(format!("draw selection border failed: {}", e))
+                        UIError::RenderError(format!("draw selection border failed: {e}"))
                     })?;
             }
 
@@ -200,7 +200,7 @@ impl UIManager {
                         1.0,
                     )
                     .map_err(|e| {
-                        UIError::RenderError(format!("draw selection handles failed: {}", e))
+                        UIError::RenderError(format!("draw selection handles failed: {e}"))
                     })?;
             }
         }
@@ -306,8 +306,8 @@ pub enum UIError {
 impl std::fmt::Display for UIError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UIError::RenderError(msg) => write!(f, "UI render error: {}", msg),
-            UIError::InitError(msg) => write!(f, "UI init error: {}", msg),
+            UIError::RenderError(msg) => write!(f, "UI render error: {msg}"),
+            UIError::InitError(msg) => write!(f, "UI init error: {msg}"),
         }
     }
 }

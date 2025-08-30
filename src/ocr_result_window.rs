@@ -578,7 +578,7 @@ impl OcrResultWindow {
                     let test_line = if current_line.is_empty() {
                         word.to_string()
                     } else {
-                        format!("{} {}", current_line, word)
+                        format!("{current_line} {word}")
                     };
 
                     // 测量文本宽度
@@ -661,7 +661,7 @@ impl OcrResultWindow {
     fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP, HBITMAP)> {
         unsafe {
             // 读取SVG文件
-            let svg_path = format!("icons/{}", filename);
+            let svg_path = format!("icons/{filename}");
             let svg_data = match std::fs::read_to_string(&svg_path) {
                 Ok(data) => data,
                 Err(_) => return None,
@@ -847,7 +847,7 @@ impl OcrResultWindow {
     fn load_svg_icon_from_file(filename: &str, size: i32) -> Option<(HBITMAP, HBITMAP)> {
         unsafe {
             // 读取SVG文件
-            let svg_path = format!("icons/{}", filename);
+            let svg_path = format!("icons/{filename}");
             let svg_data = match std::fs::read_to_string(&svg_path) {
                 Ok(data) => data,
                 Err(_) => return None,
@@ -1143,7 +1143,7 @@ impl OcrResultWindow {
         icon_rgb: (u8, u8, u8),
     ) -> Option<(HBITMAP, HBITMAP)> {
         unsafe {
-            let svg_path = format!("icons/{}", filename);
+            let svg_path = format!("icons/{filename}");
             let svg_data = std::fs::read_to_string(&svg_path).ok()?;
             let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default()).ok()?;
 
@@ -1684,7 +1684,7 @@ impl OcrResultWindow {
 
             // 计算每行的字节数（考虑4字节对齐）
             let bytes_per_pixel = (bit_count / 8) as usize;
-            let row_size = ((width as usize * bytes_per_pixel + 3) / 4) * 4; // 4字节对齐
+            let row_size = (width as usize * bytes_per_pixel).div_ceil(4) * 4; // 4字节对齐
 
             if !bits_ptr.is_null() {
                 let bits_slice = std::slice::from_raw_parts_mut(
@@ -2669,7 +2669,7 @@ impl OcrResultWindow {
                 let window = &*window_ptr;
 
                 // 检查是否在标题栏区域（参考test.rs的简洁方式）
-                if client_y >= 0 && client_y < TITLE_BAR_HEIGHT {
+                if (0..TITLE_BAR_HEIGHT).contains(&client_y) {
                     for icon in &window.svg_icons {
                         let in_click_area = if icon.is_title_bar_button {
                             // 标题栏按钮：使用按钮的完整宽度区域进行点击检测
@@ -2678,8 +2678,7 @@ impl OcrResultWindow {
                             let button_right = button_left + button_width;
                             client_x >= button_left
                                 && client_x <= button_right
-                                && client_y >= 0
-                                && client_y <= TITLE_BAR_HEIGHT
+                                && (0..=TITLE_BAR_HEIGHT).contains(&client_y)
                         } else {
                             // 普通图标：使用图标矩形区域加padding
                             let click_padding = ICON_CLICK_PADDING;
@@ -2887,8 +2886,7 @@ impl OcrResultWindow {
                                 let button_right = button_left + button_width;
                                 x >= button_left
                                     && x <= button_right
-                                    && y >= 0
-                                    && y < TITLE_BAR_HEIGHT
+                                    && (0..TITLE_BAR_HEIGHT).contains(&y)
                             } else {
                                 // 普通图标：使用图标矩形区域加padding
                                 let click_padding = ICON_CLICK_PADDING;
@@ -3057,7 +3055,7 @@ impl OcrResultWindow {
                         let mut needs_repaint = false;
 
                         // 处理SVG图标悬停（简化版本，参考test.rs）
-                        if y >= 0 && y <= TITLE_BAR_HEIGHT {
+                        if (0..=TITLE_BAR_HEIGHT).contains(&y) {
                             for icon in &mut window.svg_icons {
                                 let hovered = if icon.is_title_bar_button {
                                     // 标题栏按钮：简化版本（参考test.rs）

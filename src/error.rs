@@ -1,160 +1,134 @@
-// Unified Error Handling Module
-//
-// Centralized error types for consistent error management across the application
-
-use std::io;
+// 统一的错误处理模块
 use thiserror::Error;
 
-/// Main application error type
+/// 应用程序的统一错误类型
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("Platform error: {0}")]
-    Platform(#[from] PlatformError),
+    /// 渲染相关错误
+    #[error("渲染错误: {0}")]
+    Render(String),
 
-    #[error("Screenshot error: {0}")]
-    Screenshot(#[from] ScreenshotError),
+    /// 初始化相关错误
+    #[error("初始化错误: {0}")]
+    Init(String),
 
-    #[error("Drawing error: {0}")]
-    Drawing(#[from] DrawingError),
+    /// 截图相关错误
+    #[error("截图错误: {0}")]
+    Screenshot(String),
 
-    #[error("OCR error: {0}")]
-    Ocr(#[from] OcrError),
+    /// 绘图相关错误
+    #[error("绘图错误: {0}")]
+    Drawing(String),
 
-    #[error("UI error: {0}")]
-    UI(#[from] UIError),
+    /// UI相关错误
+    #[error("UI错误: {0}")]
+    UI(String),
 
-    #[error("System error: {0}")]
-    System(#[from] SystemError),
+    /// 系统相关错误（托盘、热键、OCR等）
+    #[error("系统错误: {0}")]
+    System(String),
 
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
+    /// 平台相关错误
+    #[error("平台错误: {0}")]
+    Platform(String),
 
-    #[error("Windows API error: {0}")]
-    Windows(String),
+    /// 文件操作错误
+    #[error("文件错误: {0}")]
+    File(String),
 
-    #[error("Configuration error: {0}")]
-    Config(String),
+    /// Windows API错误
+    #[error("Windows API错误: {0}")]
+    WinApi(String),
 
-    #[error("State error: {0}")]
-    State(String),
+    /// IO错误
+    #[error("IO错误: {0}")]
+    Io(#[from] std::io::Error),
 
-    #[error("Other error: {0}")]
-    Other(#[from] anyhow::Error),
+    /// Windows core错误
+    #[error("Windows错误: {0}")]
+    Windows(#[from] windows::core::Error),
+
+    /// 其他错误
+    #[error("错误: {0}")]
+    Other(String),
 }
 
-/// Platform-specific errors
-#[derive(Debug, Error)]
-pub enum PlatformError {
-    #[error("Initialization failed: {0}")]
-    InitializationError(String),
-
-    #[error("Rendering failed: {0}")]
-    RenderingError(String),
-
-    #[error("Resource creation failed: {0}")]
-    ResourceCreationError(String),
-
-    #[error("Platform not supported: {0}")]
-    UnsupportedPlatform(String),
+// 便捷的错误创建宏
+#[macro_export]
+macro_rules! app_error {
+    (Render, $msg:expr) => {
+        $crate::error::AppError::Render($msg.to_string())
+    };
+    (Init, $msg:expr) => {
+        $crate::error::AppError::Init($msg.to_string())
+    };
+    (Screenshot, $msg:expr) => {
+        $crate::error::AppError::Screenshot($msg.to_string())
+    };
+    (Drawing, $msg:expr) => {
+        $crate::error::AppError::Drawing($msg.to_string())
+    };
+    (UI, $msg:expr) => {
+        $crate::error::AppError::UI($msg.to_string())
+    };
+    (System, $msg:expr) => {
+        $crate::error::AppError::System($msg.to_string())
+    };
+    (Platform, $msg:expr) => {
+        $crate::error::AppError::Platform($msg.to_string())
+    };
+    (File, $msg:expr) => {
+        $crate::error::AppError::File($msg.to_string())
+    };
+    (WinApi, $msg:expr) => {
+        $crate::error::AppError::WinApi($msg.to_string())
+    };
+    ($msg:expr) => {
+        $crate::error::AppError::Other($msg.to_string())
+    };
 }
 
-/// Screenshot-related errors
-#[derive(Debug, Error)]
-pub enum ScreenshotError {
-    #[error("Screen capture failed: {0}")]
-    CaptureError(String),
+// 注意: From<std::io::Error> 和 From<windows::core::Error> 已经通过 #[from] 属性自动生成
 
-    #[error("Invalid selection area")]
-    InvalidSelection,
-
-    #[error("Save failed: {0}")]
-    SaveError(String),
-
-    #[error("Clipboard operation failed: {0}")]
-    ClipboardError(String),
-}
-
-/// Drawing-related errors
-#[derive(Debug, Error)]
-pub enum DrawingError {
-    #[error("Invalid drawing tool")]
-    InvalidTool,
-
-    #[error("Drawing operation failed: {0}")]
-    OperationError(String),
-
-    #[error("Element not found")]
-    ElementNotFound,
-
-    #[error("History operation failed: {0}")]
-    HistoryError(String),
-}
-
-/// OCR-related errors
-#[derive(Debug, Error)]
-pub enum OcrError {
-    #[error("OCR engine not available")]
-    EngineNotAvailable,
-
-    #[error("OCR processing failed: {0}")]
-    ProcessingError(String),
-
-    #[error("Invalid language: {0}")]
-    InvalidLanguage(String),
-
-    #[error("OCR initialization failed: {0}")]
-    InitializationError(String),
-}
-
-/// UI-related errors
-#[derive(Debug, Error)]
-pub enum UIError {
-    #[error("Window creation failed: {0}")]
-    WindowCreationError(String),
-
-    #[error("Dialog operation failed: {0}")]
-    DialogError(String),
-
-    #[error("Invalid UI state: {0}")]
-    InvalidState(String),
-
-    #[error("Icon loading failed: {0}")]
-    IconError(String),
-}
-
-/// System-related errors
-#[derive(Debug, Error)]
-pub enum SystemError {
-    #[error("Hotkey registration failed: {0}")]
-    HotkeyError(String),
-
-    #[error("System tray operation failed: {0}")]
-    TrayError(String),
-
-    #[error("Window detection failed: {0}")]
-    WindowDetectionError(String),
-
-    #[error("Timer operation failed: {0}")]
-    TimerError(String),
-}
-
-/// Result type alias for convenience
+// Result类型别名
 pub type AppResult<T> = Result<T, AppError>;
 
-/// Convert Windows HRESULT to AppError
-impl From<windows::core::Error> for AppError {
-    fn from(err: windows::core::Error) -> Self {
-        AppError::Windows(format!("Windows API error: {:?}", err))
+// 错误处理辅助函数
+pub fn log_error(error: &AppError) {
+    eprintln!("[错误] {error}");
+}
+
+pub fn log_and_return_error<T>(error: AppError) -> Result<T, AppError> {
+    log_error(&error);
+    Err(error)
+}
+
+// 链式错误上下文添加
+pub trait ErrorContext<T> {
+    fn context(self, msg: &str) -> Result<T, AppError>;
+    fn with_context<F>(self, f: F) -> Result<T, AppError>
+    where
+        F: FnOnce() -> String;
+}
+
+impl<T, E> ErrorContext<T> for Result<T, E>
+where
+    E: Into<AppError>,
+{
+    fn context(self, msg: &str) -> Result<T, AppError> {
+        self.map_err(|e| {
+            let base_error = e.into();
+            AppError::Other(format!("{msg}: {base_error}"))
+        })
     }
-}
 
-/// Helper trait for converting Windows results
-pub trait IntoAppResult<T> {
-    fn into_app_result(self) -> AppResult<T>;
-}
-
-impl<T> IntoAppResult<T> for windows::core::Result<T> {
-    fn into_app_result(self) -> AppResult<T> {
-        self.map_err(|e| AppError::Windows(format!("{:?}", e)))
+    fn with_context<F>(self, f: F) -> Result<T, AppError>
+    where
+        F: FnOnce() -> String,
+    {
+        self.map_err(|e| {
+            let base_error = e.into();
+            AppError::Other(format!("{}: {}", f(), base_error))
+        })
     }
 }

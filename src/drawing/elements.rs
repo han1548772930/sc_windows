@@ -12,6 +12,12 @@ pub struct ElementManager {
     elements: Vec<DrawingElement>,
 }
 
+impl Default for ElementManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ElementManager {
     /// 创建新的元素管理器
     pub fn new() -> Self {

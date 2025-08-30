@@ -72,6 +72,12 @@ pub struct SelectionState {
     interaction_start_rect: RECT,
 }
 
+impl Default for SelectionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SelectionState {
     /// 创建新的选择状态
     pub fn new() -> Self {

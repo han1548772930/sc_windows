@@ -206,7 +206,7 @@ impl ScreenshotManager {
 
         unsafe {
             crate::platform::windows::gdi::capture_screen_region_to_hbitmap(screen_rect)
-                .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {:?}", e)))
+                .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {e:?}")))
         }
     }
 
@@ -273,7 +273,7 @@ impl ScreenshotManager {
 
         // 刷新窗口列表（从原始代码迁移）
         if let Err(e) = self.window_detector.refresh_windows() {
-            eprintln!("Warning: Failed to refresh windows: {:?}", e);
+            eprintln!("Warning: Failed to refresh windows: {e:?}");
             // 继续运行，不退出程序
         }
 
@@ -308,10 +308,7 @@ impl ScreenshotManager {
                 let d2d_bitmap = d2d_renderer
                     .create_d2d_bitmap_from_gdi(temp_dc, self.screen_width, self.screen_height)
                     .map_err(|e| {
-                        ScreenshotError::RenderError(format!(
-                            "Failed to create D2D bitmap: {:?}",
-                            e
-                        ))
+                        ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {e:?}"))
                     })?;
 
                 // 清理临时资源
@@ -342,11 +339,8 @@ impl ScreenshotManager {
         // 第二优先级：检测拖拽开始（从原始代码迁移）
         if self.selection.is_mouse_pressed() && self.auto_highlight_enabled {
             let drag_start = self.selection.get_interaction_start_pos();
-            let dx = (x - drag_start.x).abs();
-            let dy = (y - drag_start.y).abs();
-            const DRAG_THRESHOLD: i32 = 5; // 拖拽阈值
 
-            if dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD {
+            if crate::utils::is_drag_threshold_exceeded(drag_start.x, drag_start.y, x, y) {
                 // 开始拖拽，禁用自动高亮（从原始代码迁移）
                 self.auto_highlight_enabled = false;
 
@@ -390,23 +384,21 @@ impl ScreenshotManager {
 
                 if let Some(control) = control_info {
                     // 优先显示子控件高亮，并限制在屏幕范围内（按照原始代码逻辑）
-                    let limited_rect = windows::Win32::Foundation::RECT {
-                        left: control.rect.left.max(0),
-                        top: control.rect.top.max(0),
-                        right: control.rect.right.min(self.screen_width),
-                        bottom: control.rect.bottom.min(self.screen_height),
-                    };
+                    let limited_rect = crate::utils::clamp_rect_to_screen(
+                        control.rect,
+                        self.screen_width,
+                        self.screen_height,
+                    );
                     // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
                     (vec![Command::RequestRedraw], true)
                 } else if let Some(window) = window_info {
                     // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内（按照原始代码逻辑）
-                    let limited_rect = windows::Win32::Foundation::RECT {
-                        left: window.rect.left.max(0),
-                        top: window.rect.top.max(0),
-                        right: window.rect.right.min(self.screen_width),
-                        bottom: window.rect.bottom.min(self.screen_height),
-                    };
+                    let limited_rect = crate::utils::clamp_rect_to_screen(
+                        window.rect,
+                        self.screen_width,
+                        self.screen_height,
+                    );
                     // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
                     (vec![Command::RequestRedraw], true)
@@ -492,9 +484,9 @@ impl ScreenshotManager {
         // 绘图工具完成处理已移至Drawing模块
 
         // 检查是否是单击（没有拖拽）（从原始代码迁移）
+        let start_pos = self.selection.get_interaction_start_pos();
         let is_click = self.selection.is_mouse_pressed()
-            && (x - self.selection.get_interaction_start_pos().x).abs() < 5
-            && (y - self.selection.get_interaction_start_pos().y).abs() < 5;
+            && !crate::utils::is_drag_threshold_exceeded(start_pos.x, start_pos.y, x, y);
 
         // 处理选择框创建和拖拽结束
         if self.selection.is_selecting() {
@@ -633,11 +625,11 @@ impl From<crate::system::SystemError> for ScreenshotError {
 impl std::fmt::Display for ScreenshotError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScreenshotError::CaptureError(msg) => write!(f, "Capture error: {}", msg),
-            ScreenshotError::SaveError(msg) => write!(f, "Save error: {}", msg),
-            ScreenshotError::InitError(msg) => write!(f, "Init error: {}", msg),
-            ScreenshotError::RenderError(msg) => write!(f, "Render error: {}", msg),
-            ScreenshotError::SystemError(err) => write!(f, "System error: {}", err),
+            ScreenshotError::CaptureError(msg) => write!(f, "Capture error: {msg}"),
+            ScreenshotError::SaveError(msg) => write!(f, "Save error: {msg}"),
+            ScreenshotError::InitError(msg) => write!(f, "Init error: {msg}"),
+            ScreenshotError::RenderError(msg) => write!(f, "Render error: {msg}"),
+            ScreenshotError::SystemError(err) => write!(f, "System error: {err}"),
         }
     }
 }

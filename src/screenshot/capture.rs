@@ -25,7 +25,7 @@ pub fn capture_region_to_hbitmap(
     // 委托平台层统一实现，避免重复的 GDI 代码分散在多处
     unsafe {
         crate::platform::windows::gdi::capture_screen_region_to_hbitmap(rect)
-            .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {:?}", e)))
+            .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {e:?}")))
     }
 }
 

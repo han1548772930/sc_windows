@@ -109,25 +109,23 @@ pub fn save_hbitmap_to_file(
 
         // 写入文件
         let mut file = File::create(path)
-            .map_err(|e| ScreenshotError::SaveError(format!("Failed to create file: {}", e)))?;
+            .map_err(|e| ScreenshotError::SaveError(format!("Failed to create file: {e}")))?;
 
         // 写入文件头
         let file_header_bytes = std::slice::from_raw_parts(
             &file_header as *const _ as *const u8,
             std::mem::size_of::<BITMAPFILEHEADER>(),
         );
-        file.write_all(file_header_bytes).map_err(|e| {
-            ScreenshotError::SaveError(format!("Failed to write file header: {}", e))
-        })?;
+        file.write_all(file_header_bytes)
+            .map_err(|e| ScreenshotError::SaveError(format!("Failed to write file header: {e}")))?;
 
         // 写入信息头
         let info_header_bytes = std::slice::from_raw_parts(
             &bmi.bmiHeader as *const _ as *const u8,
             std::mem::size_of::<BITMAPINFOHEADER>(),
         );
-        file.write_all(info_header_bytes).map_err(|e| {
-            ScreenshotError::SaveError(format!("Failed to write info header: {}", e))
-        })?;
+        file.write_all(info_header_bytes)
+            .map_err(|e| ScreenshotError::SaveError(format!("Failed to write info header: {e}")))?;
 
         // 写入像素数据（从底部开始，因为BMP是倒置的）
         for y in (0..height).rev() {
@@ -135,14 +133,14 @@ pub fn save_hbitmap_to_file(
             let row_end = row_start + (width * 3) as usize;
             if row_end <= bgr_data.len() {
                 file.write_all(&bgr_data[row_start..row_end]).map_err(|e| {
-                    ScreenshotError::SaveError(format!("Failed to write pixel data: {}", e))
+                    ScreenshotError::SaveError(format!("Failed to write pixel data: {e}"))
                 })?;
 
                 // 写入行填充
                 if padding > 0 {
                     let padding_bytes = vec![0u8; padding as usize];
                     file.write_all(&padding_bytes).map_err(|e| {
-                        ScreenshotError::SaveError(format!("Failed to write padding: {}", e))
+                        ScreenshotError::SaveError(format!("Failed to write padding: {e}"))
                     })?;
                 }
             }

@@ -55,7 +55,7 @@ impl PaddleOcrEngine {
         std::thread::spawn(|| {
             if let Err(e) = Self::start_ocr_engine_sync() {
                 #[cfg(debug_assertions)]
-                eprintln!("异步启动OCR引擎失败: {}", e);
+                eprintln!("异步启动OCR引擎失败: {e}");
             }
         });
     }
@@ -85,7 +85,7 @@ impl PaddleOcrEngine {
 
             let elapsed = start_time.elapsed();
             #[cfg(debug_assertions)]
-            println!("OCR引擎启动成功，耗时: {:?}", elapsed);
+            println!("OCR引擎启动成功，耗时: {elapsed:?}");
         }
 
         Ok(())
@@ -131,7 +131,7 @@ impl PaddleOcrEngine {
 
                     let elapsed = start_time.elapsed();
                     #[cfg(debug_assertions)]
-                    println!("OCR引擎已停止，耗时: {:?}", elapsed);
+                    println!("OCR引擎已停止，耗时: {elapsed:?}");
                 }
             }
         }
@@ -237,12 +237,12 @@ impl PaddleOcrEngine {
                 // 尝试启动引擎
                 if let Err(e) = Self::start_ocr_engine_sync() {
                     #[cfg(debug_assertions)]
-                    eprintln!("启动OCR引擎失败: {}", e);
+                    eprintln!("启动OCR引擎失败: {e}");
                 } else {
                     // 启动成功，重新检查状态
                     engine_ready = Self::is_engine_ready();
                     #[cfg(debug_assertions)]
-                    println!("OCR引擎启动成功，状态: {}", engine_ready);
+                    println!("OCR引擎启动成功，状态: {engine_ready}");
                 }
             }
 
@@ -263,7 +263,7 @@ impl PaddleOcrEngine {
         {
             // 使用taskkill命令强制终止PaddleOCR进程
             let result = Command::new("taskkill")
-                .args(&["/F", "/IM", "PaddleOCR-json.exe"])
+                .args(["/F", "/IM", "PaddleOCR-json.exe"])
                 .creation_flags(0x08000000) // CREATE_NO_WINDOW
                 .output();
 
@@ -275,12 +275,12 @@ impl PaddleOcrEngine {
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         if !stderr.contains("找不到") && !stderr.contains("not found") {
-                            println!("终止PaddleOCR进程时出现警告: {}", stderr);
+                            println!("终止PaddleOCR进程时出现警告: {stderr}");
                         }
                     }
                 }
                 Err(e) => {
-                    println!("执行taskkill命令失败: {}", e);
+                    println!("执行taskkill命令失败: {e}");
                 }
             }
         }
@@ -313,15 +313,13 @@ impl PaddleOcrEngine {
         let settings = crate::settings::Settings::load();
         let language = &settings.ocr_language;
 
-        let config_path = match language.as_str() {
+        match language.as_str() {
             "english" => Some(PathBuf::from("models\\config_en.txt")),
             "chinese_cht" => Some(PathBuf::from("models\\config_chinese_cht.txt")),
             "japan" => Some(PathBuf::from("models\\config_japan.txt")),
             "korean" => Some(PathBuf::from("models\\config_korean.txt")),
             "chinese" | _ => None,
-        };
-
-        config_path
+        }
     }
 
     /// 从文件路径识别文本（使用 PaddleOCR）
@@ -343,15 +341,13 @@ impl PaddleOcrEngine {
     /// 从内存中的图像数据识别文本
     pub fn recognize_from_memory(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
         // 方法1: 使用位图临时文件方式（快速可靠）
-        match self.recognize_from_bitmap_file(image_data) {
-            Ok(results) => return Ok(results),
-            Err(_) => {}
+        if let Ok(results) = self.recognize_from_bitmap_file(image_data) {
+            return Ok(results);
         }
 
         // 方法2: 使用Base64方式（备用）
-        match self.recognize_from_base64(image_data) {
-            Ok(results) => return Ok(results),
-            Err(_) => {}
+        if let Ok(results) = self.recognize_from_base64(image_data) {
+            return Ok(results);
         }
 
         Err(anyhow::anyhow!("OCR识别失败"))
@@ -413,7 +409,7 @@ impl PaddleOcrEngine {
 
         // 为每个图像创建临时文件并逐个识别
         for (i, image_data) in images_data.iter().enumerate() {
-            let temp_path = std::env::temp_dir().join(format!("screenshot_ocr_line_{}.bmp", i));
+            let temp_path = std::env::temp_dir().join(format!("screenshot_ocr_line_{i}.bmp"));
             std::fs::write(&temp_path, image_data)?;
 
             // 使用全局 PaddleOCR 引擎识别单个文件
@@ -587,7 +583,7 @@ pub fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Resul
     // 处理每一行：按 X 坐标排序并合并文本
     let mut final_results = Vec::new();
 
-    for (_line_index, mut line_blocks) in text_lines.into_iter().enumerate() {
+    for mut line_blocks in text_lines.into_iter() {
         // 按 X 坐标排序
         line_blocks.sort_by(|a, b| a.bounding_box.x.cmp(&b.bounding_box.x));
 

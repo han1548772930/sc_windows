@@ -14,6 +14,12 @@ pub struct SvgIconManager {
     rendered_icons: RefCell<HashMap<(ToolbarButton, Option<(u8, u8, u8)>), ID2D1Bitmap>>,
 }
 
+impl Default for SvgIconManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SvgIconManager {
     pub fn new() -> Self {
         Self {
@@ -87,12 +93,12 @@ impl SvgIconManager {
         let mut svg_str = String::from_utf8_lossy(svg_data).to_string();
 
         if let Some((r, g, b)) = color {
-            let color_hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
+            let color_hex = format!("#{r:02x}{g:02x}{b:02x}");
             svg_str = svg_str.replace(
                 "stroke=\"currentColor\"",
-                &format!("stroke=\"{}\"", color_hex),
+                &format!("stroke=\"{color_hex}\""),
             );
-            svg_str = svg_str.replace("fill=\"currentColor\"", &format!("fill=\"{}\"", color_hex));
+            svg_str = svg_str.replace("fill=\"currentColor\"", &format!("fill=\"{color_hex}\""));
         }
 
         let opt = usvg::Options::default();

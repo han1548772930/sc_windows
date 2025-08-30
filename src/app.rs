@@ -1,8 +1,11 @@
 use crate::drawing::DrawingManager;
+use crate::error::{AppError, AppResult};
+use crate::event_handler::{
+    KeyboardEventHandler, MouseEventHandler, SystemEventHandler, WindowEventHandler,
+};
 use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::screenshot::ScreenshotManager;
-use crate::settings::SettingsWindow;
 use crate::system::SystemManager;
 use crate::ui::UIManager;
 
@@ -21,10 +24,9 @@ pub struct App {
 }
 
 impl App {
-    /// 创建新的应用程序实例
     pub fn new(
         platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
-    ) -> Result<Self, AppError> {
+    ) -> AppResult<Self> {
         let screenshot = ScreenshotManager::new()?;
 
         Ok(Self {
@@ -36,11 +38,6 @@ impl App {
         })
     }
 
-    /// 设置当前窗口句柄
-    pub fn set_current_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
-        self.screenshot.set_current_window(hwnd);
-    }
-
     /// 重置到初始状态
     pub fn reset_to_initial_state(&mut self) {
         self.screenshot.reset_state();
@@ -48,22 +45,15 @@ impl App {
         self.ui.reset_state();
     }
 
-    /// 获取当前的GDI截图位图句柄
-    pub fn get_gdi_screenshot_bitmap(&self) -> Option<windows::Win32::Graphics::Gdi::HBITMAP> {
-        self.screenshot.capture_screen_to_gdi_bitmap().ok()
-    }
-
     /// 绘制窗口内容
-    pub fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> Result<(), AppError> {
+    pub fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 
         unsafe {
             let mut ps = PAINTSTRUCT::default();
             BeginPaint(hwnd, &mut ps);
 
-            if let Err(e) = self.render() {
-                eprintln!("Render error: {}", e);
-            }
+            let _ = self.render();
 
             let _ = EndPaint(hwnd, &ps);
         }
@@ -72,10 +62,10 @@ impl App {
     }
 
     /// 渲染所有组件
-    pub fn render(&mut self) -> Result<(), AppError> {
+    pub fn render(&mut self) -> AppResult<()> {
         self.platform
             .begin_frame()
-            .map_err(|e| AppError::RenderError(format!("Failed to begin frame: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to begin frame: {e:?}")))?;
 
         self.platform
             .clear(crate::platform::Color {
@@ -84,17 +74,17 @@ impl App {
                 b: 0.0,
                 a: 0.0,
             })
-            .map_err(|e| AppError::RenderError(format!("Failed to clear: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to clear: {e:?}")))?;
 
         self.screenshot
             .render(&mut *self.platform)
-            .map_err(|e| AppError::RenderError(format!("Failed to render screenshot: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to render screenshot: {e:?}")))?;
 
         let selection_rect = self.screenshot.get_selection();
 
         self.drawing
             .render(&mut *self.platform, selection_rect.as_ref())
-            .map_err(|e| AppError::RenderError(format!("Failed to render drawing: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to render drawing: {e:?}")))?;
 
         let screen_size = (
             self.screenshot.get_screen_width(),
@@ -113,17 +103,15 @@ impl App {
                 hide_ui_for_capture,
                 has_auto_highlight,
             )
-            .map_err(|e| {
-                AppError::RenderError(format!("Failed to render selection UI: {:?}", e))
-            })?;
+            .map_err(|e| AppError::Render(format!("Failed to render selection UI: {e:?}")))?;
 
         self.ui
             .render(&mut *self.platform)
-            .map_err(|e| AppError::RenderError(format!("Failed to render UI: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to render UI: {e:?}")))?;
 
         self.platform
             .end_frame()
-            .map_err(|e| AppError::RenderError(format!("Failed to end frame: {:?}", e)))?;
+            .map_err(|e| AppError::Render(format!("Failed to end frame: {e:?}")))?;
 
         Ok(())
     }
@@ -136,14 +124,9 @@ impl App {
 
                 if let ScreenshotMessage::StartCapture = msg {
                     if commands.contains(&Command::ShowOverlay) {
-                        if let Err(e) = self
+                        let _ = self
                             .screenshot
-                            .create_d2d_bitmap_from_gdi(&mut *self.platform)
-                        {
-                            eprintln!("Failed to create D2D bitmap: {:?}", e);
-                        } else {
-                            eprintln!("D2D bitmap created successfully");
-                        }
+                            .create_d2d_bitmap_from_gdi(&mut *self.platform);
 
                         self.drawing.reset_state();
                         self.update_toolbar_state();
@@ -172,47 +155,39 @@ impl App {
         }
     }
 
-    /// 初始化系统托盘（从原始代码迁移）
+    /// 初始化系统托盘
     pub fn init_system_tray(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), AppError> {
-        // 通过系统管理器初始化托盘
+    ) -> AppResult<()> {
         self.system
             .initialize(hwnd)
-            .map_err(|e| AppError::InitError(format!("Failed to initialize system tray: {}", e)))
+            .map_err(|e| AppError::Init(format!("Failed to initialize system tray: {e}")))
     }
 
-    /// 启动异步OCR引擎状态检查（从原始代码迁移）
+    /// 启动异步OCR引擎状态检查
     pub fn start_async_ocr_check(&mut self, hwnd: windows::Win32::Foundation::HWND) {
-        // 通过系统管理器启动OCR引擎状态检查
         self.system.start_async_ocr_check(hwnd);
     }
 
-    /// 处理光标定时器（从原始代码迁移）
+    /// 处理光标定时器（用于文本输入光标闪烁）
     pub fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
-        // 通过绘图管理器处理光标定时器（主要用于文本输入光标闪烁）
         self.drawing.handle_cursor_timer(timer_id)
     }
 
-    /// 异步停止OCR引擎（从原始代码迁移）
+    /// 异步停止OCR引擎
     pub fn stop_ocr_engine_async(&mut self) {
         self.system.stop_ocr_engine_async();
     }
 
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     pub fn reload_settings(&mut self) -> Vec<Command> {
-        // 重新加载设置并更新各个管理器
         self.system.reload_settings();
-
-        // 重新加载绘图属性（与旧代码保持一致）
         self.drawing.reload_drawing_properties();
-
-        // 返回需要执行的命令
         vec![Command::UpdateToolbar, Command::RequestRedraw]
     }
 
-    /// 重新注册热键（从原始代码迁移）
+    /// 重新注册热键
     pub fn reregister_hotkey(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
@@ -220,7 +195,7 @@ impl App {
         self.system.reregister_hotkey(hwnd)
     }
 
-    /// 更新OCR引擎状态（从原始代码迁移）
+    /// 更新OCR引擎状态
     pub fn update_ocr_engine_status(
         &mut self,
         available: bool,
@@ -229,7 +204,7 @@ impl App {
         self.system.update_ocr_engine_status(available, hwnd);
     }
 
-    /// 处理键盘输入（从原始代码迁移，统一处理所有按键）
+    /// 处理键盘输入
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
         use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
         match key {
@@ -254,240 +229,23 @@ impl App {
         }
     }
 
-    /// 选择绘图工具（从原始代码迁移）
+    /// 选择绘图工具
     pub fn select_drawing_tool(
         &mut self,
         tool: crate::types::DrawingTool,
     ) -> Vec<crate::message::Command> {
-        // 通过绘图管理器选择工具
         let message = crate::message::DrawingMessage::SelectTool(tool);
-        let commands = self.drawing.handle_message(message);
-
-        // 返回绘图管理器产生的命令
-        commands
+        self.drawing.handle_message(message)
     }
 
-    /// 创建D2D位图（从原始代码迁移，使用平台无关接口）
-    pub fn create_d2d_bitmap_from_gdi(&mut self) -> Result<(), AppError> {
+    /// 创建D2D位图
+    pub fn create_d2d_bitmap_from_gdi(&mut self) -> AppResult<()> {
         self.screenshot
             .create_d2d_bitmap_from_gdi(&mut *self.platform)
-            .map_err(|e| AppError::RenderError(format!("Failed to create D2D bitmap: {:?}", e)))
+            .map_err(|e| AppError::Render(format!("Failed to create D2D bitmap: {e:?}")))
     }
 
-    /// 执行单个命令（从main.rs的handle_commands迁移）
-    /// 这个方法负责处理所有类型的命令，并返回可能产生的新命令
-    pub fn execute_command(
-        &mut self,
-        command: Command,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> Vec<Command> {
-        use crate::message::{Command, DrawingMessage};
-        use windows::Win32::Foundation::*;
-        use windows::Win32::Graphics::Gdi::InvalidateRect;
-        use windows::Win32::UI::WindowsAndMessaging::*;
-
-        match command {
-            Command::RequestRedraw => {
-                unsafe {
-                    let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                }
-                vec![]
-            }
-            Command::UI(ui_message) => {
-                // 处理UI消息
-                self.handle_message(Message::UI(ui_message))
-            }
-            Command::Drawing(drawing_message) => {
-                // 检查是否应该禁用某些绘图命令（从原始代码迁移）
-                let should_execute = match &drawing_message {
-                    DrawingMessage::Undo => self.can_undo(),
-                    _ => true,
-                };
-
-                if should_execute {
-                    // 处理绘图消息
-                    self.handle_message(Message::Drawing(drawing_message))
-                } else {
-                    vec![]
-                }
-            }
-            Command::SelectDrawingTool(tool) => {
-                // 处理绘图工具选择
-                let mut commands = self.select_drawing_tool(tool);
-                commands.push(Command::RequestRedraw);
-                commands
-            }
-            Command::ShowOverlay => {
-                // 显示覆盖层（截图成功）
-                // 覆盖层显示时再次异步预热OCR引擎，避免后续再次使用时冷启动卡顿
-                crate::ocr::PaddleOcrEngine::start_ocr_engine_async();
-                self.start_async_ocr_check(hwnd);
-                vec![]
-            }
-            Command::HideOverlay => {
-                // 隐藏覆盖层（取消或确认）
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-                vec![]
-            }
-            Command::HideWindow => {
-                // 隐藏窗口（从原始代码迁移）
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
-                vec![]
-            }
-            Command::SaveSelectionToFile => {
-                // 保存选择区域到文件（从原始代码迁移）
-                match self.save_selection_to_file(hwnd) {
-                    Ok(true) => {
-                        // 保存成功，隐藏窗口并重置状态
-                        unsafe {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                        }
-                        self.reset_to_initial_state();
-                        vec![]
-                    }
-                    Ok(false) => {
-                        // 用户取消，不做任何操作
-                        vec![]
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to save selection to file: {}", e);
-                        vec![Command::ShowError(format!("保存失败: {}", e))]
-                    }
-                }
-            }
-            Command::SaveSelectionToClipboard => {
-                // 复制选择区域到剪贴板（从原始代码迁移）
-                match self.save_selection_to_clipboard(hwnd) {
-                    Ok(_) => {
-                        unsafe {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                        }
-                        self.reset_to_initial_state();
-                        vec![]
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to copy selection to clipboard: {}", e);
-                        vec![Command::ShowError(format!("复制失败: {}", e))]
-                    }
-                }
-            }
-            Command::UpdateToolbar => {
-                // 更新工具栏状态
-                self.update_toolbar_state();
-                vec![]
-            }
-            Command::ShowSettings => {
-                // 显示设置窗口（使用传统的 Win32 实现）
-                let _ = SettingsWindow::show(windows::Win32::Foundation::HWND::default());
-                vec![]
-            }
-            Command::TakeScreenshot => {
-                // 执行截图（从原始代码迁移）
-                match self.take_screenshot(hwnd) {
-                    Ok(_) => vec![],
-                    Err(e) => {
-                        eprintln!("Failed to take screenshot: {}", e);
-                        vec![Command::ShowError(format!("截图失败: {}", e))]
-                    }
-                }
-            }
-            Command::ExtractText => {
-                // 提取文本（从原始代码迁移）
-                match self.extract_text_from_selection(hwnd) {
-                    Ok(_) => {
-                        // OCR完成后隐藏截屏窗口（从原始代码迁移）
-                        unsafe {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                        }
-                        self.reset_to_initial_state();
-                        vec![]
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to extract text: {}", e);
-                        vec![Command::ShowError(format!("文本提取失败: {}", e))]
-                    }
-                }
-            }
-            Command::PinSelection => {
-                // 固定选择区域（从原始代码迁移）
-                match self.pin_selection(hwnd) {
-                    Ok(_) => vec![],
-                    Err(e) => {
-                        eprintln!("Failed to pin selection: {}", e);
-                        vec![Command::ShowError(format!("固定失败: {}", e))]
-                    }
-                }
-            }
-            Command::ResetToInitialState => {
-                // 重置到初始状态（从原始代码迁移）
-                self.reset_to_initial_state();
-                vec![]
-            }
-            Command::CopyToClipboard => {
-                // 复制到剪贴板（重定向到 SaveSelectionToClipboard）
-                self.execute_command(Command::SaveSelectionToClipboard, hwnd)
-            }
-            Command::ShowSaveDialog => {
-                // 显示保存对话框（从原始代码迁移）
-                match self.save_selection_to_file(hwnd) {
-                    Ok(true) => {
-                        unsafe {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
-                        }
-                        self.reset_to_initial_state();
-                        vec![]
-                    }
-                    Ok(false) => {
-                        // 用户取消，不做任何操作
-                        vec![]
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to show save dialog: {}", e);
-                        vec![Command::ShowError(format!("保存失败: {}", e))]
-                    }
-                }
-            }
-            Command::StartTimer(timer_id, interval_ms) => {
-                // 启动定时器（从原始代码迁移，用于文本编辑光标闪烁）
-                unsafe {
-                    let _ = SetTimer(Some(hwnd), timer_id as usize, interval_ms, None);
-                }
-                vec![]
-            }
-            Command::StopTimer(timer_id) => {
-                // 停止定时器（从原始代码迁移）
-                unsafe {
-                    let _ = KillTimer(Some(hwnd), timer_id as usize);
-                }
-                vec![]
-            }
-            Command::ReloadSettings => {
-                // 重新加载设置（从原始代码迁移）
-                let commands = self.reload_settings();
-                commands
-            }
-            Command::ShowError(msg) => {
-                // 显示错误消息
-                eprintln!("Error: {}", msg);
-                vec![]
-            }
-            Command::Quit => {
-                // 退出应用
-                unsafe {
-                    PostQuitMessage(0);
-                }
-                vec![]
-            }
-            Command::None => {
-                // 无操作，忽略
-                vec![]
-            }
-        }
-    }
+    // execute_command 方法已经移动到 command_executor.rs
 
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
@@ -521,11 +279,9 @@ impl App {
             // 获取文本编辑元素信息
             let editing_element_info = if is_text_editing {
                 if let Some(edit_idx) = self.drawing.get_editing_element_index() {
-                    if let Some(el) = self.drawing.get_element_ref(edit_idx) {
-                        Some((el.clone(), edit_idx))
-                    } else {
-                        None
-                    }
+                    self.drawing
+                        .get_element_ref(edit_idx)
+                        .map(|el| (el.clone(), edit_idx))
                 } else {
                     None
                 }
@@ -536,11 +292,9 @@ impl App {
             // 获取选中元素信息
             let selected_element_info =
                 if let Some(sel_idx) = self.drawing.get_selected_element_index() {
-                    if let Some(el) = self.drawing.get_element_ref(sel_idx) {
-                        Some((el.clone(), sel_idx))
-                    } else {
-                        None
-                    }
+                    self.drawing
+                        .get_element_ref(sel_idx)
+                        .map(|el| (el.clone(), sel_idx))
                 } else {
                     None
                 };
@@ -627,7 +381,7 @@ impl App {
         commands
     }
 
-    /// 处理双击事件（从原始代码迁移）
+    /// 处理双击事件
     pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
         let mut commands = Vec::new();
 
@@ -651,7 +405,7 @@ impl App {
         commands
     }
 
-    /// 处理文本输入（从原始代码迁移）
+    /// 处理文本输入
     pub fn handle_text_input(&mut self, character: char) -> Vec<Command> {
         let mut commands = Vec::new();
 
@@ -661,17 +415,19 @@ impl App {
         commands
     }
 
-    /// 处理托盘消息（从原始代码迁移）
+    /// 处理托盘消息
     pub fn handle_tray_message(&mut self, wparam: u32, lparam: u32) -> Vec<Command> {
         // 通过系统管理器处理托盘消息
         self.system.handle_tray_message(wparam, lparam)
     }
 
-    /// 执行截图（从原始代码迁移）
+    /// 执行截图
     pub fn take_screenshot(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), AppError> {
+    ) -> AppResult<()> {
+        use crate::utils::win_api;
+
         // 重置状态并开始截图（按照原始代码逻辑）
         self.screenshot.reset_state();
 
@@ -680,25 +436,19 @@ impl App {
         self.screenshot.capture_screen()?;
 
         // 显示窗口进入选择模式
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                hwnd,
-                windows::Win32::UI::WindowsAndMessaging::SW_SHOW,
-            );
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
-        }
+        let _ = win_api::show_window(hwnd);
 
         Ok(())
     }
 
     /// 直接捕获屏幕（用于热键处理，与原始代码一致）
-    pub fn capture_screen_direct(&mut self) -> Result<(), AppError> {
+    pub fn capture_screen_direct(&mut self) -> AppResult<()> {
         self.screenshot
             .capture_screen()
-            .map_err(|e| AppError::ScreenshotError(e))
+            .map_err(|e| AppError::Screenshot(format!("Failed to capture screen: {e:?}")))
     }
 
-    /// 更新工具栏状态以反映当前选中的绘图工具（从原始代码迁移）
+    /// 更新工具栏状态以反映当前选中的绘图工具
     pub fn update_toolbar_state(&mut self) {
         use crate::types::DrawingTool;
         use crate::types::ToolbarButton;
@@ -730,7 +480,7 @@ impl App {
     pub fn save_selection_to_clipboard(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), AppError> {
+    ) -> AppResult<()> {
         use windows::Win32::Graphics::Gdi::DeleteObject;
 
         // 获取选择区域
@@ -754,9 +504,8 @@ impl App {
                 Ok(b) => b,
                 Err(e) => {
                     self.screenshot.show_ui_after_capture(hwnd);
-                    return Err(AppError::InitError(format!(
-                        "Failed to capture region: {:?}",
-                        e
+                    return Err(AppError::Screenshot(format!(
+                        "Failed to capture region: {e:?}"
                     )));
                 }
             };
@@ -770,7 +519,7 @@ impl App {
             }
 
             copy_result
-                .map_err(|e| AppError::InitError(format!("Failed to copy to clipboard: {:?}", e)))
+                .map_err(|e| AppError::Screenshot(format!("Failed to copy to clipboard: {e:?}")))
         };
 
         // 恢复UI元素
@@ -813,9 +562,8 @@ impl App {
                 Ok(b) => b,
                 Err(e) => {
                     self.screenshot.show_ui_after_capture(hwnd);
-                    return Err(AppError::InitError(format!(
-                        "Failed to capture region: {:?}",
-                        e
+                    return Err(AppError::Screenshot(format!(
+                        "Failed to capture region: {e:?}"
                     )));
                 }
             };
@@ -829,19 +577,19 @@ impl App {
                 let _ = DeleteObject(bitmap.into());
             }
 
-            save_result.map_err(|e| format!("Failed to save file: {:?}", e))
+            save_result.map_err(|e| format!("Failed to save file: {e:?}"))
         };
 
         // 恢复UI元素
         self.screenshot.show_ui_after_capture(hwnd);
-        result.map(|_| true).map_err(|e| AppError::InitError(e))
+        result.map(|_| true).map_err(|e| AppError::File(e))
     }
 
     /// 从选择区域提取文本（简化版本 - 委托给OcrManager）
     pub fn extract_text_from_selection(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), AppError> {
+    ) -> AppResult<()> {
         // 检查是否有选择区域
         let Some(selection_rect) = self.screenshot.get_selection() else {
             return Ok(());
@@ -850,14 +598,14 @@ impl App {
         // 委托给SystemManager处理整个OCR流程
         self.system
             .recognize_text_from_selection(selection_rect, hwnd, &mut self.screenshot)
-            .map_err(|e| AppError::InitError(format!("OCR识别失败: {}", e)))
+            .map_err(|e| AppError::System(format!("OCR识别失败: {e}")))
     }
 
-    /// 固定选择区域（从原始代码迁移）
+    /// 固定选择区域
     pub fn pin_selection(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), AppError> {
+    ) -> AppResult<()> {
         // 检查是否有选择区域
         let Some(selection_rect) = self.screenshot.get_selection() else {
             return Ok(());
@@ -870,35 +618,32 @@ impl App {
             return Ok(());
         }
 
-        unsafe {
-            // 临时隐藏UI元素进行截图
-            self.screenshot.hide_ui_for_capture(hwnd);
+        // 临时隐藏UI元素进行截图
+        self.screenshot.hide_ui_for_capture(hwnd);
 
-            // 创建固钉窗口
-            let result = self.create_pin_window(hwnd, width, height, selection_rect);
+        // 创建固钉窗口
+        let result = self.create_pin_window(hwnd, width, height, selection_rect);
 
-            // 恢复UI元素显示（虽然窗口即将隐藏，但保持一致性）
-            self.screenshot.show_ui_after_capture(hwnd);
+        // 恢复UI元素显示（虽然窗口即将隐藏，但保持一致性）
+        self.screenshot.show_ui_after_capture(hwnd);
 
-            // 隐藏原始截屏窗口
-            use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
-            let _ = ShowWindow(hwnd, SW_HIDE);
+        // 隐藏原始截屏窗口
+        let _ = crate::utils::win_api::hide_window(hwnd);
 
-            // 重置原始窗口状态，准备下次截屏
-            self.reset_to_initial_state();
+        // 重置原始窗口状态，准备下次截屏
+        self.reset_to_initial_state();
 
-            result
-        }
+        result
     }
 
-    /// 创建固钉窗口（从原始代码迁移）
+    /// 创建固钉窗口
     fn create_pin_window(
         &self,
         _parent_hwnd: windows::Win32::Foundation::HWND,
         width: i32,
         height: i32,
         selection_rect: windows::Win32::Foundation::RECT,
-    ) -> Result<(), AppError> {
+    ) -> AppResult<()> {
         use windows::Win32::Foundation::*;
         use windows::Win32::Graphics::Gdi::*;
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -910,17 +655,15 @@ impl App {
             {
                 Ok(b) => b,
                 Err(e) => {
-                    return Err(AppError::InitError(format!(
-                        "Failed to capture pin image: {:?}",
-                        e
+                    return Err(AppError::Screenshot(format!(
+                        "Failed to capture pin image: {e:?}"
                     )));
                 }
             };
 
             // 注册固钉窗口类
-            let hinstance = GetModuleHandleW(None).map_err(|e| {
-                AppError::InitError(format!("Failed to get module handle: {:?}", e))
-            })?;
+            let hinstance = GetModuleHandleW(None)
+                .map_err(|e| AppError::WinApi(format!("Failed to get module handle: {e:?}")))?;
 
             let class_name: Vec<u16> = "PinWindow\0".encode_utf16().collect();
 
@@ -957,10 +700,10 @@ impl App {
                 Some(hinstance.into()),
                 None,
             )
-            .map_err(|e| AppError::InitError(format!("Failed to create pin window: {:?}", e)))?;
+            .map_err(|e| AppError::WinApi(format!("Failed to create pin window: {e:?}")))?;
 
             if pin_hwnd.0.is_null() {
-                return Err(AppError::InitError("Pin window handle is null".to_string()));
+                return Err(AppError::WinApi("Pin window handle is null".to_string()));
             }
 
             // 将位图句柄存储到窗口数据中
@@ -974,7 +717,7 @@ impl App {
         }
     }
 
-    /// 检查是否可以撤销（从原始代码迁移）
+    /// 检查是否可以撤销
     pub fn can_undo(&self) -> bool {
         self.drawing.can_undo()
     }
@@ -984,76 +727,91 @@ impl App {
         // 使用 SystemManager 中缓存的引擎可用状态，避免阻塞 UI
         self.system.ocr_is_available()
     }
+}
 
-    /// 检查工具栏按钮是否应该被禁用（从原始代码迁移）
-    pub fn is_toolbar_button_disabled(&self, button: crate::types::ToolbarButton) -> bool {
-        use crate::types::ToolbarButton;
-        match button {
-            ToolbarButton::Undo => !self.can_undo(),
-            ToolbarButton::ExtractText => !self.is_ocr_engine_available(),
-            _ => false,
-        }
+// 实现EventHandler traits
+impl MouseEventHandler for App {
+    fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
+        self.handle_mouse_move(x, y)
+    }
+
+    fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
+        self.handle_mouse_down(x, y)
+    }
+
+    fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
+        self.handle_mouse_up(x, y)
+    }
+
+    fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
+        self.handle_double_click(x, y)
     }
 }
 
-/// 应用程序错误类型
-#[derive(Debug)]
-pub enum AppError {
-    /// 渲染错误
-    RenderError(String),
-    /// 初始化错误
-    InitError(String),
-    /// 平台错误
-    PlatformError(String),
-    /// 截图错误
-    ScreenshotError(crate::screenshot::ScreenshotError),
-}
+impl KeyboardEventHandler for App {
+    fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
+        self.handle_key_input(key)
+    }
 
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AppError::RenderError(msg) => write!(f, "Render error: {}", msg),
-            AppError::InitError(msg) => write!(f, "Init error: {}", msg),
-            AppError::PlatformError(msg) => write!(f, "Platform error: {}", msg),
-            AppError::ScreenshotError(err) => write!(f, "Screenshot error: {}", err),
-        }
+    fn handle_text_input(&mut self, character: char) -> Vec<Command> {
+        self.handle_text_input(character)
     }
 }
 
-impl std::error::Error for AppError {}
+impl SystemEventHandler for App {
+    fn handle_tray_message(&mut self, wparam: u32, lparam: u32) -> Vec<Command> {
+        self.handle_tray_message(wparam, lparam)
+    }
+
+    fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
+        self.handle_cursor_timer(timer_id)
+    }
+}
+
+impl WindowEventHandler for App {
+    fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> Result<(), AppError> {
+        self.paint(hwnd)
+    }
+
+    fn reset_to_initial_state(&mut self) {
+        self.reset_to_initial_state()
+    }
+}
+
+// AppError已在error.rs中定义，这里仅导入额外的转换实现
 
 // 错误转换实现
 impl From<crate::screenshot::ScreenshotError> for AppError {
     fn from(err: crate::screenshot::ScreenshotError) -> Self {
-        AppError::InitError(err.to_string())
+        AppError::Screenshot(err.to_string())
     }
 }
 
 impl From<crate::drawing::DrawingError> for AppError {
     fn from(err: crate::drawing::DrawingError) -> Self {
-        AppError::InitError(err.to_string())
+        AppError::Drawing(err.to_string())
     }
 }
 
 impl From<crate::ui::UIError> for AppError {
     fn from(err: crate::ui::UIError) -> Self {
-        AppError::InitError(err.to_string())
+        AppError::UI(err.to_string())
     }
 }
 
 impl From<crate::system::SystemError> for AppError {
     fn from(err: crate::system::SystemError) -> Self {
-        AppError::InitError(err.to_string())
+        AppError::System(err.to_string())
     }
 }
 
 impl From<PlatformError> for AppError {
     fn from(err: PlatformError) -> Self {
-        AppError::RenderError(err.to_string())
+        AppError::Platform(err.to_string())
     }
 }
 
-/// 固钉窗口过程（从原始代码迁移）
+/// 固钉窗口过程
 unsafe extern "system" fn pin_window_proc(
     hwnd: windows::Win32::Foundation::HWND,
     msg: u32,

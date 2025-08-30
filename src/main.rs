@@ -4,8 +4,8 @@
 )]
 use sc_windows::platform::windows::Direct2DRenderer;
 use sc_windows::settings::Settings;
-use sc_windows::utils::to_wide_chars;
-use sc_windows::{App, Command, WINDOW_CLASS_NAME};
+use sc_windows::utils::{to_wide_chars, win_api};
+use sc_windows::{App, Command, CommandExecutor, WINDOW_CLASS_NAME};
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -19,19 +19,7 @@ static mut APP: Option<App> = None;
 
 /// 处理命令的辅助函数
 unsafe fn handle_commands(app: &mut App, commands: Vec<Command>, hwnd: HWND) {
-    let mut pending_commands = commands;
-
-    // 处理所有命令，包括新产生的命令
-    while !pending_commands.is_empty() {
-        let mut new_commands = Vec::new();
-
-        for command in pending_commands {
-            let result_commands = app.execute_command(command, hwnd);
-            new_commands.extend(result_commands);
-        }
-
-        pending_commands = new_commands;
-    }
+    app.execute_command_chain(commands, hwnd);
 }
 
 fn main() -> Result<()> {
@@ -69,8 +57,8 @@ fn main() -> Result<()> {
             None,
         )?;
 
-        let _ = ShowWindow(hwnd, SW_HIDE);
-        let _ = UpdateWindow(hwnd);
+        let _ = win_api::hide_window(hwnd);
+        let _ = win_api::update_window(hwnd);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, Some(HWND(std::ptr::null_mut())), 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
@@ -96,16 +84,13 @@ unsafe extern "system" fn window_proc(
                     sc_windows::platform::windows::system::get_screen_size();
                 match Direct2DRenderer::new() {
                     Ok(mut renderer) => {
-                        if let Err(e) = renderer.initialize(hwnd, screen_width, screen_height) {
-                            eprintln!("Failed to initialize renderer: {}", e);
+                        if renderer.initialize(hwnd, screen_width, screen_height).is_err() {
                             return LRESULT(-1);
                         }
 
                         match App::new(Box::new(renderer)) {
                             Ok(mut app) => {
-                                if let Err(e) = app.init_system_tray(hwnd) {
-                                    eprintln!("Failed to initialize system tray: {}", e);
-                                }
+                                let _ = app.init_system_tray(hwnd);
 
                                 app.start_async_ocr_check(hwnd);
                                 let settings = Settings::load();
@@ -120,31 +105,23 @@ unsafe extern "system" fn window_proc(
                                 APP = Some(app);
                                 LRESULT(0)
                             }
-                            Err(e) => {
-                                eprintln!("Failed to create app: {}", e);
-                                LRESULT(-1)
-                            }
+                            Err(_) => LRESULT(-1)
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Failed to create renderer: {}", e);
-                        LRESULT(-1)
-                    }
+                    Err(_) => LRESULT(-1)
                 }
             }
 
             WM_CLOSE => {
-                let is_visible = IsWindowVisible(hwnd).as_bool();
+                let is_visible = win_api::is_window_visible(hwnd);
 
                 if !is_visible {
-                    let _ = DestroyWindow(hwnd);
+                    let _ = win_api::destroy_window(hwnd);
+                } else if let Some(ref mut app) = APP {
+                    app.reset_to_initial_state();
+                    let _ = win_api::hide_window(hwnd);
                 } else {
-                    if let Some(ref mut app) = APP {
-                        app.reset_to_initial_state();
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                    } else {
-                        let _ = DestroyWindow(hwnd);
-                    }
+                    let _ = win_api::destroy_window(hwnd);
                 }
                 LRESULT(0)
             }
@@ -153,7 +130,7 @@ unsafe extern "system" fn window_proc(
                 let _ = UnregisterHotKey(Some(hwnd), 1001);
                 sc_windows::ocr::PaddleOcrEngine::cleanup_global_engine();
                 APP = None;
-                PostQuitMessage(0);
+                win_api::quit_message_loop(0);
                 LRESULT(0)
             }
 
@@ -166,8 +143,7 @@ unsafe extern "system" fn window_proc(
 
             WM_MOUSEMOVE => {
                 if let Some(ref mut app) = APP {
-                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
                     let commands = app.handle_mouse_move(x, y);
                     handle_commands(app, commands, hwnd);
                 }
@@ -176,8 +152,7 @@ unsafe extern "system" fn window_proc(
 
             WM_LBUTTONDOWN => {
                 if let Some(ref mut app) = APP {
-                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
                     let commands = app.handle_mouse_down(x, y);
                     handle_commands(app, commands, hwnd);
                 }
@@ -186,8 +161,7 @@ unsafe extern "system" fn window_proc(
 
             WM_LBUTTONUP => {
                 if let Some(ref mut app) = APP {
-                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
                     let commands = app.handle_mouse_up(x, y);
                     handle_commands(app, commands, hwnd);
                 }
@@ -196,8 +170,7 @@ unsafe extern "system" fn window_proc(
 
             WM_LBUTTONDBLCLK => {
                 if let Some(ref mut app) = APP {
-                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
-                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
                     let commands = app.handle_double_click(x, y);
                     handle_commands(app, commands, hwnd);
                 }
@@ -229,7 +202,7 @@ unsafe extern "system" fn window_proc(
             val if val == WM_USER + 2 => {
                 if let Some(ref mut app) = APP {
                     app.stop_ocr_engine_async();
-                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    let _ = win_api::hide_window(hwnd);
                 }
                 LRESULT(0)
             }
@@ -258,37 +231,29 @@ unsafe extern "system" fn window_proc(
             WM_HOTKEY => {
                 if wparam.0 == 1001 {
                     if let Some(ref mut app) = APP {
-                        if IsWindowVisible(hwnd).as_bool() {
-                            let _ = ShowWindow(hwnd, SW_HIDE);
+                        if win_api::is_window_visible(hwnd) {
+                            let _ = win_api::hide_window(hwnd);
                             std::thread::sleep(std::time::Duration::from_millis(50));
                         }
 
                         sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
                         app.start_async_ocr_check(hwnd);
                         app.reset_to_initial_state();
-                        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-                        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+                        let (screen_width, screen_height) = win_api::get_screen_size();
 
                         if app.capture_screen_direct().is_ok() {
-                            if let Err(e) = app.create_d2d_bitmap_from_gdi() {
-                                eprintln!("Failed to create D2D bitmap: {:?}", e);
-                            }
-                            let _ = ShowWindow(hwnd, SW_SHOW);
-                            let _ = SetForegroundWindow(hwnd);
-                            let _ = SetWindowPos(
+                            let _ = app.create_d2d_bitmap_from_gdi();
+                            let _ = win_api::show_window(hwnd);
+                            let _ = win_api::set_window_topmost(
                                 hwnd,
-                                Some(HWND_TOPMOST),
                                 0,
                                 0,
                                 screen_width,
                                 screen_height,
-                                SWP_SHOWWINDOW,
                             );
 
-                            let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
-                            let _ = UpdateWindow(hwnd);
-                        } else {
-                            eprintln!("Failed to capture screen");
+                            let _ = win_api::request_redraw(hwnd);
+                            let _ = win_api::update_window(hwnd);
                         }
                     }
                 }

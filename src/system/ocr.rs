@@ -116,14 +116,12 @@ impl OcrManager {
                         Ok(text)
                     }
                     Err(e) => Err(SystemError::OcrError(format!(
-                        "OCR recognition failed: {}",
-                        e
+                        "OCR recognition failed: {e}"
                     ))),
                 }
             }
             Err(e) => Err(SystemError::OcrError(format!(
-                "Failed to create OCR engine: {}",
-                e
+                "Failed to create OCR engine: {e}"
             ))),
         }
     }
@@ -184,7 +182,7 @@ impl OcrManager {
             } {
                 Ok(bitmap) => bitmap,
                 Err(e) => {
-                    return Err(SystemError::OcrError(format!("截图失败: {:?}", e)));
+                    return Err(SystemError::OcrError(format!("截图失败: {e:?}")));
                 }
             };
 
@@ -199,7 +197,7 @@ impl OcrManager {
 
                 let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
                     Ok(data) => Ok(data),
-                    Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {}", e))),
+                    Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
                 };
 
                 // 清理 GDI 资源
@@ -211,10 +209,7 @@ impl OcrManager {
                 result
             };
 
-            match image_data {
-                Ok(data) => data,
-                Err(e) => return Err(e),
-            }
+            image_data?
         };
 
         // 分行识别文本
@@ -246,7 +241,7 @@ impl OcrManager {
             line_results.clone(), // 克隆数据以便后续使用
             selection_rect,
         ) {
-            eprintln!("Failed to show OCR result window: {:?}", e);
+            eprintln!("Failed to show OCR result window: {e:?}");
         }
 
         // 也复制到剪贴板作为备份
@@ -259,7 +254,7 @@ impl OcrManager {
 
             // Copy to clipboard
             if let Err(e) = crate::screenshot::save::copy_text_to_clipboard(&text) {
-                eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
+                eprintln!("Failed to copy OCR text to clipboard: {e:?}");
             }
         }
 

@@ -199,7 +199,7 @@ impl Settings {
             let mut path = PathBuf::from(user_profile);
             path.push(".ocr_screenshot_tool");
             // 确保目录存在
-            if let Err(_) = std::fs::create_dir_all(&path) {
+            if std::fs::create_dir_all(&path).is_err() {
                 // 如果创建失败，回退到程序目录
                 let mut fallback_path = std::env::current_exe().unwrap_or_default();
                 fallback_path.set_file_name("simple_settings.json");
@@ -496,33 +496,32 @@ impl SettingsWindow {
                     let key = wparam.0 as u32;
 
                     // 只处理字母和数字键
-                    if (key >= 'A' as u32 && key <= 'Z' as u32)
-                        || (key >= '0' as u32 && key <= '9' as u32)
+                    if ((key >= 'A' as u32 && key <= 'Z' as u32)
+                        || (key >= '0' as u32 && key <= '9' as u32))
+                        && modifiers != 0
                     {
-                        if modifiers != 0 {
-                            // 构建热键字符串
-                            let mut hotkey_parts = Vec::new();
-                            if modifiers & MOD_CONTROL.0 != 0 {
-                                hotkey_parts.push("Ctrl".to_string());
-                            }
-                            if modifiers & MOD_ALT.0 != 0 {
-                                hotkey_parts.push("Alt".to_string());
-                            }
-                            if modifiers & MOD_SHIFT.0 != 0 {
-                                hotkey_parts.push("Shift".to_string());
-                            }
-
-                            let key_char = char::from_u32(key).unwrap_or('?');
-                            hotkey_parts.push(key_char.to_string());
-
-                            let hotkey_string = hotkey_parts.join("+");
-                            let hotkey_wide = to_wide_chars(&hotkey_string);
-
-                            // 更新输入框文本
-                            let _ = SetWindowTextW(hwnd, PCWSTR(hotkey_wide.as_ptr()));
-
-                            return LRESULT(0);
+                        // 构建热键字符串
+                        let mut hotkey_parts = Vec::new();
+                        if modifiers & MOD_CONTROL.0 != 0 {
+                            hotkey_parts.push("Ctrl".to_string());
                         }
+                        if modifiers & MOD_ALT.0 != 0 {
+                            hotkey_parts.push("Alt".to_string());
+                        }
+                        if modifiers & MOD_SHIFT.0 != 0 {
+                            hotkey_parts.push("Shift".to_string());
+                        }
+
+                        let key_char = char::from_u32(key).unwrap_or('?');
+                        hotkey_parts.push(key_char.to_string());
+
+                        let hotkey_string = hotkey_parts.join("+");
+                        let hotkey_wide = to_wide_chars(&hotkey_string);
+
+                        // 更新输入框文本
+                        let _ = SetWindowTextW(hwnd, PCWSTR(hotkey_wide.as_ptr()));
+
+                        return LRESULT(0);
                     }
 
                     // 忽略其他按键
@@ -756,7 +755,7 @@ impl SettingsWindow {
                     SetBkMode(hdc, TRANSPARENT);
 
                     // 返回空画刷，让父窗口绘制背景
-                    return LRESULT(GetStockObject(HOLLOW_BRUSH).0 as isize);
+                    LRESULT(GetStockObject(HOLLOW_BRUSH).0 as isize)
                 }
 
                 WM_CTLCOLOREDIT => {
@@ -769,14 +768,14 @@ impl SettingsWindow {
                     SetBkMode(hdc, OPAQUE); // 不透明背景
 
                     // 返回白色画刷
-                    return LRESULT(GetStockObject(WHITE_BRUSH).0 as isize);
+                    LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
                 }
 
                 WM_CTLCOLORBTN => {
                     // 处理复选框背景 - 返回NULL画刷强制透明
                     let hdc = HDC(wparam.0 as *mut _);
                     SetBkMode(hdc, TRANSPARENT);
-                    return LRESULT(GetStockObject(NULL_BRUSH).0 as isize);
+                    LRESULT(GetStockObject(NULL_BRUSH).0 as isize)
                 }
 
                 WM_ERASEBKGND => {
@@ -789,7 +788,7 @@ impl SettingsWindow {
                     let bg_brush = GetSysColorBrush(COLOR_BTNFACE);
                     FillRect(hdc, &rect, bg_brush);
 
-                    return LRESULT(1); // 表示我们处理了背景擦除
+                    LRESULT(1) // 表示我们处理了背景擦除
                 }
 
                 WM_PAINT => {
@@ -804,7 +803,7 @@ impl SettingsWindow {
                     }
 
                     // 调用默认处理
-                    return DefWindowProcW(hwnd, msg, wparam, lparam);
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
 
                 WM_SIZE => {
@@ -1767,10 +1766,8 @@ impl SettingsWindow {
     }
 
     /// 处理编辑框变化
-    fn handle_edit_change(&mut self, control_id: i32) {
-        match control_id {
-            _ => {}
-        }
+    fn handle_edit_change(&mut self, _control_id: i32) {
+        {}
     }
 
     /// 处理命令消息
@@ -1881,7 +1878,6 @@ impl SettingsWindow {
             }
         }
     }
-
 
     /// 显示绘图颜色选择对话框
     fn show_drawing_color_dialog(&mut self) {
@@ -2073,7 +2069,7 @@ impl SettingsWindow {
             let current_path = current_path.trim_end_matches('\0');
 
             // 显示提示信息
-            let message = format!("当前路径: {}\n\n请手动在输入框中修改路径", current_path);
+            let message = format!("当前路径: {current_path}\n\n请手动在输入框中修改路径");
             let message_wide = to_wide_chars(&message);
             let title_wide = to_wide_chars("配置路径");
 

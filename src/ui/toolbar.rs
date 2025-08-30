@@ -6,6 +6,7 @@ use super::UIError;
 use crate::message::Command;
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::ToolbarButton;
+use crate::utils::d2d_helpers::{create_solid_brush, rounded_rect};
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 /// 工具栏管理器（从原始Toolbar迁移）
@@ -247,21 +248,21 @@ impl ToolbarManager {
                     // 绘制工具栏背景
                     let toolbar_rect = self.rect;
 
-                    // 创建工具栏背景画刷（从原始代码迁移）
+                    // 使用新的辅助函数创建工具栏背景画刷并绘制圆角矩形
                     let bg_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
                         r: 1.0,
                         g: 1.0,
                         b: 1.0,
                         a: 0.95,
                     };
-
-                    if let Ok(bg_brush) = render_target.CreateSolidColorBrush(&bg_color, None) {
-                        // 绘制圆角矩形背景（从原始代码迁移）
-                        let rounded_rect = windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                            rect: toolbar_rect,
-                            radiusX: 10.0,
-                            radiusY: 10.0,
-                        };
+                    if let Ok(bg_brush) = create_solid_brush(render_target, &bg_color) {
+                        let rounded_rect = rounded_rect(
+                            toolbar_rect.left,
+                            toolbar_rect.top,
+                            toolbar_rect.right - toolbar_rect.left,
+                            toolbar_rect.bottom - toolbar_rect.top,
+                            10.0,
+                        );
                         render_target.FillRoundedRectangle(&rounded_rect, &bg_brush);
                     }
 
@@ -269,7 +270,7 @@ impl ToolbarManager {
                         // 创建按钮画刷
                         // 绘制按钮背景状态 - 只有 hover 时才显示背景（从原始代码迁移）
                         if self.hovered_button == *button_type {
-                            // 悬停状态
+                            // 悬停状态 - 使用新的辅助函数
                             let hover_color =
                                 windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
                                     r: 0.75,
@@ -277,16 +278,15 @@ impl ToolbarManager {
                                     b: 0.75,
                                     a: 1.0,
                                 };
-
-                            if let Ok(hover_brush) =
-                                render_target.CreateSolidColorBrush(&hover_color, None)
+                            if let Ok(hover_brush) = create_solid_brush(render_target, &hover_color)
                             {
-                                let button_rounded_rect =
-                                    windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT {
-                                        rect: *button_rect,
-                                        radiusX: 6.0,
-                                        radiusY: 6.0,
-                                    };
+                                let button_rounded_rect = rounded_rect(
+                                    button_rect.left,
+                                    button_rect.top,
+                                    button_rect.right - button_rect.left,
+                                    button_rect.bottom - button_rect.top,
+                                    6.0,
+                                );
                                 render_target
                                     .FillRoundedRectangle(&button_rounded_rect, &hover_brush);
                             }
@@ -393,7 +393,7 @@ impl ToolbarManager {
                 self.pressed_button = *button_type;
                 // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
                 // 调试输出
-                eprintln!("Toolbar button clicked: {:?}", button_type);
+                eprintln!("Toolbar button clicked: {button_type:?}");
                 // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
                 return self.handle_button_click(*button_type);
             }

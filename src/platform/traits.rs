@@ -221,9 +221,9 @@ pub enum PlatformError {
 impl std::fmt::Display for PlatformError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PlatformError::RenderError(msg) => write!(f, "Platform render error: {}", msg),
-            PlatformError::ResourceError(msg) => write!(f, "Platform resource error: {}", msg),
-            PlatformError::InitError(msg) => write!(f, "Platform init error: {}", msg),
+            PlatformError::RenderError(msg) => write!(f, "Platform render error: {msg}"),
+            PlatformError::ResourceError(msg) => write!(f, "Platform resource error: {msg}"),
+            PlatformError::InitError(msg) => write!(f, "Platform init error: {msg}"),
         }
     }
 }

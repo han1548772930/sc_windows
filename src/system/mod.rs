@@ -167,11 +167,11 @@ pub enum SystemError {
 impl std::fmt::Display for SystemError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SystemError::TrayError(msg) => write!(f, "Tray error: {}", msg),
-            SystemError::HotkeyError(msg) => write!(f, "Hotkey error: {}", msg),
-            SystemError::WindowDetectionError(msg) => write!(f, "Window detection error: {}", msg),
-            SystemError::OcrError(msg) => write!(f, "OCR error: {}", msg),
-            SystemError::InitError(msg) => write!(f, "System init error: {}", msg),
+            SystemError::TrayError(msg) => write!(f, "Tray error: {msg}"),
+            SystemError::HotkeyError(msg) => write!(f, "Hotkey error: {msg}"),
+            SystemError::WindowDetectionError(msg) => write!(f, "Window detection error: {msg}"),
+            SystemError::OcrError(msg) => write!(f, "OCR error: {msg}"),
+            SystemError::InitError(msg) => write!(f, "System init error: {msg}"),
             SystemError::WindowEnumerationFailed => write!(f, "Window enumeration failed"),
         }
     }
@@ -181,6 +181,6 @@ impl std::error::Error for SystemError {}
 
 impl From<windows::core::Error> for SystemError {
     fn from(err: windows::core::Error) -> Self {
-        SystemError::TrayError(format!("Windows API error: {:?}", err))
+        SystemError::TrayError(format!("Windows API error: {err:?}"))
     }
 }

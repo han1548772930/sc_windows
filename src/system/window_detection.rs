@@ -87,6 +87,12 @@ pub struct WindowDetectionManager {
     detection_enabled: bool,
 }
 
+impl Default for WindowDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowDetector {
     /// 创建新的窗口检测器
     pub fn new() -> Self {

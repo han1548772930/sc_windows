@@ -78,7 +78,7 @@ impl TrayManager {
 
     /// 处理托盘消息（从原始代码迁移）
     pub fn handle_message(&mut self, _wparam: u32, lparam: u32) -> Vec<Command> {
-        match lparam as u32 {
+        match lparam {
             WM_RBUTTONUP => {
                 // 右键菜单
                 self.show_context_menu();
@@ -192,7 +192,7 @@ pub fn create_default_icon() -> std::result::Result<HICON, SystemError> {
             Err(_e) => {
                 // 如果嵌入图标加载失败，使用系统默认图标
                 LoadIconW(None, IDI_APPLICATION).map_err(|e| {
-                    SystemError::TrayError(format!("Failed to load default icon: {:?}", e))
+                    SystemError::TrayError(format!("Failed to load default icon: {e:?}"))
                 })
             }
         }
@@ -205,7 +205,7 @@ fn load_embedded_icon(icon_data: &[u8]) -> std::result::Result<HICON, SystemErro
         // 创建临时文件来存储图标数据（ICO格式需要文件路径）
         let temp_path = std::env::temp_dir().join("temp_tray_icon.ico");
         std::fs::write(&temp_path, icon_data).map_err(|e| {
-            SystemError::TrayError(format!("Failed to write temp icon file: {:?}", e))
+            SystemError::TrayError(format!("Failed to write temp icon file: {e:?}"))
         })?;
 
         // 直接加载ICO文件
@@ -219,7 +219,7 @@ fn load_embedded_icon(icon_data: &[u8]) -> std::result::Result<HICON, SystemErro
             LR_LOADFROMFILE,
         )
         .map(|h| HICON(h.0))
-        .map_err(|e| SystemError::TrayError(format!("Failed to load embedded icon: {:?}", e)));
+        .map_err(|e| SystemError::TrayError(format!("Failed to load embedded icon: {e:?}")));
 
         // 清理临时文件
         let _ = std::fs::remove_file(&temp_path);
