@@ -72,21 +72,64 @@
 └── README.md                        # 说明文档
 
 开发环境文件结构/
-├── src/                             # 主程序源代码（模块化架构）
-│   ├── app.rs                       # 应用程序协调器
-│   ├── message.rs                   # 消息系统
-│   ├── drawing/                     # 绘图功能模块
+├── src/                             # 主程序源代码（现代化模块架构）
+│   ├── main.rs                      # 程序入口点
+│   ├── lib.rs                       # 库入口和模块声明
+│   ├── app.rs                       # 应用程序主协调器
+│   ├── message.rs                   # 消息驱动系统（Command/Message）
+│   ├── event_handler.rs             # 事件处理器traits
+│   ├── command_executor.rs          # 命令执行器
+│   ├── types.rs                     # 核心类型定义
+│   ├── constants.rs                 # 应用常量
+│   ├── error.rs                     # 统一错误处理
+│   ├── settings.rs                  # 设置管理
+│   ├── ocr.rs                       # OCR功能集成
+│   ├── ocr_result_window.rs         # OCR结果窗口
+│   ├── file_dialog.rs               # 文件对话框
+│   ├── drawing/                     # 绘图管理器模块
+│   │   ├── mod.rs                   # 绘图管理器主体
+│   │   ├── elements.rs              # 绘图元素管理
+│   │   ├── history.rs               # 历史记录（撤销/重做）
+│   │   ├── rendering.rs             # 绘图渲染
+│   │   ├── text_editing.rs          # 文本编辑功能
+│   │   └── tools.rs                 # 绘图工具管理
+│   ├── screenshot/                  # 截图管理器模块
+│   │   ├── mod.rs                   # 截图管理器主体
+│   │   ├── capture.rs               # 屏幕捕获
+│   │   ├── save.rs                  # 保存功能
+│   │   └── selection.rs             # 选择区域管理
+│   ├── ui/                          # UI管理器模块
+│   │   ├── mod.rs                   # UI管理器主体
+│   │   ├── toolbar.rs               # 工具栏组件
+│   │   ├── cursor.rs                # 光标管理
+│   │   └── svg_icons.rs             # SVG图标管理
+│   ├── system/                      # 系统管理器模块
+│   │   ├── mod.rs                   # 系统管理器主体
+│   │   ├── hotkeys.rs               # 热键管理
+│   │   ├── tray.rs                  # 系统托盘
+│   │   ├── ocr.rs                   # OCR引擎管理
+│   │   └── window_detection.rs      # 窗口检测
 │   ├── platform/                    # 平台抽象层
-│   ├── screenshot/                  # 截图管理模块
-│   ├── system/                      # 系统功能模块
-│   ├── ui/                          # UI组件模块
+│   │   ├── mod.rs                   # 平台模块入口
+│   │   ├── traits.rs                # 平台无关接口定义
+│   │   └── windows/                 # Windows平台实现
+│   │       ├── mod.rs               # Windows模块入口
+│   │       ├── d2d.rs               # Direct2D渲染器
+│   │       ├── gdi.rs               # GDI功能
+│   │       └── system.rs            # Windows系统调用
 │   ├── interaction/                 # 交互处理模块
+│   │   └── mod.rs                   # 交互控制器
 │   └── utils/                       # 工具函数模块
-├── src_backup/                      # 旧版本源代码备份
+│       ├── mod.rs                   # 工具模块入口
+│       ├── command_helpers.rs       # 命令辅助函数
+│       ├── d2d_helpers.rs           # Direct2D辅助函数
+│       ├── interaction.rs           # 交互辅助函数
+│       └── win_api.rs               # Windows API封装
 ├── paddleocr/                       # 本地PaddleOCR库
 │   ├── src/lib.rs                   # PaddleOCR Rust封装
 │   └── Cargo.toml                   # 本地库配置
 ├── PaddleOCR-json_v1.4.1/        # OCR引擎文件夹
+├── icons/                           # SVG图标资源
 ├── Cargo.toml                       # 项目配置
 └── README.md                        # 说明文档
 ```
@@ -132,11 +175,14 @@
 ## 🛠️ 技术特性
 
 ### 🏗️ 现代化架构设计
-- **模块化架构**: 采用领域驱动设计（DDD），按功能域分离模块
-- **应用协调器模式**: 使用`App`结构体统一协调各个业务领域
-- **消息驱动架构**: 通过`Command`/`Message`系统实现组件解耦
-- **平台抽象层**: `PlatformRenderer` trait支持未来跨平台扩展
-- **关注点分离**: 每个模块专注于特定功能域，提高代码可维护性
+- **分层模块化架构**: 采用现代Rust最佳实践，按功能域清晰分离模块
+- **应用协调器模式**: `App`结构体作为主控制器，统一管理各个业务管理器
+- **消息驱动架构**: 通过`Command`/`Message`枚举实现组件间松耦合通信
+- **事件处理器模式**: 使用trait系统定义统一的事件处理接口
+- **平台抽象层**: `PlatformRenderer` trait提供跨平台渲染能力
+- **命令模式**: `CommandExecutor` trait实现操作的统一执行和撤销
+- **管理器模式**: 每个功能域都有专门的管理器（截图、绘图、UI、系统）
+- **关注点分离**: 每个模块职责单一，提高代码可维护性和可测试性
 
 ### 🔧 核心技术栈
 - **Rust语言**: 使用Rust开发，性能优异，内存安全
@@ -195,32 +241,45 @@ cargo build --release
 
 ### 🏗️ 架构概览
 
-本项目采用现代化的模块化架构设计，从传统的单体应用重构为领域驱动的模块化系统：
+本项目采用现代化的模块化架构设计，基于事件驱动和消息传递的设计模式：
 
-#### 核心组件
-- **App (app.rs)**: 应用程序协调器，负责统一管理各个业务领域
-- **Message System (message.rs)**: 消息驱动架构，通过Command/Message实现组件解耦
-- **Platform Layer (platform/)**: 平台抽象层，支持未来跨平台扩展
+#### 🎯 核心架构组件
+- **App (app.rs)**: 应用程序主协调器，整合所有管理器并实现事件处理器traits
+- **Message System (message.rs)**: 定义`Command`和`Message`枚举，实现组件间通信
+- **Event Handlers (event_handler.rs)**: 定义鼠标、键盘、系统和窗口事件处理器traits
+- **Command Executor (command_executor.rs)**: 实现命令模式，统一执行各种操作
 
-#### 业务模块
-- **Screenshot (screenshot/)**: 截图捕获和管理
-- **Drawing (drawing/)**: 绘图工具和图形渲染
-- **System (system/)**: 系统集成功能（热键、托盘、窗口检测）
-- **UI (ui/)**: 用户界面组件
-- **Interaction (interaction/)**: 用户交互处理
+#### 🏢 业务管理器模块
+- **ScreenshotManager (screenshot/)**: 屏幕捕获、选择区域管理、保存功能
+- **DrawingManager (drawing/)**: 绘图工具、元素管理、历史记录（撤销/重做）
+- **UIManager (ui/)**: 工具栏、图标、光标等用户界面组件
+- **SystemManager (system/)**: 热键、托盘、OCR引擎、窗口检测等系统功能
 
-#### 设计原则
-1. **单一职责**: 每个模块专注于特定功能域
-2. **依赖注入**: 通过trait抽象实现松耦合
-3. **消息驱动**: 使用Command模式协调组件交互
-4. **错误处理**: 统一的错误处理和传播机制
+#### 🔧 支撑层模块
+- **Platform Layer (platform/)**: 平台抽象层，`PlatformRenderer` trait支持跨平台扩展
+- **Utils (utils/)**: 工具函数，包含Windows API封装、Direct2D辅助等
+- **Types & Constants**: 核心类型定义和应用常量
 
-### 🔄 架构迁移
+#### 🎨 设计模式与原则
+1. **事件驱动架构**: 所有用户交互通过事件处理器统一处理
+2. **消息传递**: 组件间通过`Command`/`Message`枚举进行通信
+3. **管理器模式**: 每个功能域都有专门的管理器负责状态和逻辑
+4. **命令模式**: 所有操作都封装为`Command`，支持撤销和批量执行
+5. **平台抽象**: 通过trait抽象渲染层，支持未来跨平台扩展
+6. **单一职责**: 每个模块和管理器都有明确的职责边界
+7. **依赖注入**: 通过构造函数注入依赖，便于测试和扩展
 
-项目经历了重大架构重构：
-- **旧架构**: 单体文件结构，功能混合
-- **新架构**: 模块化目录结构，关注点分离
-- **迁移策略**: 保持核心功能不变，重构代码组织
+### 🔄 数据流与交互模式
+
+#### 消息流转模式
+```
+用户操作 → 事件处理器 → 生成Message → 对应管理器处理 → 返回Command → 命令执行器 → UI更新
+```
+
+#### 典型交互流程
+1. **截图流程**: 热键触发 → 捕获屏幕 → 显示选择界面 → 用户选择区域 → 显示工具栏
+2. **绘图流程**: 选择工具 → 鼠标交互 → 生成绘图元素 → 渲染到画布 → 支持撤销重做
+3. **保存流程**: 用户确认 → 生成保存命令 → 执行保存操作 → 更新UI状态
 
 ## 🤝 贡献
 
