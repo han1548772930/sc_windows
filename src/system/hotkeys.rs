@@ -75,7 +75,7 @@ impl HotkeyManager {
         // 重新注册热键
         match self.register_hotkeys(hwnd) {
             Ok(()) => Ok(()),
-            Err(_) => Err(windows::core::Error::from_win32()),
+            Err(_) => Err(windows::core::Error::empty()),
         }
     }
 
