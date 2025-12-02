@@ -29,6 +29,8 @@ pub struct Direct2DRenderer {
     brushes: HashMap<BrushId, ID2D1SolidColorBrush>,
     // 颜色到画刷的缓存（避免每帧创建）
     brush_cache: HashMap<u32, ID2D1SolidColorBrush>,
+    // 文本格式缓存（避免每次测量/绘制时创建）
+    text_format_cache: std::sync::Mutex<HashMap<(String, u32), IDWriteTextFormat>>,
 
     // 屏幕尺寸
     screen_width: i32,
@@ -45,6 +47,7 @@ impl Direct2DRenderer {
             text_format: None,
             brushes: HashMap::new(),
             brush_cache: HashMap::new(),
+            text_format_cache: std::sync::Mutex::new(HashMap::new()),
             screen_width: 0,
             screen_height: 0,
         })
@@ -215,6 +218,9 @@ impl Direct2DRenderer {
 
         // 渲染目标重建时清空颜色画刷缓存
         self.brush_cache.clear();
+        if let Ok(mut cache) = self.text_format_cache.lock() {
+            cache.clear();
+        }
 
         println!("D2D bitmap created successfully");
         Ok(())
@@ -342,8 +348,54 @@ impl Direct2DRenderer {
         };
         let brush = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }
             .map_err(|e| PlatformError::ResourceError(format!("Failed to create brush: {e:?}")))?;
+        
+        // 简单清理策略：如果缓存太大，清空它
+        if self.brush_cache.len() > 100 {
+            self.brush_cache.clear();
+        }
+        
         self.brush_cache.insert(key, brush.clone());
         Ok(brush)
+    }
+
+    /// 获取或创建文本格式（带缓存）
+    fn get_or_create_text_format(
+        &self,
+        font_family: &str,
+        font_size: f32,
+    ) -> std::result::Result<IDWriteTextFormat, PlatformError> {
+        // 使用 u32 表示 float bits 作为 key
+        let key = (font_family.to_string(), font_size.to_bits());
+        
+        if let Ok(mut cache) = self.text_format_cache.lock() {
+            if let Some(fmt) = cache.get(&key) {
+                return Ok(fmt.clone());
+            }
+            
+            // 创建新的格式
+            if let Some(ref dwrite_factory) = self.dwrite_factory {
+                unsafe {
+                    let format = dwrite_factory
+                        .CreateTextFormat(
+                            &HSTRING::from(font_family),
+                            None,
+                            DWRITE_FONT_WEIGHT_NORMAL,
+                            DWRITE_FONT_STYLE_NORMAL,
+                            DWRITE_FONT_STRETCH_NORMAL,
+                            font_size,
+                            w!(""),
+                        )
+                        .map_err(|e| {
+                            PlatformError::ResourceError(format!("Failed to create text format: {e:?}"))
+                        })?;
+                        
+                    cache.insert(key, format.clone());
+                    return Ok(format);
+                }
+            }
+        }
+        
+        Err(PlatformError::ResourceError("DWrite factory not available or lock failed".to_string()))
     }
 
     /// 绘制GDI位图作为背景（从原始代码迁移）
@@ -628,24 +680,9 @@ impl PlatformRenderer for Direct2DRenderer {
         if self.render_target.is_none() || self.dwrite_factory.is_none() {
             return Ok(());
         }
-        let _render_target = self.render_target.as_ref().unwrap();
-        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
-        // 创建文本格式
-        let text_format = unsafe {
-            dwrite_factory
-                .CreateTextFormat(
-                    w!("Microsoft YaHei"),
-                    None,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
-                    style.font_size,
-                    w!(""),
-                )
-                .map_err(|e| {
-                    PlatformError::RenderError(format!("Failed to create text format: {e:?}"))
-                })?
-        };
+        
+        // 使用缓存获取文本格式，并修复字体硬编码问题
+        let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
         // 创建文本布局矩形
         let text_rect = D2D_RECT_F {
@@ -685,6 +722,7 @@ impl PlatformRenderer for Direct2DRenderer {
         if text.is_empty() {
             return Ok((0.0, style.font_size));
         }
+        
         let dwrite_factory = match &self.dwrite_factory {
             Some(f) => f,
             None => {
@@ -692,24 +730,11 @@ impl PlatformRenderer for Direct2DRenderer {
                 return Ok((text.len() as f32 * style.font_size * 0.6, style.font_size));
             }
         };
+        
+        // 使用缓存获取文本格式
+        let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
+        
         unsafe {
-            // 文本格式
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    &HSTRING::from(style.font_family.clone()),
-                    None,
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    style.font_size,
-                    &HSTRING::from(""),
-                )
-                .map_err(|e| {
-                    PlatformError::RenderError(format!(
-                        "Failed to create text format for measure: {e:?}"
-                    ))
-                })?;
-
             // 文本 UTF-16
             let utf16: Vec<u16> = text.encode_utf16().collect();
             let layout = dwrite_factory
