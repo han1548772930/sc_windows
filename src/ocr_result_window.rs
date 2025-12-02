@@ -49,13 +49,14 @@ impl IconCache {
         )?;
 
         // 加载标题栏按钮
-        let (close_normal, close_hover, _) = Self::load_title_bar_button_from_file("x.svg")?;
+        let (close_normal, close_hover, _) =
+            Self::load_title_bar_button_from_file("window-close.svg")?;
         let (maximize_normal, maximize_hover, _) =
-            Self::load_title_bar_button_from_file("square.svg")?;
+            Self::load_title_bar_button_from_file("window-maximize.svg")?;
         let (minimize_normal, minimize_hover, _) =
-            Self::load_title_bar_button_from_file("minus.svg")?;
+            Self::load_title_bar_button_from_file("window-minimize.svg")?;
         let (restore_normal, restore_hover, _) =
-            Self::load_title_bar_button_from_file("reduction.svg")?;
+            Self::load_title_bar_button_from_file("window-restore.svg")?;
 
         Some(IconCache {
             pin_normal,
@@ -506,17 +507,17 @@ impl OcrResultWindow {
             // 最大化状态：关闭、还原、最小化（从右到左）
             vec![
                 (
-                    "x",
+                    "window-close",
                     self.icon_cache.close_normal,
                     self.icon_cache.close_hover,
                 ),
                 (
-                    "reduction",
+                    "window-restore",
                     self.icon_cache.restore_normal,
                     self.icon_cache.restore_hover,
                 ),
                 (
-                    "minus",
+                    "window-minimize",
                     self.icon_cache.minimize_normal,
                     self.icon_cache.minimize_hover,
                 ),
@@ -525,17 +526,17 @@ impl OcrResultWindow {
             // 普通状态：关闭、最大化、最小化（从右到左）
             vec![
                 (
-                    "x",
+                    "window-close",
                     self.icon_cache.close_normal,
                     self.icon_cache.close_hover,
                 ),
                 (
-                    "square",
+                    "window-maximize",
                     self.icon_cache.maximize_normal,
                     self.icon_cache.maximize_hover,
                 ),
                 (
-                    "minus",
+                    "window-minimize",
                     self.icon_cache.minimize_normal,
                     self.icon_cache.minimize_hover,
                 ),
@@ -684,8 +685,10 @@ impl OcrResultWindow {
                 Err(_) => return None,
             };
 
-            // 创建pixmap
-            let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE as u32, ICON_SIZE as u32)?;
+            // 创建pixmap - 使用2x超采样
+            let scale = 2.0;
+            let render_size = (ICON_SIZE as f32 * scale) as u32;
+            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
 
             // 获取SVG的尺寸并计算缩放
@@ -693,8 +696,8 @@ impl OcrResultWindow {
 
             // 渲染SVG到pixmap
             let render_ts = tiny_skia::Transform::from_scale(
-                ICON_SIZE as f32 / svg_size.width(),
-                ICON_SIZE as f32 / svg_size.height(),
+                ICON_SIZE as f32 * scale / svg_size.width(),
+                ICON_SIZE as f32 * scale / svg_size.height(),
             );
 
             resvg::render(&tree, render_ts, &mut pixmap.as_mut());
@@ -707,7 +710,7 @@ impl OcrResultWindow {
                 Self::create_transparent_icon_bitmap(&screen_dc, &pixmap, ICON_SIZE)?;
 
             // 创建悬停状态的位图（矩形背景，铺满标题栏高度）
-            let hover_bitmap = if filename == "x.svg" {
+            let hover_bitmap = if filename == "window-close.svg" {
                 // 关闭按钮：红色背景，矩形，铺满高度
                 Self::create_title_bar_button_rect_hover_bitmap(
                     &screen_dc,
@@ -785,6 +788,7 @@ impl OcrResultWindow {
 
             // 处理像素数据
             let pixel_data = pixmap.data();
+            let render_width = pixmap.width() as usize;
             let bits_slice = std::slice::from_raw_parts_mut(
                 bits_ptr as *mut u8,
                 (button_width * button_height * 4) as usize,
@@ -815,35 +819,73 @@ impl OcrResultWindow {
 
             for y in 0..size {
                 for x in 0..size {
-                    let src_idx = (y * size + x) as usize * 4;
+                    // 计算2x2区域的平均颜色和Alpha
+                    let mut r_sum: u32 = 0;
+                    let mut g_sum: u32 = 0;
+                    let mut b_sum: u32 = 0;
+                    let mut a_sum: u32 = 0;
+                    
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sx = x * 2 + dx;
+                            let sy = y * 2 + dy;
+                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
+                            if s_idx + 3 < pixel_data.len() {
+                                // tiny_skia: RGBA
+                                r_sum += pixel_data[s_idx] as u32;       // R
+                                g_sum += pixel_data[s_idx + 1] as u32;   // G
+                                b_sum += pixel_data[s_idx + 2] as u32;   // B
+                                a_sum += pixel_data[s_idx + 3] as u32;   // A
+                            }
+                        }
+                    }
+                    
+                    let src_r = (r_sum / 4) as u8;
+                    let src_g = (g_sum / 4) as u8;
+                    let src_b = (b_sum / 4) as u8;
+                    let alpha = (a_sum / 4) as u8;
+
                     let dst_x = x + icon_x_offset;
                     let dst_y = y + icon_y_offset;
                     let dst_idx = (dst_y * button_width + dst_x) as usize * 4;
 
-                    if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
-                        let src_r = pixel_data[src_idx + 2];
-                        let src_g = pixel_data[src_idx + 1];
-                        let src_b = pixel_data[src_idx];
-                        let alpha = pixel_data[src_idx + 3];
-
+                    if dst_idx + 3 < bits_slice.len() {
                         if alpha > 0 {
                             if is_close_button {
                                 // 关闭按钮：检查是否为白色或接近白色的像素（描边）
                                 let is_white_ish = src_r > 200 && src_g > 200 && src_b > 200;
 
                                 if !is_white_ish {
-                                    // 非白色像素设置为白色
-                                    bits_slice[dst_idx] = 255; // B - 白色
-                                    bits_slice[dst_idx + 1] = 255; // G - 白色
-                                    bits_slice[dst_idx + 2] = 255; // R - 白色
-                                    bits_slice[dst_idx + 3] = alpha; // 保持原始透明度
+                                    // 非白色像素设置为白色，并与背景混合
+                                    let alpha_f = alpha as f32 / 255.0;
+                                    let inv_alpha_f = 1.0 - alpha_f;
+
+                                    // 获取当前背景颜色
+                                    let bg_b = bits_slice[dst_idx];
+                                    let bg_g = bits_slice[dst_idx + 1];
+                                    let bg_r = bits_slice[dst_idx + 2];
+
+                                    // 混合白色 (255, 255, 255) 与背景
+                                    bits_slice[dst_idx] = (255.0 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                                    bits_slice[dst_idx + 1] = (255.0 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                                    bits_slice[dst_idx + 2] = (255.0 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                                    bits_slice[dst_idx + 3] = 255; // 保持不透明
                                 }
                             } else {
-                                // 其他按钮：保持原始颜色
-                                bits_slice[dst_idx] = src_b;
-                                bits_slice[dst_idx + 1] = src_g;
-                                bits_slice[dst_idx + 2] = src_r;
-                                bits_slice[dst_idx + 3] = alpha;
+                                // 其他按钮：混合原始颜色与背景
+                                let alpha_f = alpha as f32 / 255.0;
+                                let inv_alpha_f = 1.0 - alpha_f;
+
+                                // 获取当前背景颜色
+                                let bg_b = bits_slice[dst_idx];
+                                let bg_g = bits_slice[dst_idx + 1];
+                                let bg_r = bits_slice[dst_idx + 2];
+
+                                // 混合源颜色 (src_r, src_g, src_b) 与背景
+                                bits_slice[dst_idx] = (src_b as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                                bits_slice[dst_idx + 1] = (src_g as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                                bits_slice[dst_idx + 2] = (src_r as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                                bits_slice[dst_idx + 3] = 255; // 保持不透明
                             }
                         }
                     }
@@ -870,8 +912,10 @@ impl OcrResultWindow {
                 Err(_) => return None,
             };
 
-            // 创建pixmap
-            let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
+            // 创建pixmap - 使用2x超采样
+            let scale = 2.0;
+            let render_size = (size as f32 * scale) as u32;
+            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
 
             // 获取SVG的尺寸并计算缩放
@@ -879,8 +923,8 @@ impl OcrResultWindow {
 
             // 渲染SVG到pixmap
             let render_ts = tiny_skia::Transform::from_scale(
-                size as f32 / svg_size.width(),
-                size as f32 / svg_size.height(),
+                size as f32 * scale / svg_size.width(),
+                size as f32 * scale / svg_size.height(),
             );
 
             resvg::render(&tree, render_ts, &mut pixmap.as_mut());
@@ -992,6 +1036,7 @@ impl OcrResultWindow {
 
             // 处理像素数据
             let pixel_data = pixmap.data();
+            let render_width = pixmap.width() as usize;
             let bits_slice = std::slice::from_raw_parts_mut(
                 bits_ptr as *mut u8,
                 (total_size * total_size * 4) as usize,
@@ -1033,28 +1078,48 @@ impl OcrResultWindow {
                 }
             }
 
-            // 然后在中心绘制图标
+            // 然后在中心绘制图标 - 使用2x超采样下采样
             for y in 0..size {
                 for x in 0..size {
-                    let src_idx = (y * size + x) as usize * 4;
+                    // 计算2x2区域的平均Alpha
+                    let mut a_sum: u32 = 0;
+                    
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sx = x * 2 + dx;
+                            let sy = y * 2 + dy;
+                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
+                            if s_idx + 3 < pixel_data.len() {
+                                a_sum += pixel_data[s_idx + 3] as u32;
+                            }
+                        }
+                    }
+                    
+                    let alpha = (a_sum / 4) as u8;
+                    
                     let dst_x = x + padding;
                     let dst_y = y + padding;
                     let dst_idx = (dst_y * total_size + dst_x) as usize * 4;
 
-                    if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
-                        let alpha = pixel_data[src_idx + 3];
+                    if dst_idx + 3 < bits_slice.len() {
                         if alpha > 0 {
-                            // 有内容的像素，使用预乘Alpha格式设置为黑色
+                            // 与背景混合
                             let alpha_f = alpha as f32 / 255.0;
-                            let icon_r = 0; // 图标颜色：黑色
-                            let icon_g = 0;
-                            let icon_b = 0;
+                            let inv_alpha_f = 1.0 - alpha_f;
+                            
+                            let bg_b = bits_slice[dst_idx];
+                            let bg_g = bits_slice[dst_idx + 1];
+                            let bg_r = bits_slice[dst_idx + 2];
 
-                            // 预乘Alpha：RGB值需要乘以Alpha值
-                            bits_slice[dst_idx] = (icon_b as f32 * alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_g as f32 * alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_r as f32 * alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = alpha; // A
+                            let icon_r = 0.0; // 图标颜色：黑色
+                            let icon_g = 0.0;
+                            let icon_b = 0.0;
+
+                            // 混合黑色与背景
+                            bits_slice[dst_idx] = (icon_b * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_g * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_r * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = 255; // 保持不透明
                         }
                     }
                 }
@@ -1102,6 +1167,7 @@ impl OcrResultWindow {
 
             // 处理像素数据，图标部分为黑色，背景使用标题栏背景色
             let pixel_data = pixmap.data();
+            let render_width = pixmap.width() as usize;
             let bits_slice =
                 std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
 
@@ -1111,34 +1177,48 @@ impl OcrResultWindow {
             let bg_b = 0xED;
             let bg_a = 255;
 
-            for i in 0..(size * size) as usize {
-                let src_idx = i * 4;
-                let dst_idx = i * 4;
+            for y in 0..size {
+                for x in 0..size {
+                    let dst_idx = (y * size + x) as usize * 4;
 
-                if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
-                    let _src_r = pixel_data[src_idx + 2];
-                    let _src_g = pixel_data[src_idx + 1];
-                    let _src_b = pixel_data[src_idx];
-                    let alpha = pixel_data[src_idx + 3];
+                    // 计算2x2区域的平均Alpha - 使用2x超采样下采样
+                    let mut a_sum: u32 = 0;
+                    
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sx = x * 2 + dx;
+                            let sy = y * 2 + dy;
+                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
+                            if s_idx + 3 < pixel_data.len() {
+                                a_sum += pixel_data[s_idx + 3] as u32;
+                            }
+                        }
+                    }
+                    
+                    let alpha = (a_sum / 4) as u8;
 
-                    if alpha == 0 {
-                        // 完全透明的像素，使用标题栏背景色（预乘Alpha）
-                        bits_slice[dst_idx] = bg_b; // B
-                        bits_slice[dst_idx + 1] = bg_g; // G
-                        bits_slice[dst_idx + 2] = bg_r; // R
-                        bits_slice[dst_idx + 3] = bg_a; // A
-                    } else {
-                        // 有内容的像素，使用预乘Alpha格式
-                        let alpha_f = alpha as f32 / 255.0;
-                        let icon_r = 0; // 图标颜色：黑色
-                        let icon_g = 0;
-                        let icon_b = 0;
+                    if dst_idx + 3 < bits_slice.len() {
+                        if alpha == 0 {
+                            // 完全透明的像素，使用标题栏背景色（不透明）
+                            bits_slice[dst_idx] = bg_b; // B
+                            bits_slice[dst_idx + 1] = bg_g; // G
+                            bits_slice[dst_idx + 2] = bg_r; // R
+                            bits_slice[dst_idx + 3] = bg_a; // A
+                        } else {
+                            // 与背景混合
+                            let alpha_f = alpha as f32 / 255.0;
+                            let inv_alpha_f = 1.0 - alpha_f;
 
-                        // 预乘Alpha：RGB值需要乘以Alpha值
-                        bits_slice[dst_idx] = (icon_b as f32 * alpha_f) as u8; // B
-                        bits_slice[dst_idx + 1] = (icon_g as f32 * alpha_f) as u8; // G
-                        bits_slice[dst_idx + 2] = (icon_r as f32 * alpha_f) as u8; // R
-                        bits_slice[dst_idx + 3] = alpha; // A
+                            let icon_r = 0.0; // 图标颜色：黑色
+                            let icon_g = 0.0;
+                            let icon_b = 0.0;
+
+                            // 混合黑色与背景
+                            bits_slice[dst_idx] = (icon_b * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_g * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_r * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = 255; // 保持不透明
+                        }
                     }
                 }
             }
@@ -1158,12 +1238,15 @@ impl OcrResultWindow {
             let svg_data = std::fs::read_to_string(&svg_path).ok()?;
             let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default()).ok()?;
 
-            let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
+            // 使用2x超采样
+            let scale = 2.0;
+            let render_size = (size as f32 * scale) as u32;
+            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
             let svg_size = tree.size();
             let render_ts = tiny_skia::Transform::from_scale(
-                size as f32 / svg_size.width(),
-                size as f32 / svg_size.height(),
+                size as f32 * scale / svg_size.width(),
+                size as f32 * scale / svg_size.height(),
             );
             resvg::render(&tree, render_ts, &mut pixmap.as_mut());
 
@@ -1228,6 +1311,7 @@ impl OcrResultWindow {
             .ok()?;
 
             let pixel_data = pixmap.data();
+            let render_width = pixmap.width() as usize;
             let bits_slice = std::slice::from_raw_parts_mut(
                 bits_ptr as *mut u8,
                 (total_size * total_size * 4) as usize,
@@ -1260,22 +1344,44 @@ impl OcrResultWindow {
                 }
             }
 
-            // 图标（居中，使用指定颜色）
+            // 图标（居中，使用指定颜色） - 使用2x超采样下采样
             for y in 0..size {
                 for x in 0..size {
-                    let src_idx = (y * size + x) as usize * 4;
+                    // 计算2x2区域的平均Alpha
+                    let mut a_sum: u32 = 0;
+                    
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sx = x * 2 + dx;
+                            let sy = y * 2 + dy;
+                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
+                            if s_idx + 3 < pixel_data.len() {
+                                a_sum += pixel_data[s_idx + 3] as u32;
+                            }
+                        }
+                    }
+                    
+                    let alpha = (a_sum / 4) as u8;
+                    
                     let dst_x = x + padding;
                     let dst_y = y + padding;
                     let dst_idx = (dst_y * total_size + dst_x) as usize * 4;
-                    if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
-                        let alpha = pixel_data[src_idx + 3];
+                    
+                    if dst_idx + 3 < bits_slice.len() {
                         if alpha > 0 {
-                            // 使用预乘Alpha格式
+                            // 与背景混合
                             let alpha_f = alpha as f32 / 255.0;
-                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = alpha; // A
+                            let inv_alpha_f = 1.0 - alpha_f;
+                            
+                            let bg_b = bits_slice[dst_idx];
+                            let bg_g = bits_slice[dst_idx + 1];
+                            let bg_r = bits_slice[dst_idx + 2];
+
+                            // 混合图标颜色与背景
+                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = 255; // 保持不透明
                         }
                     }
                 }
@@ -1321,6 +1427,7 @@ impl OcrResultWindow {
             .ok()?;
 
             let pixel_data = pixmap.data();
+            let render_width = pixmap.width() as usize;
             let bits_slice =
                 std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
 
@@ -1333,20 +1440,43 @@ impl OcrResultWindow {
                 bits_slice[dst_idx + 3] = 255;
             }
 
-            // 绘制图标像素为指定颜色
-            for i in 0..(size * size) as usize {
-                let src_idx = i * 4;
-                let dst_idx = i * 4;
-                if src_idx + 3 < pixel_data.len() && dst_idx + 3 < bits_slice.len() {
-                    let alpha = pixel_data[src_idx + 3];
+            // 绘制图标像素为指定颜色 - 使用2x超采样下采样
+            for y in 0..size {
+                for x in 0..size {
+                    let dst_idx = (y * size + x) as usize * 4;
 
-                    if alpha > 0 {
-                        // 使用预乘Alpha格式
-                        let alpha_f = alpha as f32 / 255.0;
-                        bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f) as u8; // B
-                        bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f) as u8; // G
-                        bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f) as u8; // R
-                        bits_slice[dst_idx + 3] = alpha; // A
+                    // 计算2x2区域的平均Alpha
+                    let mut a_sum: u32 = 0;
+                    
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sx = x * 2 + dx;
+                            let sy = y * 2 + dy;
+                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
+                            if s_idx + 3 < pixel_data.len() {
+                                a_sum += pixel_data[s_idx + 3] as u32;
+                            }
+                        }
+                    }
+                    
+                    let alpha = (a_sum / 4) as u8;
+
+                    if dst_idx + 3 < bits_slice.len() {
+                        if alpha > 0 {
+                            // 与背景混合
+                            let alpha_f = alpha as f32 / 255.0;
+                            let inv_alpha_f = 1.0 - alpha_f;
+                            
+                            let bg_b = bits_slice[dst_idx];
+                            let bg_g = bits_slice[dst_idx + 1];
+                            let bg_r = bits_slice[dst_idx + 2];
+
+                            // 混合图标颜色与背景
+                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
+                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
+                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
+                            bits_slice[dst_idx + 3] = 255; // 保持不透明
+                        }
                     }
                 }
             }
@@ -1440,10 +1570,10 @@ impl OcrResultWindow {
 
             // 创建窗口 - 使用 WS_OVERLAPPEDWINDOW
             let hwnd = CreateWindowExW(
-                WS_EX_APPWINDOW, 
+                WS_EX_APPWINDOW,
                 class_name,
                 windows::core::w!("识别结果"),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, 
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
                 window_x,
                 window_y,
                 window_width,
@@ -1458,17 +1588,20 @@ impl OcrResultWindow {
             let margins = MARGINS {
                 cxLeftWidth: 0,
                 cxRightWidth: 0,
-                cyTopHeight: 1, 
+                cyTopHeight: 1,
                 cyBottomHeight: 0,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
 
             // 触发一次 WM_NCCALCSIZE 以去除标准边框
             SetWindowPos(
-                hwnd, 
-                None, 
-                0, 0, 0, 0, 
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             )?;
 
             // 位图已经在上面创建了
@@ -1851,87 +1984,7 @@ impl OcrResultWindow {
     /// 自定义标题栏处理函数（根据官方文档重构）
     fn custom_caption_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         unsafe {
-            // 记录鼠标事件
-            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE {
-                let x = (lparam.0 as i16) as i32;
-                let y = ((lparam.0 >> 16) as i16) as i32;
-
-                if msg == WM_LBUTTONDOWN {
-                    // 获取窗口信息
-                    let window_ptr =
-                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OcrResultWindow;
-                    if !window_ptr.is_null() {
-                        let window = &*window_ptr;
-
-                        // 检查点击是否在文本区域内
-                        if x >= window.text_area_rect.left
-                            && x <= window.text_area_rect.right
-                            && y >= window.text_area_rect.top
-                            && y <= window.text_area_rect.bottom
-                        {
-                            // 尝试直接处理文本选择
-                            let window_mut = &mut *(window_ptr as *mut OcrResultWindow);
-                            window_mut.start_text_selection(x, y);
-                            let _ = InvalidateRect(Some(hwnd), None, false);
-                            return LRESULT(0);
-                        }
-                    }
-                } else if msg == WM_MOUSEMOVE {
-                    // 检查鼠标是否在文本区域内移动
-                    let window_ptr =
-                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const OcrResultWindow;
-                    if !window_ptr.is_null() {
-                        let window = &*window_ptr;
-                        if x >= window.text_area_rect.left
-                            && x <= window.text_area_rect.right
-                            && y >= window.text_area_rect.top
-                            && y <= window.text_area_rect.bottom
-                        {
-                            // 设置文本选择鼠标指针
-                            if let Ok(cursor) = LoadCursorW(None, IDC_IBEAM) {
-                                SetCursor(Some(cursor));
-                            }
-                        } else {
-                            // 恢复默认鼠标指针
-                            if let Ok(cursor) = LoadCursorW(None, IDC_ARROW) {
-                                SetCursor(Some(cursor));
-                            }
-                        }
-                    }
-                }
-            }
-
             match msg {
-                WM_CREATE => {
-                    let mut rect = RECT::default();
-                    let _ = GetWindowRect(hwnd, &mut rect);
-
-                    // 通知应用程序框架变化
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        rect.left,
-                        rect.top,
-                        rect.right - rect.left,
-                        rect.bottom - rect.top,
-                        SWP_FRAMECHANGED,
-                    );
-
-                    LRESULT(0)
-                }
-                WM_ACTIVATE => {
-                    // 扩展框架到客户端区域（简化版本）
-                    let margins = MARGINS {
-                        cxLeftWidth: 0,
-                        cxRightWidth: 0,
-                        cyTopHeight: TITLE_BAR_HEIGHT,
-                        cyBottomHeight: 0,
-                    };
-
-                    let _ =
-                        DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
-                    LRESULT(0)
-                }
                 WM_ERASEBKGND => {
                     // 阻止默认的背景擦除，减少闪烁
                     // 我们在 WM_PAINT 中自己处理背景绘制
@@ -1965,10 +2018,11 @@ impl OcrResultWindow {
                         let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
                         if !params.is_null() {
                             let rgrc = &mut (*params).rgrc;
-                            
+
                             // 获取最大化状态
                             let is_maximized = {
-                                let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                                let window_ptr =
+                                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                                 if !window_ptr.is_null() {
                                     (*window_ptr).is_maximized
                                 } else {
@@ -1990,8 +2044,18 @@ impl OcrResultWindow {
                         DefWindowProcW(hwnd, msg, wparam, lparam)
                     }
                 }
-                WM_NCHITTEST => {
-                    Self::hit_test_nca(hwnd, wparam, lparam)
+                WM_NCHITTEST => Self::hit_test_nca(hwnd, wparam, lparam),
+                WM_ACTIVATE => {
+                    let margins = MARGINS {
+                        cxLeftWidth: 0,
+                        cxRightWidth: 0,
+                        cyTopHeight: TITLE_BAR_HEIGHT,
+                        cyBottomHeight: 0,
+                    };
+
+                    let _ =
+                        DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
+                    LRESULT(0)
                 }
                 _ => {
                     // 其他消息交给应用程序处理
@@ -2008,9 +2072,11 @@ impl OcrResultWindow {
 
             // 创建支持Alpha通道的DIB位图（简化版本）
             let buffer_width = rect.right;
-            
+
             // 如果宽度无效，直接返回
-            if buffer_width <= 0 { return; }
+            if buffer_width <= 0 {
+                return;
+            }
 
             let bitmap_info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -2084,8 +2150,10 @@ impl OcrResultWindow {
                 // 绘制所有SVG图标到内存DC（包括标题栏按钮）。Pin 置顶时为绿色
                 for icon in &window.svg_icons {
                     // 略过不需要绘制的图标（例如如果窗口太小）
-                    if icon.rect.right > buffer_width { continue; }
-                    
+                    if icon.rect.right > buffer_width {
+                        continue;
+                    }
+
                     let icon_size = icon.rect.right - icon.rect.left;
 
                     // 根据悬停状态和是否置顶选择正确的位图（Pin使用绿色激活位图）
@@ -2112,7 +2180,7 @@ impl OcrResultWindow {
                         let button_left = icon.rect.left - (BUTTON_WIDTH_OCR - icon_size) / 2;
 
                         // 关闭按钮延伸到窗口右边缘，去掉右边间隙
-                        let (draw_x, draw_width) = if icon.name == "x" {
+                        let (draw_x, draw_width) = if icon.name == "window-close" {
                             // 关闭按钮：从按钮左边界延伸到窗口右边缘
                             let window_right = window.window_width;
                             (button_left, window_right - button_left)
@@ -2929,7 +2997,7 @@ impl OcrResultWindow {
                             if in_click_area {
                                 // 处理标题栏按钮点击
                                 match icon.name.as_str() {
-                                    "minus" => {
+                                    "window-minimize" => {
                                         // 执行最小化
                                         let _ = ShowWindow(hwnd, SW_MINIMIZE);
                                         return LRESULT(0);
@@ -2953,7 +3021,7 @@ impl OcrResultWindow {
                                         let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
-                                    "square" => {
+                                    "window-maximize" => {
                                         // 执行最大化
                                         let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                                         // 立即更新状态
@@ -2964,7 +3032,7 @@ impl OcrResultWindow {
                                         let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
-                                    "reduction" => {
+                                    "window-restore" => {
                                         // 执行还原
                                         let _ = ShowWindow(hwnd, SW_RESTORE);
                                         // 立即更新状态
@@ -2975,7 +3043,7 @@ impl OcrResultWindow {
                                         let _ = InvalidateRect(Some(hwnd), None, false);
                                         return LRESULT(0);
                                     }
-                                    "x" => {
+                                    "window-close" => {
                                         // 执行关闭
                                         let _ = PostMessageW(
                                             Some(hwnd),
