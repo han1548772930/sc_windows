@@ -5,8 +5,9 @@ use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::Memory::*;
-use windows::Win32::UI::HiDpi::PROCESS_PER_MONITOR_DPI_AWARE;
-use windows::Win32::UI::HiDpi::SetProcessDpiAwareness;
+use windows::Win32::UI::HiDpi::{
+    GetDpiForWindow, GetSystemMetricsForDpi, PROCESS_PER_MONITOR_DPI_AWARE, SetProcessDpiAwareness,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -183,6 +184,16 @@ pub struct OcrResultWindow {
 }
 
 impl OcrResultWindow {
+    // 获取窗口边框厚度
+    fn get_frame_thickness(hwnd: HWND) -> i32 {
+        unsafe {
+            let dpi = GetDpiForWindow(hwnd);
+            let resize_frame = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi);
+            let padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            resize_frame + padding
+        }
+    }
+
     /// 清理所有资源（简化版本 - IconCache会自动清理）
     fn cleanup_all_resources(&mut self) {
         unsafe {
@@ -1427,18 +1438,12 @@ impl OcrResultWindow {
                 }
             }
 
-            // 创建自定义标题栏窗口样式 - 使用无框自绘标题栏（参考test.rs）
+            // 创建窗口 - 使用 WS_OVERLAPPEDWINDOW
             let hwnd = CreateWindowExW(
-                WS_EX_APPWINDOW, // 显示在任务栏
+                WS_EX_APPWINDOW, 
                 class_name,
-                windows::core::w!("识别结果"), // 窗口标题
-                WS_POPUP
-                    | WS_THICKFRAME
-                    | WS_MINIMIZEBOX
-                    | WS_MAXIMIZEBOX
-                    | WS_SYSMENU
-                    | WS_VISIBLE
-                    | WS_CLIPCHILDREN, // 使用无框样式，保留系统动画所需的样式
+                windows::core::w!("识别结果"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN, 
                 window_x,
                 window_y,
                 window_width,
@@ -1449,14 +1454,22 @@ impl OcrResultWindow {
                 None,
             )?;
 
-            // 简化的DWM扩展区域设置（参考test.rs的简洁方式）
+            // 扩展 DWM 边框以显示阴影
             let margins = MARGINS {
                 cxLeftWidth: 0,
                 cxRightWidth: 0,
-                cyTopHeight: TITLE_BAR_HEIGHT,
+                cyTopHeight: 1, 
                 cyBottomHeight: 0,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
+
+            // 触发一次 WM_NCCALCSIZE 以去除标准边框
+            SetWindowPos(
+                hwnd, 
+                None, 
+                0, 0, 0, 0, 
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            )?;
 
             // 位图已经在上面创建了
             let width = actual_width;
@@ -1949,15 +1962,28 @@ impl OcrResultWindow {
                 }
                 WM_NCCALCSIZE => {
                     if wparam.0 != 0 {
-                        let pncsp = lparam.0 as *mut NCCALCSIZE_PARAMS;
-                        if !pncsp.is_null() {
-                            let ncsp = &mut *pncsp;
-                            // 完全移除所有边框，让客户端区域占据整个窗口
-                            // 这样就彻底消除了左右padding
-                            ncsp.rgrc[0].left = ncsp.rgrc[0].left;
-                            ncsp.rgrc[0].top = ncsp.rgrc[0].top;
-                            ncsp.rgrc[0].right = ncsp.rgrc[0].right;
-                            ncsp.rgrc[0].bottom = ncsp.rgrc[0].bottom;
+                        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+                        if !params.is_null() {
+                            let rgrc = &mut (*params).rgrc;
+                            
+                            // 获取最大化状态
+                            let is_maximized = {
+                                let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                                if !window_ptr.is_null() {
+                                    (*window_ptr).is_maximized
+                                } else {
+                                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                                    (style & WS_MAXIMIZE.0) != 0
+                                }
+                            };
+
+                            if is_maximized {
+                                let frame_thickness = Self::get_frame_thickness(hwnd);
+                                rgrc[0].left += frame_thickness;
+                                rgrc[0].top += frame_thickness;
+                                rgrc[0].right -= frame_thickness;
+                                rgrc[0].bottom -= frame_thickness;
+                            }
                         }
                         LRESULT(0)
                     } else {
@@ -1965,7 +1991,6 @@ impl OcrResultWindow {
                     }
                 }
                 WM_NCHITTEST => {
-                    // 根据官方文档，这里实现自定义点击测试
                     Self::hit_test_nca(hwnd, wparam, lparam)
                 }
                 _ => {
@@ -1981,17 +2006,11 @@ impl OcrResultWindow {
             let mut rect = RECT::default();
             let _ = GetClientRect(hwnd, &mut rect);
 
-            // 获取窗口实例来检查最大化状态
-            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-            let _is_maximized = if !window_ptr.is_null() {
-                let window = &*window_ptr;
-                window.is_maximized
-            } else {
-                false
-            };
-
             // 创建支持Alpha通道的DIB位图（简化版本）
             let buffer_width = rect.right;
+            
+            // 如果宽度无效，直接返回
+            if buffer_width <= 0 { return; }
 
             let bitmap_info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -2062,10 +2081,11 @@ impl OcrResultWindow {
                     }
                 }
 
-                // 标题文字已移除，保持简洁的标题栏
-
                 // 绘制所有SVG图标到内存DC（包括标题栏按钮）。Pin 置顶时为绿色
                 for icon in &window.svg_icons {
+                    // 略过不需要绘制的图标（例如如果窗口太小）
+                    if icon.rect.right > buffer_width { continue; }
+                    
                     let icon_size = icon.rect.right - icon.rect.left;
 
                     // 根据悬停状态和是否置顶选择正确的位图（Pin使用绿色激活位图）
@@ -2085,8 +2105,10 @@ impl OcrResultWindow {
                     let icon_mem_dc = CreateCompatibleDC(Some(mem_dc));
                     let old_icon_bitmap = SelectObject(icon_mem_dc, bitmap_to_use.into());
 
+                    // 对于标题栏按钮，处理 Hover 状态的背景
                     if icon.hovered && icon.is_title_bar_button {
-                        // 计算按钮区域的左边界（简化版本）
+                        // 计算按钮区域的左边界
+                        // 对于 Hover 状态，我们可能使用了更宽的位图（如关闭按钮）
                         let button_left = icon.rect.left - (BUTTON_WIDTH_OCR - icon_size) / 2;
 
                         // 关闭按钮延伸到窗口右边缘，去掉右边间隙
@@ -2099,7 +2121,7 @@ impl OcrResultWindow {
                             (button_left, BUTTON_WIDTH_OCR)
                         };
 
-                        // 绘制hover位图（简化版本，参考test.rs）
+                        // 绘制hover位图
                         let _ = BitBlt(
                             mem_dc,
                             draw_x,
@@ -2112,6 +2134,7 @@ impl OcrResultWindow {
                             SRCCOPY,
                         );
                     } else if icon.hovered && !icon.is_title_bar_button {
+                        // 普通图标 Hover
                         let padding = ICON_HOVER_PADDING;
                         let total_size = icon_size + padding * 2;
 
@@ -2127,6 +2150,7 @@ impl OcrResultWindow {
                             SRCCOPY,
                         );
                     } else {
+                        // 普通图标正常状态
                         let _ = BitBlt(
                             mem_dc,
                             icon.rect.left,
@@ -2145,29 +2169,35 @@ impl OcrResultWindow {
                 }
             }
 
-            // 简化的绘制参数（参考test.rs）
+            // 简化的绘制参数
             let draw_height = std::cmp::min(TITLE_BAR_HEIGHT, rect.bottom);
             let draw_width = rect.right;
 
-            // 一次性将整个缓冲区复制到屏幕DC，减少闪烁
-            let _ = BitBlt(
+            // 使用 AlphaBlend 绘制到目标 DC，确保透明通道正确处理
+            let blend_function = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+
+            let _ = AlphaBlend(
                 hdc,
                 0,
                 0,
                 draw_width,
                 draw_height,
-                Some(mem_dc),
-                0, // 源位图从顶部开始
+                mem_dc,
                 0,
-                SRCCOPY,
+                0,
+                draw_width,
+                draw_height,
+                blend_function,
             );
 
-            // 清理双缓冲资源
             SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteObject(buffer_bitmap.into());
             let _ = DeleteDC(mem_dc);
-
-            // 文本绘制已移到 paint_content_to_dc 中
+            let _ = DeleteObject(buffer_bitmap.into());
         }
     }
 

@@ -245,6 +245,59 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            val if val == WM_USER + 11 => {
+                if let Some(app) = get_app_state(hwnd) {
+                    let data_ptr = lparam.0 as *mut sc_windows::system::ocr::OcrCompletionData;
+                    if !data_ptr.is_null() {
+                        let data = Box::from_raw(data_ptr);
+                        
+                        // Check if we have results
+                        let has_results = !data.ocr_results.is_empty();
+                        let is_ocr_failed = data.ocr_results.len() == 1 && data.ocr_results[0].text == "OCR识别失败";
+
+                        // Show OCR Result Window
+                        if let Err(e) = sc_windows::ocr_result_window::OcrResultWindow::show(
+                            data.image_data,
+                            data.ocr_results.clone(),
+                            data.selection_rect,
+                        ) {
+                             eprintln!("Failed to show OCR result window: {:?}", e);
+                        }
+
+                        // Copy to clipboard
+                        if has_results {
+                            let text: String = data.ocr_results
+                                .iter()
+                                .map(|r| r.text.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            if let Err(e) = sc_windows::screenshot::save::copy_text_to_clipboard(&text) {
+                                eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
+                            }
+                        }
+
+                        // Message Box if no text
+                        if !has_results || is_ocr_failed {
+                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
+                             let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+                             let title_w: Vec<u16> = "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
+                             
+                             let _ = MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(message_w.as_ptr()),
+                                PCWSTR(title_w.as_ptr()),
+                                MB_OK | MB_ICONINFORMATION,
+                            );
+                        }
+                        
+                        // Cleanup and ensure main window is hidden
+                        app.stop_ocr_engine_async();
+                        let _ = win_api::hide_window(hwnd);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_HOTKEY => {
                 if wparam.0 == 1001 {
                     if let Some(app) = get_app_state(hwnd) {

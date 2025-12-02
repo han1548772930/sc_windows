@@ -11,6 +11,13 @@ pub struct OcrManager {
     engine_available: bool,
 }
 
+// OCR结果数据传输结构
+pub struct OcrCompletionData {
+    pub image_data: Vec<u8>,
+    pub ocr_results: Vec<crate::ocr::OcrResult>,
+    pub selection_rect: windows::Win32::Foundation::RECT,
+}
+
 impl OcrManager {
     /// 创建新的OCR管理器
     pub fn new() -> Result<Self, SystemError> {
@@ -159,129 +166,120 @@ impl OcrManager {
             return Ok(());
         }
 
-        // 彻底隐藏窗口进行干净的截图
+        // 彻底隐藏窗口进行干净的截图 (UI线程执行)
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::*;
             let _ = ShowWindow(hwnd, SW_HIDE);
         }
+        
+        // HWND 包含 raw pointer，不能直接 Send。转换为 usize 传递。
+        let hwnd_ptr = hwnd.0 as usize;
 
-        // 给予系统足够时间重绘被遮挡的桌面区域
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // 异步执行耗时的OCR操作，避免阻塞UI线程
+        std::thread::spawn(move || {
+            // 重构 HWND
+            let hwnd = windows::Win32::Foundation::HWND(hwnd_ptr as *mut std::ffi::c_void);
 
-        let result = {
-            let width = selection_rect.right - selection_rect.left;
-            let height = selection_rect.bottom - selection_rect.top;
+            // 给予系统足够时间重绘被遮挡的桌面区域
+            std::thread::sleep(std::time::Duration::from_millis(100));
 
-            if width <= 0 || height <= 0 {
-                return Ok(());
-            }
+            let result = {
+                let width = selection_rect.right - selection_rect.left;
+                let height = selection_rect.bottom - selection_rect.top;
 
-            // 使用统一的平台层截图函数，避免重复的GDI代码
-            let bitmap = match unsafe {
-                crate::platform::windows::gdi::capture_screen_region_to_hbitmap(selection_rect)
-            } {
-                Ok(bitmap) => bitmap,
-                Err(e) => {
-                    return Err(SystemError::OcrError(format!("截图失败: {e:?}")));
+                if width <= 0 || height <= 0 {
+                    // 恢复窗口
+                    unsafe {
+                        PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                    }
+                    return;
+                }
+
+                // 使用统一的平台层截图函数，避免重复的GDI代码
+                let bitmap = match unsafe {
+                    crate::platform::windows::gdi::capture_screen_region_to_hbitmap(selection_rect)
+                } {
+                    Ok(bitmap) => bitmap,
+                    Err(e) => {
+                        eprintln!("截图失败: {:?}", e);
+                        // 恢复窗口
+                        unsafe {
+                            PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                        }
+                        return;
+                    }
+                };
+
+                // 将位图转换为 BMP 数据
+                let image_data = unsafe {
+                    use windows::Win32::Foundation::HWND;
+                    use windows::Win32::Graphics::Gdi::*;
+
+                    let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+                    let mem_dc = CreateCompatibleDC(Some(screen_dc));
+                    let old_bitmap = SelectObject(mem_dc, bitmap.into());
+
+                    let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
+                        Ok(data) => Ok(data),
+                        Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
+                    };
+
+                    // 清理 GDI 资源
+                    let _ = SelectObject(mem_dc, old_bitmap);
+                    let _ = DeleteObject(bitmap.into());
+                    let _ = DeleteDC(mem_dc);
+                    let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+                    result
+                };
+
+                match image_data {
+                    Ok(data) => data,
+                    Err(e) => {
+                        eprintln!("图片处理失败: {:?}", e);
+                        unsafe {
+                            PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                        }
+                        return;
+                    }
                 }
             };
 
-            // 将位图转换为 BMP 数据
-            let image_data = unsafe {
-                use windows::Win32::Foundation::HWND;
-                use windows::Win32::Graphics::Gdi::*;
-
-                let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                let mem_dc = CreateCompatibleDC(Some(screen_dc));
-                let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
-                    Ok(data) => Ok(data),
-                    Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
-                };
-
-                // 清理 GDI 资源
-                let _ = SelectObject(mem_dc, old_bitmap);
-                let _ = DeleteObject(bitmap.into());
-                let _ = DeleteDC(mem_dc);
-                let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-
-                result
+            // 分行识别文本 (耗时操作)
+            let line_results = match crate::ocr::recognize_text_by_lines(&result, selection_rect) {
+                Ok(results) => results,
+                Err(_) => {
+                    // 即使识别失败，也要显示结果窗口
+                    vec![crate::ocr::OcrResult {
+                        text: "OCR识别失败".to_string(),
+                        confidence: 0.0,
+                        bounding_box: crate::ocr::BoundingBox {
+                            x: 0,
+                            y: 0,
+                            width: 200,
+                            height: 25,
+                        },
+                    }]
+                }
             };
 
-            image_data?
-        };
+            // 构建完成数据包
+            let completion_data = Box::new(OcrCompletionData {
+                image_data: result,
+                ocr_results: line_results,
+                selection_rect,
+            });
 
-        // 分行识别文本
-        let line_results = match crate::ocr::recognize_text_by_lines(&result, selection_rect) {
-            Ok(results) => results,
-            Err(_) => {
-                // 即使识别失败，也要显示结果窗口
-                vec![crate::ocr::OcrResult {
-                    text: "OCR识别失败".to_string(),
-                    confidence: 0.0,
-                    bounding_box: crate::ocr::BoundingBox {
-                        x: 0,
-                        y: 0,
-                        width: 200,
-                        height: 25,
-                    },
-                }]
-            }
-        };
-
-        // 检查是否有识别结果
-        let has_results = !line_results.is_empty();
-        let is_ocr_failed = line_results.len() == 1 && line_results[0].text == "OCR识别失败";
-
-        // 显示 OCR 结果窗口 - 使用原始的OcrResultWindow
-        // 需要传递BMP数据而不是HBITMAP
-        if let Err(e) = crate::ocr_result_window::OcrResultWindow::show(
-            result.clone(),       // BMP数据
-            line_results.clone(), // 克隆数据以便后续使用
-            selection_rect,
-        ) {
-            eprintln!("Failed to show OCR result window: {e:?}");
-        }
-
-        // 也复制到剪贴板作为备份
-        if has_results {
-            let text: String = line_results
-                .iter()
-                .map(|r| r.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            // Copy to clipboard
-            if let Err(e) = crate::screenshot::save::copy_text_to_clipboard(&text) {
-                eprintln!("Failed to copy OCR text to clipboard: {e:?}");
-            }
-        }
-
-        // 关闭截图窗口（通知主窗口流程结束）
-        unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::*;
-            let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
-
-            // 如果没有识别到文本，显示提示消息
-            if !has_results || is_ocr_failed {
-                let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
-                let message_w: Vec<u16> =
-                    message.encode_utf16().chain(std::iter::once(0)).collect();
-                let title_w: Vec<u16> =
-                    "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
-
-                MessageBoxW(
-                    Some(hwnd),
-                    windows::core::PCWSTR(message_w.as_ptr()),
-                    windows::core::PCWSTR(title_w.as_ptr()),
-                    MB_OK | MB_ICONINFORMATION,
+            // 通知主线程显示结果 (WM_USER + 11)
+            unsafe {
+                let _ = PostMessageW(
+                    Some(hwnd), 
+                    WM_USER + 11, 
+                    WPARAM(0), 
+                    LPARAM(Box::into_raw(completion_data) as isize)
                 );
             }
-        }
-
-        // 恢复窗口显示（不需要调用 show_ui_after_capture，因为窗口会在OCR完成后被隐藏）
-        // screenshot_manager.show_ui_after_capture(hwnd); // 已不需要
+        });
 
         Ok(())
     }

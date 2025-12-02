@@ -340,13 +340,16 @@ impl PaddleOcrEngine {
 
     /// 从内存中的图像数据识别文本
     pub fn recognize_from_memory(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
-        // 方法1: 使用位图临时文件方式（快速可靠）
-        if let Ok(results) = self.recognize_from_bitmap_file(image_data) {
+        // 优先使用Base64方式（纯内存操作，无需磁盘IO）
+        if let Ok(results) = self.recognize_from_base64(image_data) {
             return Ok(results);
         }
 
-        // 方法2: 使用Base64方式（备用）
-        if let Ok(results) = self.recognize_from_base64(image_data) {
+        // 备用方案：使用位图临时文件方式
+        #[cfg(debug_assertions)]
+        println!("Base64 OCR失败，尝试使用临时文件方式...");
+        
+        if let Ok(results) = self.recognize_from_bitmap_file(image_data) {
             return Ok(results);
         }
 
@@ -407,23 +410,57 @@ impl PaddleOcrEngine {
     ) -> Result<Vec<(String, Option<f32>)>> {
         let mut results = Vec::new();
 
-        // 为每个图像创建临时文件并逐个识别
-        for (i, image_data) in images_data.iter().enumerate() {
-            let temp_path = std::env::temp_dir().join(format!("screenshot_ocr_line_{i}.bmp"));
-            std::fs::write(&temp_path, image_data)?;
+        // 为每个图像使用Base64方式识别，避免磁盘IO
+        for image_data in images_data.iter() {
+            // 将图像数据编码为Base64
+            let base64_string = general_purpose::STANDARD.encode(image_data);
+            let image_data_obj = ImageData::ImageBase64Dict {
+                image_base64: base64_string,
+            };
 
-            // 使用全局 PaddleOCR 引擎识别单个文件
-            match Self::call_global_ocr(temp_path.clone().into()) {
-                Ok(text) => {
-                    results.push((text, Some(0.8))); // 使用默认置信度
+            // 使用全局 PaddleOCR 引擎识别
+            match Self::call_global_ocr(image_data_obj) {
+                Ok(json_str) => {
+                    // 解析结果
+                    if let Ok(ocr_results) = self.parse_paddle_ocr_result(&json_str) {
+                        // 提取文本和置信度
+                        let mut text = String::new();
+                        let mut total_confidence = 0.0;
+                        let count = ocr_results.len();
+
+                        for (i, res) in ocr_results.iter().enumerate() {
+                            if i > 0 {
+                                text.push(' ');
+                            }
+                            text.push_str(&res.text);
+                            total_confidence += res.confidence;
+                        }
+
+                        let avg_confidence = if count > 0 {
+                            Some(total_confidence / count as f32)
+                        } else {
+                            // 检查是否是"未识别到任何文字"的情况
+                            if ocr_results.len() == 1 && ocr_results[0].text == "未识别到任何文字" {
+                                None
+                            } else {
+                                Some(0.0)
+                            }
+                        };
+
+                        // 如果结果是空的或者全是占位符，视为空
+                        if text.is_empty() || text == "未识别到任何文字" {
+                             results.push((String::new(), Some(0.0)));
+                        } else {
+                             results.push((text, avg_confidence));
+                        }
+                    } else {
+                        results.push((String::new(), Some(0.0)));
+                    }
                 }
                 Err(_) => {
                     results.push((String::new(), Some(0.0))); // 识别失败
                 }
             }
-
-            // 清理临时文件
-            let _ = std::fs::remove_file(&temp_path);
         }
 
         Ok(results)
