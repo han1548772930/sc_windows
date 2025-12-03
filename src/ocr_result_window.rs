@@ -1053,8 +1053,21 @@ impl OcrResultWindow {
             let actual_client_width = client_rect.right - client_rect.left;
             let actual_client_height = client_rect.bottom - client_rect.top;
 
+            // 安全检查：如果获取失败（极少见），回退到 window_width
+            let safe_width = if actual_client_width > 0 {
+                actual_client_width
+            } else {
+                window_width
+            };
+            let safe_height = if actual_client_height > 0 {
+                actual_client_height
+            } else {
+                window_height
+            };
+
+            // 初始化渲染器
             if let Some(renderer) = &mut window.renderer {
-                let _ = renderer.initialize(hwnd, actual_client_width, actual_client_height);
+                let _ = renderer.initialize(hwnd, safe_width, safe_height);
             }
 
             window.window_width = actual_client_width;
@@ -1254,53 +1267,25 @@ impl OcrResultWindow {
                     LRESULT(0)
                 }
                 WM_NCCALCSIZE => {
-                    // 当 wParam 为 TRUE (1) 时，lParam 指向 NCCALCSIZE_PARAMS 结构体
-                    // 系统向我们询问："客户区应该多大？"
                     if wparam.0 == 1 {
                         let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
-
-                        // 确保指针有效
                         if !params.is_null() {
-                            // 检查窗口是否处于最大化状态
-                            // 注意：不能仅依赖 WS_MAXIMIZE 样式位，最好结合 GetWindowPlacement 或 IsZoomed，
-                            // 但在这里，检查 Style 是最快且通常足够的方法。
                             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                             let is_maximized = (style & WS_MAXIMIZE.0) != 0;
 
                             if is_maximized {
-                                // 【最大化模式】
-                                // Windows 会自动将最大化的窗口尺寸设置为 "屏幕尺寸 + 边框尺寸" (例如各方向超出 8px)。
-                                // 这样做是为了将旧式边框隐藏在屏幕外。
-                                // 但对于无边框窗口，这意味着我们的标题栏会被切掉。
-                                // 修复方法：手动将客户区向内收缩，抵消这个系统行为。
-
+                                // 最大化时，手动减去边框，防止内容被切掉
                                 let frame_thickness = Self::get_frame_thickness(hwnd);
-
-                                // 获取引用，修改 rgrc[0] (建议的客户区坐标)
-                                let requested_client_rect = &mut (*params).rgrc[0];
-
-                                requested_client_rect.top += frame_thickness;
-                                requested_client_rect.bottom -= frame_thickness;
-                                requested_client_rect.left += frame_thickness;
-                                requested_client_rect.right -= frame_thickness;
-
-                                // 注意：Zed 在这里还处理了任务栏自动隐藏的特殊情况（减去 1px），
-                                // 但通常上述代码已足以解决"顶部陷入"问题。
+                                let rgrc = &mut (*params).rgrc;
+                                rgrc[0].top += frame_thickness;
+                                rgrc[0].bottom -= frame_thickness;
+                                rgrc[0].left += frame_thickness;
+                                rgrc[0].right -= frame_thickness;
                             }
-                            // 【窗口模式 / 普通模式】
-                            // 这里我们什么都不做（不修改 rgrc）。
-                            // 也就是：Client Rect == Window Rect。
-                            // 这样：
-                            // 1. 你的 Direct2D 画布将覆盖整个窗口，不会有"白色边框"（那其实是暴露出来的系统背景）。
-                            // 2. Windows 11 的 DWM 会识别这是一个标准的无边框窗口，并正确应用圆角。
-                            // 3. 你的 hit_test_nca 函数会处理边缘的鼠标调整大小事件。
+                            // 窗口模式下不做任何修改，让 客户区 = 窗口区
                         }
-
-                        // 返回 0 表示："我已经计算好了，不要应用默认的标题栏和边框"
                         return LRESULT(0);
                     }
-
-                    // 如果 wParam 为 0，使用默认处理
                     DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
                 WM_NCHITTEST => Self::hit_test_nca(hwnd, wparam, lparam),
