@@ -311,6 +311,13 @@ impl ScreenshotManager {
                         ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {e:?}"))
                     })?;
 
+                // 提取位图数据供OCR使用（避免重复截图）
+                if let Ok(bmp_data) = crate::ocr::bitmap_to_bmp_data(temp_dc, gdi_bitmap, self.screen_width, self.screen_height) {
+                     if let Some(ref mut screenshot) = self.current_screenshot {
+                        screenshot.data = bmp_data;
+                    }
+                }
+
                 // 清理临时资源
                 let _ = DeleteDC(temp_dc);
                 ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
@@ -329,6 +336,11 @@ impl ScreenshotManager {
                 "Cannot access D2D renderer".to_string(),
             ))
         }
+    }
+
+    /// 获取当前截图的原始图像数据（如果可用）
+    pub fn get_current_image_data(&self) -> Option<&[u8]> {
+        self.current_screenshot.as_ref().map(|s| s.data.as_slice())
     }
 
     /// 处理鼠标移动（完全按照原始代码逻辑，包含拖拽检测）

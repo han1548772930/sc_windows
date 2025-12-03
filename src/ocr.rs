@@ -340,47 +340,8 @@ impl PaddleOcrEngine {
 
     /// 从内存中的图像数据识别文本
     pub fn recognize_from_memory(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
-        // 优先使用Base64方式（纯内存操作，无需磁盘IO）
-        if let Ok(results) = self.recognize_from_base64(image_data) {
-            return Ok(results);
-        }
-
-        // 备用方案：使用位图临时文件方式
-        #[cfg(debug_assertions)]
-        println!("Base64 OCR失败，尝试使用临时文件方式...");
-        
-        if let Ok(results) = self.recognize_from_bitmap_file(image_data) {
-            return Ok(results);
-        }
-
-        Err(anyhow::anyhow!("OCR识别失败"))
-    }
-
-    /// 使用位图临时文件方式进行OCR识别
-    fn recognize_from_bitmap_file(&mut self, image_data: &[u8]) -> Result<Vec<OcrResult>> {
-        let temp_path = self.create_simple_bitmap_file(image_data)?;
-        let results = self.recognize_file(&temp_path);
-        let _ = std::fs::remove_file(&temp_path);
-        results
-    }
-
-    /// 创建简单的位图临时文件
-    fn create_simple_bitmap_file(&self, image_data: &[u8]) -> Result<std::path::PathBuf> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-
-        let temp_path = std::env::temp_dir().join(format!(
-            "paddle_ocr_{}_{}.bmp",
-            std::process::id(),
-            timestamp
-        ));
-
-        std::fs::write(&temp_path, image_data)?;
-        Ok(temp_path)
+        // 使用Base64方式（纯内存操作，无需磁盘IO）
+        self.recognize_from_base64(image_data)
     }
 
     /// 使用Base64方式进行OCR识别（真正的内存识别）
@@ -671,8 +632,7 @@ pub fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Resul
 }
 
 /// 从原图中提取指定区域的图片数据
-#[allow(dead_code)]
-fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Vec<u8>> {
+pub fn crop_bmp(original_image_data: &[u8], crop_rect: &RECT) -> Result<Vec<u8>> {
     // 解析 BMP 头部信息
     if original_image_data.len() < 54 {
         return Err(anyhow::anyhow!("BMP 数据太小"));
@@ -700,12 +660,12 @@ fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Ve
     let row_size = ((width * bytes_per_pixel + 3) / 4) * 4;
 
     // 计算裁剪区域
-    let crop_x = line_rect.left.max(0).min(width - 1);
-    let crop_y = line_rect.top.max(0).min(height - 1);
-    let crop_width = (line_rect.right - line_rect.left)
+    let crop_x = crop_rect.left.max(0).min(width - 1);
+    let crop_y = crop_rect.top.max(0).min(height - 1);
+    let crop_width = (crop_rect.right - crop_rect.left)
         .max(1)
         .min(width - crop_x);
-    let crop_height = (line_rect.bottom - line_rect.top)
+    let crop_height = (crop_rect.bottom - crop_rect.top)
         .max(1)
         .min(height - crop_y);
 
@@ -724,7 +684,7 @@ fn extract_line_image(original_image_data: &[u8], line_rect: &RECT) -> Result<Ve
     // 复制并修改 BMP 头部
     new_bmp.extend_from_slice(&original_image_data[0..18]); // 文件头
     new_bmp.extend_from_slice(&crop_width.to_le_bytes()); // 新宽度
-    new_bmp.extend_from_slice(&crop_height.to_le_bytes()); // 新高度
+    new_bmp.extend_from_slice(&(-crop_height).to_le_bytes()); // 新高度 (保持负值，Top-Down)
     new_bmp.extend_from_slice(&original_image_data[26..54]); // 其余头部信息
 
     // 修改文件大小

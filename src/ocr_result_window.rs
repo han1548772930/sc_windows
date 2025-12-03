@@ -1,6 +1,10 @@
 use crate::ocr::OcrResult;
+use crate::platform::traits::PlatformRenderer;
+use crate::platform::windows::Direct2DRenderer;
 use anyhow::Result;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Direct2D::Common::*;
+use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::DataExchange::*;
@@ -13,110 +17,610 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 // 自定义标题栏/图标常量集中到 crate::constants
 use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR,
-    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X,
-    TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT,
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D,
+    ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR, ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING,
+    ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X, TITLE_BAR_BG_COLOR_D2D,
+    TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
 };
 
-// 图标缓存结构体 - 一次性加载所有图标，避免重复加载
-struct IconCache {
-    // 左侧图标
-    pin_normal: HBITMAP,
-    pin_hover: HBITMAP,
-    pin_active_normal: HBITMAP, // 绿色激活状态
-    pin_active_hover: HBITMAP,  // 绿色激活悬停状态
+use std::collections::HashMap;
 
-    // 标题栏按钮 - 普通状态
-    close_normal: HBITMAP,
-    close_hover: HBITMAP,
-    maximize_normal: HBITMAP,
-    maximize_hover: HBITMAP,
-    minimize_normal: HBITMAP,
-    minimize_hover: HBITMAP,
-    restore_normal: HBITMAP,
-    restore_hover: HBITMAP,
+/// D2D 图标位图集合
+struct D2DIconBitmaps {
+    normal: ID2D1Bitmap,
+    hover: ID2D1Bitmap,
+    // active 状态可以共用 hover 或 normal，或者单独添加
+    active_normal: Option<ID2D1Bitmap>,
+    active_hover: Option<ID2D1Bitmap>,
 }
 
-impl IconCache {
-    /// 创建图标缓存，一次性加载所有图标
-    fn new() -> Option<Self> {
-        // 加载左侧图标
-        let (pin_normal, pin_hover) = Self::load_svg_icon_from_file("pin.svg", ICON_SIZE)?;
-        let (pin_active_normal, pin_active_hover) = Self::load_colored_pin_bitmaps(
-            "pin.svg",
-            ICON_SIZE,
-            (0, 128, 0), // 绿色
-        )?;
+/// OCR 结果渲染器（负责所有 Direct2D 绘图）
+struct OcrResultRenderer {
+    d2d_renderer: Direct2DRenderer,
+    image_bitmap: Option<ID2D1Bitmap>,
+    icon_cache: HashMap<String, D2DIconBitmaps>,
+    icons_loaded: bool,
+}
 
-        // 加载标题栏按钮
-        let (close_normal, close_hover, _) =
-            Self::load_title_bar_button_from_file("window-close.svg")?;
-        let (maximize_normal, maximize_hover, _) =
-            Self::load_title_bar_button_from_file("window-maximize.svg")?;
-        let (minimize_normal, minimize_hover, _) =
-            Self::load_title_bar_button_from_file("window-minimize.svg")?;
-        let (restore_normal, restore_hover, _) =
-            Self::load_title_bar_button_from_file("window-restore.svg")?;
-
-        Some(IconCache {
-            pin_normal,
-            pin_hover,
-            pin_active_normal,
-            pin_active_hover,
-            close_normal,
-            close_hover,
-            maximize_normal,
-            maximize_hover,
-            minimize_normal,
-            minimize_hover,
-            restore_normal,
-            restore_hover,
+impl OcrResultRenderer {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            d2d_renderer: Direct2DRenderer::new()
+                .map_err(|e| anyhow::anyhow!("D2D Init Error: {:?}", e))?,
+            image_bitmap: None,
+            icon_cache: HashMap::new(),
+            icons_loaded: false,
         })
     }
 
-    // 复用现有的图标加载方法
-    fn load_svg_icon_from_file(filename: &str, size: i32) -> Option<(HBITMAP, HBITMAP)> {
-        OcrResultWindow::load_svg_icon_from_file(filename, size)
+    fn initialize(&mut self, hwnd: HWND, width: i32, height: i32) -> Result<()> {
+        // 记录旧的 RenderTarget 指针，用于检测是否发生了重建
+        use windows::core::Interface;
+        let old_rt_ptr = self
+            .d2d_renderer
+            .render_target
+            .as_ref()
+            .map(|rt| rt.as_raw());
+
+        self.d2d_renderer
+            .initialize(hwnd, width, height)
+            .map_err(|e| anyhow::anyhow!("D2D Initialize Error: {:?}", e))?;
+
+        // 检查 RenderTarget 是否改变
+        let new_rt_ptr = self
+            .d2d_renderer
+            .render_target
+            .as_ref()
+            .map(|rt| rt.as_raw());
+
+        let rt_changed = match (old_rt_ptr, new_rt_ptr) {
+            (Some(p1), Some(p2)) => p1 != p2,
+            (None, None) => false,
+            _ => true,
+        };
+
+        // 只有在 RenderTarget 真正改变（重建）时才清理资源
+        // 如果只是 Resize，则保留资源
+        if rt_changed {
+            self.image_bitmap = None;
+            self.icon_cache.clear();
+            self.icons_loaded = false;
+        }
+
+        // 初始化后加载图标（如果尚未加载）
+        if !self.icons_loaded {
+            self.load_icons()?;
+            self.icons_loaded = true;
+        }
+        Ok(())
     }
 
-    fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP, HBITMAP)> {
-        OcrResultWindow::load_title_bar_button_from_file(filename)
+    fn set_image_from_pixels(&mut self, pixels: &[u8], width: i32, height: i32) -> Result<()> {
+        if self.image_bitmap.is_some() {
+            return Ok(());
+        }
+
+        let d2d_bitmap = self
+            .d2d_renderer
+            .create_bitmap_from_pixels(pixels, width as u32, height as u32)
+            .map_err(|e| anyhow::anyhow!("Failed to create D2D bitmap from pixels: {:?}", e))?;
+
+        self.image_bitmap = Some(d2d_bitmap);
+        Ok(())
     }
 
-    fn load_colored_pin_bitmaps(
+    /// 加载所有图标到 D2D 位图
+    fn load_icons(&mut self) -> Result<()> {
+        // 定义要加载的图标列表
+        let icons = [
+            "pin",
+            "window-close",
+            "window-maximize",
+            "window-minimize",
+            "window-restore",
+        ];
+
+        for name in icons.iter() {
+            // 1. 加载普通状态
+            let normal_pixels = Self::load_svg_pixels(name, ICON_SIZE, None)?;
+            let normal_bitmap = self
+                .d2d_renderer
+                .create_bitmap_from_pixels(
+                    &normal_pixels,
+                    (ICON_SIZE * 2) as u32,
+                    (ICON_SIZE * 2) as u32,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to create bitmap for {}: {:?}", name, e))?;
+
+            // 2. 加载悬停状态 (对于图标，悬停通常是改变背景，图标本身可能不变，或者变色)
+            // 这里我们简单复用普通位图，或者如果有特定颜色需求（如关闭按钮变白）则重新生成
+            let hover_pixels = if *name == "window-close" {
+                // 关闭按钮悬停时变白
+                Self::load_svg_pixels(name, ICON_SIZE, Some((255, 255, 255)))?
+            } else {
+                // 其他图标悬停时保持原色（背景色由 draw_custom_title_bar 绘制）
+                normal_pixels.clone()
+            };
+
+            let hover_bitmap = self
+                .d2d_renderer
+                .create_bitmap_from_pixels(
+                    &hover_pixels,
+                    (ICON_SIZE * 2) as u32,
+                    (ICON_SIZE * 2) as u32,
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to create hover bitmap for {}: {:?}", name, e)
+                })?;
+
+            // 3. 加载激活状态 (Pin)
+            let (active_normal, active_hover) = if *name == "pin" {
+                let green = (0, 128, 0);
+                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(green))?;
+                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(green))?; // 悬停时也保持绿色
+
+                let an_bmp = self
+                    .d2d_renderer
+                    .create_bitmap_from_pixels(
+                        &an_pixels,
+                        (ICON_SIZE * 2) as u32,
+                        (ICON_SIZE * 2) as u32,
+                    )
+                    .ok();
+                let ah_bmp = self
+                    .d2d_renderer
+                    .create_bitmap_from_pixels(
+                        &ah_pixels,
+                        (ICON_SIZE * 2) as u32,
+                        (ICON_SIZE * 2) as u32,
+                    )
+                    .ok();
+                (an_bmp, ah_bmp)
+            } else {
+                (None, None)
+            };
+
+            self.icon_cache.insert(
+                name.to_string(),
+                D2DIconBitmaps {
+                    normal: normal_bitmap,
+                    hover: hover_bitmap,
+                    active_normal,
+                    active_hover,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 加载 SVG 并渲染为像素数据 (RGBA)
+    fn load_svg_pixels(
         filename: &str,
         size: i32,
-        icon_rgb: (u8, u8, u8),
-    ) -> Option<(HBITMAP, HBITMAP)> {
-        OcrResultWindow::load_colored_pin_bitmaps(filename, size, icon_rgb)
-    }
-}
+        color_override: Option<(u8, u8, u8)>,
+    ) -> Result<Vec<u8>> {
+        let svg_path = format!("icons/{}.svg", filename);
+        let svg_data = std::fs::read_to_string(&svg_path)?;
+        let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default())?;
 
-impl Drop for IconCache {
-    fn drop(&mut self) {
-        unsafe {
-            // 清理所有位图资源
-            let bitmaps = [
-                self.pin_normal,
-                self.pin_hover,
-                self.pin_active_normal,
-                self.pin_active_hover,
-                self.close_normal,
-                self.close_hover,
-                self.maximize_normal,
-                self.maximize_hover,
-                self.minimize_normal,
-                self.minimize_hover,
-                self.restore_normal,
-                self.restore_hover,
-            ];
+        // 使用 2x 超采样
+        let scale = 2.0;
+        let render_size = (size as f32 * scale) as u32;
+        let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)
+            .ok_or_else(|| anyhow::anyhow!("Failed to create pixmap"))?;
 
-            for bitmap in bitmaps.iter() {
-                if !bitmap.is_invalid() {
-                    let _ = DeleteObject((*bitmap).into());
+        // 透明背景
+        pixmap.fill(tiny_skia::Color::TRANSPARENT);
+
+        let svg_size = tree.size();
+        let render_ts = tiny_skia::Transform::from_scale(
+            size as f32 * scale / svg_size.width(),
+            size as f32 * scale / svg_size.height(),
+        );
+
+        resvg::render(&tree, render_ts, &mut pixmap.as_mut());
+
+        // 如果需要颜色覆盖 (简单粗暴地将非透明像素染成指定颜色)
+        if let Some((r, g, b)) = color_override {
+            let pixels = pixmap.data_mut();
+            for i in (0..pixels.len()).step_by(4) {
+                // pixels is RGBA
+                let alpha = pixels[i + 3];
+                if alpha > 0 {
+                    pixels[i] = r;
+                    pixels[i + 1] = g;
+                    pixels[i + 2] = b;
+                    // Alpha 保持不变
                 }
             }
         }
+
+        Ok(pixmap.data().to_vec())
+    }
+
+    /// 将文本按指定宽度分行
+    fn split_text_into_lines(&self, text: &str, width: f32) -> Vec<String> {
+        self.d2d_renderer
+            .split_text_into_lines(text, width, "Microsoft YaHei", 18.0)
+            .unwrap_or_else(|_| vec![text.to_string()])
+    }
+
+    /// 获取点击位置的字符索引
+    fn get_text_position_from_point(&self, text: &str, x: f32) -> usize {
+        self.d2d_renderer
+            .get_text_position_from_point(text, x, "Microsoft YaHei", 18.0)
+            .unwrap_or(0)
+    }
+
+    fn begin_frame(&mut self) -> Result<()> {
+        use crate::platform::traits::PlatformRenderer;
+        self.d2d_renderer
+            .begin_frame()
+            .map_err(|e| anyhow::anyhow!("BeginFrame Error: {:?}", e))
+    }
+
+    fn end_frame(&mut self) -> Result<()> {
+        use crate::platform::traits::PlatformRenderer;
+        self.d2d_renderer
+            .end_frame()
+            .map_err(|e| anyhow::anyhow!("EndFrame Error: {:?}", e))
+    }
+
+    fn clear(&mut self, r: f32, g: f32, b: f32, a: f32) -> Result<()> {
+        use crate::platform::traits::PlatformRenderer;
+        self.d2d_renderer
+            .clear(crate::platform::Color { r, g, b, a })
+            .map_err(|e| anyhow::anyhow!("Clear Error: {:?}", e))
+    }
+
+    /// 绘制自定义标题栏
+    fn draw_custom_title_bar(
+        &mut self,
+        width: i32,
+        icons: &[SvgIcon],
+        is_pinned: bool,
+    ) -> Result<()> {
+        use crate::platform::traits::{Color, DrawStyle, PlatformRenderer, Rectangle, RendererExt};
+
+        // 绘制标题栏背景
+        let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
+        let bg_color = Color {
+            r: TITLE_BAR_BG_COLOR_D2D.r,
+            g: TITLE_BAR_BG_COLOR_D2D.g,
+            b: TITLE_BAR_BG_COLOR_D2D.b,
+            a: TITLE_BAR_BG_COLOR_D2D.a,
+        };
+
+        let bg_style = DrawStyle {
+            stroke_color: bg_color,
+            fill_color: Some(bg_color),
+            stroke_width: 0.0,
+        };
+
+        self.d2d_renderer
+            .draw_rectangle(title_bar_rect, &bg_style)
+            .map_err(|e| anyhow::anyhow!("Failed to draw title bar bg: {:?}", e))?;
+
+        // 绘制标题栏按钮和图标
+        for icon in icons {
+            // 跳过不可见的图标
+            if icon.rect.right > width {
+                continue;
+            }
+
+            let icon_rect = Rectangle::from_bounds(
+                icon.rect.left as f32,
+                icon.rect.top as f32,
+                icon.rect.right as f32,
+                icon.rect.bottom as f32,
+            );
+
+            // 绘制悬停/激活背景
+            if icon.hovered {
+                let (bg_color_d2d, use_rounded) = if icon.is_title_bar_button {
+                    if icon.name == "window-close" {
+                        (CLOSE_BUTTON_HOVER_BG_COLOR_D2D, false)
+                    } else {
+                        (TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, false)
+                    }
+                } else {
+                    (ICON_HOVER_BG_COLOR_D2D, true)
+                };
+
+                let hover_color = Color {
+                    r: bg_color_d2d.r,
+                    g: bg_color_d2d.g,
+                    b: bg_color_d2d.b,
+                    a: bg_color_d2d.a,
+                };
+
+                let hover_style = DrawStyle {
+                    stroke_color: hover_color,
+                    fill_color: Some(hover_color),
+                    stroke_width: 0.0,
+                };
+
+                if use_rounded {
+                    // 普通图标：圆角背景
+                    let padding = ICON_HOVER_PADDING as f32;
+                    let hover_rect = Rectangle::new(
+                        icon_rect.x - padding,
+                        icon_rect.y - padding,
+                        icon_rect.width + padding * 2.0,
+                        icon_rect.height + padding * 2.0,
+                    );
+
+                    self.d2d_renderer
+                        .draw_rounded_rectangle(hover_rect, ICON_HOVER_RADIUS, &hover_style)
+                        .map_err(|e| anyhow::anyhow!("Failed to draw icon hover: {:?}", e))?;
+                } else {
+                    // 标题栏按钮：矩形背景
+                    let mut button_rect = icon_rect;
+                    // 扩展到标准按钮宽度
+                    let button_width = BUTTON_WIDTH_OCR as f32;
+                    let center_x = icon_rect.x + icon_rect.width / 2.0;
+                    button_rect.x = center_x - button_width / 2.0;
+                    button_rect.width = button_width;
+                    button_rect.y = 0.0; // 铺满高度
+                    button_rect.height = TITLE_BAR_HEIGHT as f32;
+
+                    // 关闭按钮延伸到边缘
+                    if icon.name == "window-close" {
+                        button_rect.width = (width as f32) - button_rect.x;
+                    }
+
+                    self.d2d_renderer
+                        .draw_rectangle(button_rect, &hover_style)
+                        .map_err(|e| anyhow::anyhow!("Failed to draw button hover: {:?}", e))?;
+                }
+            } else if icon.name == "pin" && is_pinned {
+                // Pin 激活状态背景
+                // TODO: Differentiate active vs hover state visual if needed
+            }
+
+            // 绘制图标本身 (SVG -> D2D Bitmap)
+            if let Some(bitmaps) = self.icon_cache.get(&icon.name) {
+                let bitmap_to_use = if icon.name == "pin" && is_pinned {
+                    if icon.hovered {
+                        bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
+                    } else {
+                        bitmaps.active_normal.as_ref().unwrap_or(&bitmaps.normal)
+                    }
+                } else if icon.hovered {
+                    &bitmaps.hover
+                } else {
+                    &bitmaps.normal
+                };
+
+                let _icon_padding = ICON_CLICK_PADDING as f32; // 使用适当的 padding
+                let icon_width = ICON_SIZE as f32;
+                let icon_height = ICON_SIZE as f32;
+
+                // 居中计算
+                let center_x = icon_rect.x + icon_rect.width / 2.0;
+                let center_y = icon_rect.y + icon_rect.height / 2.0;
+
+                let draw_rect = D2D_RECT_F {
+                    left: center_x - icon_width / 2.0,
+                    top: center_y - icon_height / 2.0,
+                    right: center_x + icon_width / 2.0,
+                    bottom: center_y + icon_height / 2.0,
+                };
+
+                self.d2d_renderer
+                    .draw_d2d_bitmap(bitmap_to_use, Some(draw_rect), 1.0, None)
+                    .map_err(|e| anyhow::anyhow!("Failed to draw icon {}: {:?}", icon.name, e))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render(
+        &mut self,
+        text_lines: &[String],
+        text_rect: RECT,
+        width: i32,
+        icons: &[SvgIcon],
+        is_pinned: bool,
+        is_maximized: bool,
+        scroll_offset: i32,
+        line_height: i32,
+        image_width: i32,
+        image_height: i32,
+        selection: Option<((usize, usize), (usize, usize))>,
+    ) -> Result<()> {
+        self.begin_frame()?;
+
+        // 清除背景 - 使用浅灰色背景
+        self.clear(0.93, 0.93, 0.93, 1.0)?;
+
+        // 1. 绘制标题栏（包括按钮背景）
+        self.draw_custom_title_bar(width, icons, is_pinned)?;
+
+        // 2. 绘制图片（如果存在）
+        // 图片应该在左侧区域，不覆盖标题栏和文字区域
+        if let Some(bitmap) = &self.image_bitmap {
+            // 计算可用区域
+            let available_width = (width - 350 - 40) as f32; // 减去文字区域宽度和边距
+            let available_height = (text_rect.bottom - text_rect.top) as f32; // 使用文本区域的高度作为参考（实际上是窗口高度减去标题栏和padding）
+            let start_y = TITLE_BAR_HEIGHT as f32 + 10.0;
+
+            // 限制最大可用高度
+            let max_height =
+                (crate::platform::windows::system::get_screen_size().1 as f32) - start_y - 20.0;
+            let effective_available_height = available_height.min(max_height);
+
+            // 原始尺寸
+            let original_width = image_width as f32;
+            let original_height = image_height as f32;
+
+            // 计算缩放比例 (保持长宽比，不放大超过原图)
+            let scale_x = available_width / original_width;
+            let scale_y = effective_available_height / original_height;
+            let scale = scale_x.min(scale_y).min(1.0); // 最多缩放到1.0，即原图大小
+
+            // 计算缩放后的尺寸
+            let display_width = original_width * scale;
+            let display_height = original_height * scale;
+
+            // 居中显示在左侧区域
+            // 左侧区域中心点X
+            let left_area_center_x = 20.0 + available_width / 2.0;
+            let image_x = left_area_center_x - display_width / 2.0;
+            let image_y = start_y; // 顶部对齐
+
+            let image_dest_rect = D2D_RECT_F {
+                left: image_x,
+                top: image_y,
+                right: image_x + display_width,
+                bottom: image_y + display_height,
+            };
+
+            self.d2d_renderer
+                .draw_d2d_bitmap(bitmap, Some(image_dest_rect), 1.0, None)
+                .map_err(|e| anyhow::anyhow!("Failed to draw bitmap: {:?}", e))?;
+        }
+
+        // 4. 绘制窗口边框 - 仅在非最大化时绘制
+        if !is_pinned && !is_maximized {
+            let border_color = crate::platform::traits::Color {
+                r: 0.8,
+                g: 0.8,
+                b: 0.8,
+                a: 1.0,
+            }; // 浅灰色边框
+            let border_style = crate::platform::traits::DrawStyle {
+                stroke_color: border_color,
+                fill_color: None,
+                stroke_width: 1.0,
+            };
+            let border_rect = crate::platform::traits::Rectangle {
+                x: 0.5, // 0.5 偏移以获得清晰的线条
+                y: 0.5,
+                width: width as f32 - 1.0,
+                height: (text_rect.bottom + 15) as f32 - 1.0, // 到底部
+            };
+            let _ = self.d2d_renderer.draw_rectangle(border_rect, &border_style);
+        }
+
+        // 3. 绘制文本和UI元素
+        // 使用平台抽象的颜色和文本样式
+        let text_color = crate::platform::traits::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        // 字体大小 18.0 约等于 GDI height 24
+        let text_style = crate::platform::traits::TextStyle {
+            font_size: 18.0,
+            color: text_color,
+            font_family: "Microsoft YaHei".to_string(),
+        };
+
+        // 剪裁文本区域，防止绘制到标题栏或图片区域外
+        let _clip_rect = crate::platform::traits::Rectangle {
+            x: text_rect.left as f32,
+            y: text_rect.top as f32,
+            width: (text_rect.right - text_rect.left) as f32,
+            height: (text_rect.bottom - text_rect.top) as f32,
+        };
+
+        // 设置裁剪
+        // 注意：d2d_renderer 需要暴露 push_clip_rect/pop_clip_rect 或类似的接口
+        // 这里暂时不裁剪，依靠y坐标判断是否绘制
+
+        let start_y = text_rect.top as f32 - scroll_offset as f32;
+
+        // 预计算选择范围
+        let (start_sel, end_sel) = if let Some((s, e)) = selection {
+            if s <= e { (s, e) } else { (e, s) }
+        } else {
+            ((usize::MAX, 0), (usize::MAX, 0))
+        };
+
+        for (i, line) in text_lines.iter().enumerate() {
+            let line_y = start_y + (i as f32 * line_height as f32);
+
+            // 优化：只绘制可见区域内的行
+            if line_y + (line_height as f32) < text_rect.top as f32 {
+                continue;
+            }
+            if line_y > text_rect.bottom as f32 {
+                break;
+            }
+
+            let pos = crate::platform::traits::Point {
+                x: text_rect.left as f32,
+                y: line_y,
+            };
+
+            // 绘制选择高亮
+            if i >= start_sel.0 && i <= end_sel.0 {
+                let mut sel_rect = crate::platform::traits::Rectangle {
+                    x: pos.x,
+                    y: pos.y,
+                    width: 0.0,
+                    height: line_height as f32,
+                };
+
+                // 计算高亮行的起始和结束字符索引
+                let start_char = if i == start_sel.0 { start_sel.1 } else { 0 };
+                let end_char = if i == end_sel.0 {
+                    end_sel.1
+                } else {
+                    line.chars().count()
+                };
+
+                if start_char < end_char {
+                    // 测量前缀宽度 (start_char之前)
+                    let prefix = line.chars().take(start_char).collect::<String>();
+                    let (prefix_width, _) = self
+                        .d2d_renderer
+                        .measure_text_layout_size(&prefix, 10000.0, &text_style)
+                        .unwrap_or((0.0, 0.0));
+
+                    // 测量选中部分宽度
+                    let selected_text = line
+                        .chars()
+                        .skip(start_char)
+                        .take(end_char - start_char)
+                        .collect::<String>();
+                    let (sel_width, _) = self
+                        .d2d_renderer
+                        .measure_text_layout_size(&selected_text, 10000.0, &text_style)
+                        .unwrap_or((0.0, 0.0));
+
+                    sel_rect.x += prefix_width;
+                    sel_rect.width = sel_width;
+
+                    // 绘制高亮矩形
+                    let highlight_color = crate::platform::traits::Color {
+                        r: 0.78,
+                        g: 0.97,
+                        b: 0.77,
+                        a: 1.0,
+                    }; // #C8F7C5
+                    let highlight_style = crate::platform::traits::DrawStyle {
+                        stroke_color: highlight_color,
+                        fill_color: Some(highlight_color),
+                        stroke_width: 0.0,
+                    };
+
+                    let _ = self.d2d_renderer.draw_rectangle(sel_rect, &highlight_style);
+                }
+            }
+
+            // 绘制文本行
+            self.d2d_renderer
+                .draw_text(line, pos, &text_style)
+                .map_err(|e| anyhow::anyhow!("Failed to draw text: {:?}", e))?;
+        }
+
+        self.end_frame()?;
+        Ok(())
     }
 }
 
@@ -124,8 +628,6 @@ impl Drop for IconCache {
 #[derive(Clone)]
 struct SvgIcon {
     name: String,
-    normal_bitmap: HBITMAP, // 引用IconCache中的位图
-    hover_bitmap: HBITMAP,  // 引用IconCache中的位图
     rect: RECT,
     hovered: bool,
     is_title_bar_button: bool, // 是否是标题栏按钮
@@ -145,25 +647,15 @@ struct MARGINS {
 /// OCR 结果显示窗口
 pub struct OcrResultWindow {
     hwnd: HWND,
-    image_bitmap: Option<HBITMAP>,
+    // 原始图像数据，用于D2D位图创建
+    image_pixels: Vec<u8>,
     image_width: i32,
     image_height: i32,
-    font: HFONT,
-    text_area_rect: RECT,      // 文字显示区域
-    window_width: i32,         // 窗口宽度
-    window_height: i32,        // 窗口高度
-    is_no_text_detected: bool, // 是否是"未识别到文字"状态
-    is_maximized: bool,        // 是否最大化
-    svg_icons: Vec<SvgIcon>,   // SVG 图标列表（包括左侧图标和标题栏按钮）
-
-    // 简化的缓冲相关字段
-    content_buffer: Option<HBITMAP>, // 内容区域缓冲位图
-    buffer_width: i32,               // 缓冲区宽度
-    buffer_height: i32,              // 缓冲区高度
-    buffer_valid: bool,              // 缓冲区是否有效（只有第一次创建后就一直有效）
-
-    // 图标缓存 - 一次性加载所有图标，避免重复加载
-    icon_cache: IconCache,
+    text_area_rect: RECT,    // 文字显示区域
+    window_width: i32,       // 窗口宽度
+    window_height: i32,      // 窗口高度
+    is_maximized: bool,      // 是否最大化
+    svg_icons: Vec<SvgIcon>, // SVG 图标列表（包括左侧图标和标题栏按钮）
 
     // 自绘文本相关
     text_content: String,    // 文本内容
@@ -182,8 +674,10 @@ pub struct OcrResultWindow {
 
     // 置顶/Pin 状态
     is_pinned: bool, // 是否置顶
-}
 
+    // Direct2D 渲染器
+    renderer: Option<OcrResultRenderer>,
+}
 impl OcrResultWindow {
     // 获取窗口边框厚度
     fn get_frame_thickness(hwnd: HWND) -> i32 {
@@ -195,231 +689,14 @@ impl OcrResultWindow {
         }
     }
 
-    /// 清理所有资源（简化版本 - IconCache会自动清理）
+    /// 清理所有资源
     fn cleanup_all_resources(&mut self) {
-        unsafe {
-            // 清理内容缓冲区
-            self.cleanup_content_buffer();
-
-            // 清理图像位图
-            if let Some(bitmap) = self.image_bitmap.take() {
-                let _ = DeleteObject(bitmap.into());
-            }
-
-            // 清理字体
-            if !self.font.is_invalid() {
-                let _ = DeleteObject(self.font.into());
-            }
-
-            // 清理SVG图标列表（不需要清理位图，因为它们来自IconCache）
-            self.svg_icons.clear();
-
-            // IconCache会在Drop时自动清理所有位图资源
-        }
+        // 清理SVG图标列表
+        self.svg_icons.clear();
     }
 
-    /// 检查并创建内容缓冲区（仅在尺寸变化时重建）
-    fn ensure_content_buffer(&mut self, width: i32, height: i32) -> Result<()> {
-        unsafe {
-            // 只有在缓冲区不存在或尺寸确实变化时才重新创建
-            if self.content_buffer.is_none()
-                || self.buffer_width != width
-                || self.buffer_height != height
-            {
-                // 清理旧缓冲区
-                self.cleanup_content_buffer();
-
-                // 创建新缓冲区
-                let screen_dc = GetDC(None);
-                if screen_dc.is_invalid() {
-                    return Err(anyhow::anyhow!("获取屏幕DC失败"));
-                }
-
-                let new_buffer = CreateCompatibleBitmap(screen_dc, width, height);
-                let _ = ReleaseDC(None, screen_dc);
-
-                if new_buffer.is_invalid() {
-                    return Err(anyhow::anyhow!("创建内容缓冲区失败"));
-                }
-
-                self.content_buffer = Some(new_buffer);
-                self.buffer_width = width;
-                self.buffer_height = height;
-                self.buffer_valid = false; // 标记需要重绘
-            }
-
-            Ok(())
-        }
-    }
-
-    /// 清理内容缓冲区
-    fn cleanup_content_buffer(&mut self) {
-        unsafe {
-            if let Some(old_buffer) = self.content_buffer.take() {
-                let _ = DeleteObject(old_buffer.into());
-            }
-            self.buffer_width = 0;
-            self.buffer_height = 0;
-            self.buffer_valid = false;
-        }
-    }
-
-    /// 渲染内容到缓冲区
-    fn render_to_buffer(&mut self, screen_hdc: HDC) -> Result<()> {
-        unsafe {
-            if let Some(buffer_bitmap) = self.content_buffer {
-                let buffer_dc = CreateCompatibleDC(Some(screen_hdc));
-                let old_bitmap = SelectObject(buffer_dc, buffer_bitmap.into());
-
-                // 渲染内容到缓冲区
-                let result = self.paint_content_to_dc(buffer_dc);
-
-                SelectObject(buffer_dc, old_bitmap);
-                let _ = DeleteDC(buffer_dc);
-
-                if result.is_ok() {
-                    self.buffer_valid = true;
-                }
-
-                result
-            } else {
-                Err(anyhow::anyhow!("缓冲区不存在"))
-            }
-        }
-    }
-
-    /// 将内容绘制到指定的DC（用于缓冲和直接绘制）
-    fn paint_content_to_dc(&self, hdc: HDC) -> Result<()> {
-        unsafe {
-            let rect = RECT {
-                left: 0,
-                top: 0,
-                right: self.buffer_width,
-                bottom: self.buffer_height,
-            };
-
-            // 设置背景色为白色（仅内容区域）
-            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
-            FillRect(hdc, &rect, white_brush);
-
-            // 绘制窗口边框
-            let border_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00CCCCCC));
-            let old_pen = SelectObject(hdc, border_pen.into());
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-            let _ = Rectangle(hdc, rect.left, rect.top, rect.right, rect.bottom);
-
-            SelectObject(hdc, old_pen);
-            SelectObject(hdc, old_brush);
-            let _ = DeleteObject(border_pen.into());
-
-            // 设置文本颜色为黑色
-            SetTextColor(hdc, COLORREF(0x00000000));
-            SetBkMode(hdc, TRANSPARENT);
-
-            // 选择微软雅黑字体
-            let old_font = SelectObject(hdc, self.font.into());
-
-            // 使用预计算的布局
-            let image_area_width = self.text_area_rect.left - 10;
-
-            // 绘制图像区域边框
-            let image_rect = RECT {
-                left: 10,
-                top: 10,
-                right: image_area_width - 10,
-                bottom: self.buffer_height - 10,
-            };
-
-            let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x00CCCCCC));
-            let old_pen = SelectObject(hdc, border_pen.into());
-            let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-            let _ = Rectangle(
-                hdc,
-                image_rect.left,
-                image_rect.top,
-                image_rect.right,
-                image_rect.bottom,
-            );
-
-            SelectObject(hdc, old_pen);
-            SelectObject(hdc, old_brush);
-            let _ = DeleteObject(border_pen.into());
-
-            // 绘制实际的截图图像
-            if let Some(bitmap) = self.image_bitmap {
-                // 创建内存 DC 来绘制位图
-                let mem_dc = CreateCompatibleDC(Some(hdc));
-                let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                // 计算图像显示区域（保持宽高比，居中显示）
-                let available_width = image_area_width - 40;
-                let available_height = self.buffer_height - 60;
-
-                let scale_x = available_width as f32 / self.image_width as f32;
-                let scale_y = available_height as f32 / self.image_height as f32;
-                let scale = scale_x.min(scale_y).min(1.0); // 不放大
-
-                let scaled_width = (self.image_width as f32 * scale) as i32;
-                let scaled_height = (self.image_height as f32 * scale) as i32;
-
-                let x_offset = 20 + (available_width - scaled_width) / 2;
-                let y_offset = 30 + (available_height - scaled_height) / 2;
-
-                // 使用 StretchBlt 绘制缩放的图像
-                let _ = StretchBlt(
-                    hdc,
-                    x_offset,
-                    y_offset,
-                    scaled_width,
-                    scaled_height,
-                    Some(mem_dc),
-                    0,
-                    0,
-                    self.image_width,
-                    self.image_height,
-                    SRCCOPY,
-                );
-
-                SelectObject(mem_dc, old_bitmap);
-                let _ = DeleteDC(mem_dc);
-            } else {
-                // 如果没有位图，显示提示文字
-                let image_text = "截图图像\n(加载失败)";
-                let mut image_text_rect = RECT {
-                    left: 20,
-                    top: 30,
-                    right: image_area_width - 20,
-                    bottom: 100,
-                };
-
-                let mut image_text_wide: Vec<u16> = image_text
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
-                DrawTextW(
-                    hdc,
-                    &mut image_text_wide,
-                    &mut image_text_rect,
-                    DT_LEFT | DT_TOP | DT_WORDBREAK,
-                );
-            }
-
-            // 绘制文本区域
-            self.draw_text_area_to_dc(hdc);
-
-            // 恢复原来的字体
-            SelectObject(hdc, old_font);
-
-            let _ = DeleteObject(white_brush.into());
-
-            Ok(())
-        }
-    }
-
-    /// 创建左侧图标（使用缓存的位图）
-    fn create_left_icons(icon_cache: &IconCache) -> Vec<SvgIcon> {
+    /// 创建左侧图标（仅位置和名称）
+    fn create_left_icons() -> Vec<SvgIcon> {
         let mut icons = Vec::new();
 
         let icon_x = ICON_START_X;
@@ -427,8 +704,6 @@ impl OcrResultWindow {
 
         icons.push(SvgIcon {
             name: "pin".to_string(),
-            normal_bitmap: icon_cache.pin_normal,
-            hover_bitmap: icon_cache.pin_hover,
             rect: RECT {
                 left: icon_x,
                 top: icon_y,
@@ -462,18 +737,17 @@ impl OcrResultWindow {
         }
     }
 
-    /// 更新标题栏按钮状态（优化版本 - 不重新加载图标）
+    /// 更新标题栏按钮状态
     fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
 
-        // 移除旧的标题栏按钮，保留左侧图标（不需要释放位图，因为它们来自缓存）
+        // 移除旧的标题栏按钮，保留左侧图标
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
 
         // 确保有左侧图标并更新它们的位置
         let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
         if !has_left_icons {
-            // 从缓存创建左侧图标
-            let mut left_icons = Self::create_left_icons(&self.icon_cache);
+            let mut left_icons = Self::create_left_icons();
             self.svg_icons.append(&mut left_icons);
         }
 
@@ -488,63 +762,26 @@ impl OcrResultWindow {
             }
         }
 
-        // 创建新的标题栏按钮（使用缓存的位图）
-        let mut title_bar_buttons =
-            self.create_title_bar_buttons_from_cache(window_width, self.is_maximized);
+        // 创建新的标题栏按钮
+        let mut title_bar_buttons = self.create_title_bar_buttons(window_width, self.is_maximized);
         self.svg_icons.append(&mut title_bar_buttons);
     }
 
-    /// 创建标题栏按钮（使用缓存的位图）
-    fn create_title_bar_buttons_from_cache(
-        &self,
-        window_width: i32,
-        is_maximized: bool,
-    ) -> Vec<SvgIcon> {
+    /// 创建标题栏按钮
+    fn create_title_bar_buttons(&self, window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
         let mut buttons = Vec::new();
 
         // 根据窗口状态选择按钮配置
-        let button_configs = if is_maximized {
+        let button_names = if is_maximized {
             // 最大化状态：关闭、还原、最小化（从右到左）
-            vec![
-                (
-                    "window-close",
-                    self.icon_cache.close_normal,
-                    self.icon_cache.close_hover,
-                ),
-                (
-                    "window-restore",
-                    self.icon_cache.restore_normal,
-                    self.icon_cache.restore_hover,
-                ),
-                (
-                    "window-minimize",
-                    self.icon_cache.minimize_normal,
-                    self.icon_cache.minimize_hover,
-                ),
-            ]
+            vec!["window-close", "window-restore", "window-minimize"]
         } else {
             // 普通状态：关闭、最大化、最小化（从右到左）
-            vec![
-                (
-                    "window-close",
-                    self.icon_cache.close_normal,
-                    self.icon_cache.close_hover,
-                ),
-                (
-                    "window-maximize",
-                    self.icon_cache.maximize_normal,
-                    self.icon_cache.maximize_hover,
-                ),
-                (
-                    "window-minimize",
-                    self.icon_cache.minimize_normal,
-                    self.icon_cache.minimize_hover,
-                ),
-            ]
+            vec!["window-close", "window-maximize", "window-minimize"]
         };
 
         // 从右到左创建按钮
-        for (i, (name, normal_bitmap, hover_bitmap)) in button_configs.iter().enumerate() {
+        for (i, name) in button_names.iter().enumerate() {
             // 按钮位置计算
             let button_x = window_width - (i as i32 + 1) * BUTTON_WIDTH_OCR;
             let icon_x = button_x + (BUTTON_WIDTH_OCR - ICON_SIZE) / 2;
@@ -552,8 +789,6 @@ impl OcrResultWindow {
 
             buttons.push(SvgIcon {
                 name: name.to_string(),
-                normal_bitmap: *normal_bitmap,
-                hover_bitmap: *hover_bitmap,
                 rect: RECT {
                     left: icon_x,
                     top: icon_y,
@@ -568,61 +803,13 @@ impl OcrResultWindow {
         buttons
     }
 
-    /// 文本换行处理
-    fn wrap_text_lines(text: &str, text_rect: &RECT, font: HFONT, hwnd: HWND) -> Vec<String> {
-        unsafe {
-            let hdc = GetDC(Some(hwnd));
-            let old_font = SelectObject(hdc, font.into());
-
-            let text_width = text_rect.right - text_rect.left - 20; // 减去左右边距
-            let mut lines = Vec::new();
-
-            for paragraph in text.split('\n') {
-                if paragraph.trim().is_empty() {
-                    lines.push(String::new());
-                    continue;
-                }
-
-                let words: Vec<&str> = paragraph.split_whitespace().collect();
-                let mut current_line = String::new();
-
-                for word in words {
-                    let test_line = if current_line.is_empty() {
-                        word.to_string()
-                    } else {
-                        format!("{current_line} {word}")
-                    };
-
-                    // 测量文本宽度
-                    let test_wide: Vec<u16> = test_line.encode_utf16().collect();
-                    let mut size = SIZE::default();
-                    let _ = GetTextExtentPoint32W(hdc, &test_wide, &mut size);
-
-                    if size.cx <= text_width || current_line.is_empty() {
-                        current_line = test_line;
-                    } else {
-                        lines.push(current_line);
-                        current_line = word.to_string();
-                    }
-                }
-
-                if !current_line.is_empty() {
-                    lines.push(current_line);
-                }
-            }
-
-            let _ = SelectObject(hdc, old_font);
-            let _ = ReleaseDC(Some(hwnd), hdc);
-            lines
-        }
-    }
-
     /// 重新计算窗口布局
     fn recalculate_layout(&mut self) {
         // 右边文字区域宽度（固定350像素）
         let text_area_width = 350;
 
         // 左边图像区域宽度
+        // 注意：这里的image_area_width是为图像预留的区域宽度，不是图像实际显示宽度
         let image_area_width = self.window_width - text_area_width - 20; // 减去中间分隔20像素
 
         // 计算文字显示区域（简化版本）
@@ -648,12 +835,14 @@ impl OcrResultWindow {
             self.text_area_rect = new_text_area_rect;
 
             // 重新计算文本换行
-            self.text_lines = Self::wrap_text_lines(
-                &self.text_content,
-                &self.text_area_rect,
-                self.font,
-                self.hwnd,
-            );
+            if let Some(renderer) = &mut self.renderer {
+                // 确保渲染器已初始化
+                let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
+                self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
+            } else {
+                // Fallback if renderer not available
+                self.text_lines = vec![self.text_content.clone()];
+            }
 
             // 调整滚动偏移量，确保不超出范围
             let max_scroll = (self.text_lines.len() as i32 * self.line_height)
@@ -669,896 +858,56 @@ impl OcrResultWindow {
         }
     }
 
-    /// 从文件加载标题栏按钮，创建专门的悬停效果
-    fn load_title_bar_button_from_file(filename: &str) -> Option<(HBITMAP, HBITMAP, HBITMAP)> {
-        unsafe {
-            // 读取SVG文件
-            let svg_path = format!("icons/{filename}");
-            let svg_data = match std::fs::read_to_string(&svg_path) {
-                Ok(data) => data,
-                Err(_) => return None,
-            };
-
-            // 解析SVG - 使用默认选项
-            let tree = match usvg::Tree::from_str(&svg_data, &usvg::Options::default()) {
-                Ok(tree) => tree,
-                Err(_) => return None,
-            };
-
-            // 创建pixmap - 使用2x超采样
-            let scale = 2.0;
-            let render_size = (ICON_SIZE as f32 * scale) as u32;
-            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
-            pixmap.fill(tiny_skia::Color::TRANSPARENT);
-
-            // 获取SVG的尺寸并计算缩放
-            let svg_size = tree.size();
-
-            // 渲染SVG到pixmap
-            let render_ts = tiny_skia::Transform::from_scale(
-                ICON_SIZE as f32 * scale / svg_size.width(),
-                ICON_SIZE as f32 * scale / svg_size.height(),
-            );
-
-            resvg::render(&tree, render_ts, &mut pixmap.as_mut());
-
-            // 获取屏幕DC
-            let screen_dc = GetDC(None);
-
-            // 创建普通状态的位图（透明背景）
-            let normal_bitmap =
-                Self::create_transparent_icon_bitmap(&screen_dc, &pixmap, ICON_SIZE)?;
-
-            // 创建悬停状态的位图（矩形背景，铺满标题栏高度）
-            let hover_bitmap = if filename == "window-close.svg" {
-                // 关闭按钮：红色背景，矩形，铺满高度
-                Self::create_title_bar_button_rect_hover_bitmap(
-                    &screen_dc,
-                    &pixmap,
-                    ICON_SIZE,
-                    CLOSE_BUTTON_HOVER_BG_COLOR,
-                    true, // 是关闭按钮
-                )?
-            } else {
-                // 其他按钮：灰色背景，矩形，铺满高度
-                Self::create_title_bar_button_rect_hover_bitmap(
-                    &screen_dc,
-                    &pixmap,
-                    ICON_SIZE,
-                    TITLE_BAR_BUTTON_HOVER_BG_COLOR,
-                    false, // 不是关闭按钮
-                )?
-            };
-
-            // 最大化状态下的悬停位图（使用相同的hover位图）
-            let hover_bitmap_maximized = hover_bitmap;
-
-            let _ = ReleaseDC(None, screen_dc);
-
-            Some((normal_bitmap, hover_bitmap, hover_bitmap_maximized))
-        }
-    }
-
-    /// 创建标题栏按钮的矩形hover背景（撑满标题栏高度）
-    fn create_title_bar_button_rect_hover_bitmap(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        size: i32,
-        bg_color: (u8, u8, u8),
-        is_close_button: bool,
-    ) -> Option<HBITMAP> {
-        unsafe {
-            // 使用标题栏按钮的实际宽度和标题栏高度，撑满标题栏
-            // 关闭按钮使用更宽的宽度以便延伸到窗口右边缘
-            let button_width = if is_close_button {
-                BUTTON_WIDTH_OCR * 2 // 关闭按钮使用更宽的位图
-            } else {
-                BUTTON_WIDTH_OCR
-            };
-            let button_height = TITLE_BAR_HEIGHT; // 使用标题栏高度
-
-            // 创建DIB段位图以支持Alpha通道
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: button_width,
-                    biHeight: -button_height, // 负值表示自顶向下
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(*screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .ok()?;
-
-            // 处理像素数据
-            let pixel_data = pixmap.data();
-            let render_width = pixmap.width() as usize;
-            let bits_slice = std::slice::from_raw_parts_mut(
-                bits_ptr as *mut u8,
-                (button_width * button_height * 4) as usize,
-            );
-
-            // 填充整个区域为背景色（矩形，撑满标题栏高度）
-            for y in 0..button_height {
-                for x in 0..button_width {
-                    let dst_idx = (y * button_width + x) as usize * 4;
-                    if dst_idx + 3 < bits_slice.len() {
-                        bits_slice[dst_idx] = bg_color.2; // B
-                        bits_slice[dst_idx + 1] = bg_color.1; // G
-                        bits_slice[dst_idx + 2] = bg_color.0; // R
-                        bits_slice[dst_idx + 3] = 255; // A
-                    }
-                }
-            }
-
-            // 绘制图标：居中显示
-            let icon_x_offset = if is_close_button {
-                // 关闭按钮：在左边部分居中（因为位图比按钮宽）
-                (BUTTON_WIDTH_OCR - size) / 2
-            } else {
-                // 其他按钮：正常居中
-                (button_width - size) / 2
-            };
-            let icon_y_offset = (button_height - size) / 2; // 在标题栏高度中垂直居中
-
-            for y in 0..size {
-                for x in 0..size {
-                    // 计算2x2区域的平均颜色和Alpha
-                    let mut r_sum: u32 = 0;
-                    let mut g_sum: u32 = 0;
-                    let mut b_sum: u32 = 0;
-                    let mut a_sum: u32 = 0;
-                    
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let sx = x * 2 + dx;
-                            let sy = y * 2 + dy;
-                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
-                            if s_idx + 3 < pixel_data.len() {
-                                // tiny_skia: RGBA
-                                r_sum += pixel_data[s_idx] as u32;       // R
-                                g_sum += pixel_data[s_idx + 1] as u32;   // G
-                                b_sum += pixel_data[s_idx + 2] as u32;   // B
-                                a_sum += pixel_data[s_idx + 3] as u32;   // A
-                            }
-                        }
-                    }
-                    
-                    let src_r = (r_sum / 4) as u8;
-                    let src_g = (g_sum / 4) as u8;
-                    let src_b = (b_sum / 4) as u8;
-                    let alpha = (a_sum / 4) as u8;
-
-                    let dst_x = x + icon_x_offset;
-                    let dst_y = y + icon_y_offset;
-                    let dst_idx = (dst_y * button_width + dst_x) as usize * 4;
-
-                    if dst_idx + 3 < bits_slice.len() {
-                        if alpha > 0 {
-                            if is_close_button {
-                                // 关闭按钮：检查是否为白色或接近白色的像素（描边）
-                                let is_white_ish = src_r > 200 && src_g > 200 && src_b > 200;
-
-                                if !is_white_ish {
-                                    // 非白色像素设置为白色，并与背景混合
-                                    let alpha_f = alpha as f32 / 255.0;
-                                    let inv_alpha_f = 1.0 - alpha_f;
-
-                                    // 获取当前背景颜色
-                                    let bg_b = bits_slice[dst_idx];
-                                    let bg_g = bits_slice[dst_idx + 1];
-                                    let bg_r = bits_slice[dst_idx + 2];
-
-                                    // 混合白色 (255, 255, 255) 与背景
-                                    bits_slice[dst_idx] = (255.0 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                                    bits_slice[dst_idx + 1] = (255.0 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                                    bits_slice[dst_idx + 2] = (255.0 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                                    bits_slice[dst_idx + 3] = 255; // 保持不透明
-                                }
-                            } else {
-                                // 其他按钮：混合原始颜色与背景
-                                let alpha_f = alpha as f32 / 255.0;
-                                let inv_alpha_f = 1.0 - alpha_f;
-
-                                // 获取当前背景颜色
-                                let bg_b = bits_slice[dst_idx];
-                                let bg_g = bits_slice[dst_idx + 1];
-                                let bg_r = bits_slice[dst_idx + 2];
-
-                                // 混合源颜色 (src_r, src_g, src_b) 与背景
-                                bits_slice[dst_idx] = (src_b as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                                bits_slice[dst_idx + 1] = (src_g as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                                bits_slice[dst_idx + 2] = (src_r as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                                bits_slice[dst_idx + 3] = 255; // 保持不透明
-                            }
-                        }
-                    }
-                }
-            }
-
-            Some(bitmap)
-        }
-    }
-
-    /// 从文件加载单个SVG图标，返回普通状态和悬停状态的位图
-    fn load_svg_icon_from_file(filename: &str, size: i32) -> Option<(HBITMAP, HBITMAP)> {
-        unsafe {
-            // 读取SVG文件
-            let svg_path = format!("icons/{filename}");
-            let svg_data = match std::fs::read_to_string(&svg_path) {
-                Ok(data) => data,
-                Err(_) => return None,
-            };
-
-            // 解析SVG - 使用默认选项
-            let tree = match usvg::Tree::from_str(&svg_data, &usvg::Options::default()) {
-                Ok(tree) => tree,
-                Err(_) => return None,
-            };
-
-            // 创建pixmap - 使用2x超采样
-            let scale = 2.0;
-            let render_size = (size as f32 * scale) as u32;
-            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
-            pixmap.fill(tiny_skia::Color::TRANSPARENT);
-
-            // 获取SVG的尺寸并计算缩放
-            let svg_size = tree.size();
-
-            // 渲染SVG到pixmap
-            let render_ts = tiny_skia::Transform::from_scale(
-                size as f32 * scale / svg_size.width(),
-                size as f32 * scale / svg_size.height(),
-            );
-
-            resvg::render(&tree, render_ts, &mut pixmap.as_mut());
-
-            // 创建Windows位图
-            let screen_dc = GetDC(None);
-
-            // 创建普通状态的位图（完全透明背景，与标题栏无缝融合）
-            let normal_bitmap = Self::create_transparent_icon_bitmap(&screen_dc, &pixmap, size)?;
-
-            // 创建悬停状态的位图（浅蓝色背景）
-            let hover_bitmap =
-                Self::create_icon_bitmap(&screen_dc, &pixmap, size, ICON_HOVER_BG_COLOR)?;
-
-            let _ = ReleaseDC(None, screen_dc);
-
-            Some((normal_bitmap, hover_bitmap))
-        }
-    }
-
-    // 移除了未使用的create_title_bar_button_bitmap函数
-
-    fn is_point_in_rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> bool {
-        // 计算到各个角的距离
-        let left = radius;
-        let right = width - radius;
-        let top = radius;
-        let bottom = height - radius;
-
-        // 如果点在中央矩形区域，直接返回true
-        if x >= left && x <= right {
-            return true;
-        }
-        if y >= top && y <= bottom {
-            return true;
-        }
-
-        // 检查四个圆角区域
-        let mut in_corner = false;
-
-        // 左上角
-        if x < left && y < top {
-            let dx = left - x;
-            let dy = top - y;
-            in_corner = dx * dx + dy * dy <= radius * radius;
-        }
-        // 右上角
-        else if x > right && y < top {
-            let dx = x - right;
-            let dy = top - y;
-            in_corner = dx * dx + dy * dy <= radius * radius;
-        }
-        // 左下角
-        else if x < left && y > bottom {
-            let dx = left - x;
-            let dy = y - bottom;
-            in_corner = dx * dx + dy * dy <= radius * radius;
-        }
-        // 右下角
-        else if x > right && y > bottom {
-            let dx = x - right;
-            let dy = y - bottom;
-            in_corner = dx * dx + dy * dy <= radius * radius;
-        }
-
-        in_corner
-    }
-
-    /// 创建带指定背景色的图标位图
-    fn create_icon_bitmap(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        size: i32,
-        bg_color: (u8, u8, u8),
-    ) -> Option<HBITMAP> {
-        unsafe {
-            // 创建更大的位图来包含悬停背景
-            let padding = ICON_HOVER_PADDING; // 使用常量
-            let total_size = size + padding * 2; // 总尺寸包含padding
-
-            // 创建DIB段位图以支持Alpha通道
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: total_size,
-                    biHeight: -total_size, // 负值表示自顶向下
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(*screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .ok()?;
-
-            // 处理像素数据
-            let pixel_data = pixmap.data();
-            let render_width = pixmap.width() as usize;
-            let bits_slice = std::slice::from_raw_parts_mut(
-                bits_ptr as *mut u8,
-                (total_size * total_size * 4) as usize,
-            );
-
-            // 首先填充整个区域为背景色（带圆角）
-            let radius = ICON_HOVER_RADIUS;
-            for y in 0..total_size {
-                for x in 0..total_size {
-                    let dst_idx = (y * total_size + x) as usize * 4;
-                    if dst_idx + 3 < bits_slice.len() {
-                        // 检查是否在圆角矩形内
-                        let in_rounded_rect = Self::is_point_in_rounded_rect(
-                            x as f32,
-                            y as f32,
-                            total_size as f32,
-                            total_size as f32,
-                            radius,
-                        );
-
-                        if in_rounded_rect {
-                            bits_slice[dst_idx] = bg_color.2; // B
-                            bits_slice[dst_idx + 1] = bg_color.1; // G
-                            bits_slice[dst_idx + 2] = bg_color.0; // R
-                            bits_slice[dst_idx + 3] = 255; // A
-                        } else {
-                            // 圆角外的区域使用标题栏背景色，避免白色边缘
-                            let title_bg_r = 0xED;
-                            let title_bg_g = 0xED;
-                            let title_bg_b = 0xED;
-                            let title_bg_a = 255;
-                            let alpha_factor = title_bg_a as f32 / 255.0;
-                            bits_slice[dst_idx] = (title_bg_b as f32 * alpha_factor) as u8; // B
-                            bits_slice[dst_idx + 1] = (title_bg_g as f32 * alpha_factor) as u8; // G
-                            bits_slice[dst_idx + 2] = (title_bg_r as f32 * alpha_factor) as u8; // R
-                            bits_slice[dst_idx + 3] = title_bg_a; // A
-                        }
-                    }
-                }
-            }
-
-            // 然后在中心绘制图标 - 使用2x超采样下采样
-            for y in 0..size {
-                for x in 0..size {
-                    // 计算2x2区域的平均Alpha
-                    let mut a_sum: u32 = 0;
-                    
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let sx = x * 2 + dx;
-                            let sy = y * 2 + dy;
-                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
-                            if s_idx + 3 < pixel_data.len() {
-                                a_sum += pixel_data[s_idx + 3] as u32;
-                            }
-                        }
-                    }
-                    
-                    let alpha = (a_sum / 4) as u8;
-                    
-                    let dst_x = x + padding;
-                    let dst_y = y + padding;
-                    let dst_idx = (dst_y * total_size + dst_x) as usize * 4;
-
-                    if dst_idx + 3 < bits_slice.len() {
-                        if alpha > 0 {
-                            // 与背景混合
-                            let alpha_f = alpha as f32 / 255.0;
-                            let inv_alpha_f = 1.0 - alpha_f;
-                            
-                            let bg_b = bits_slice[dst_idx];
-                            let bg_g = bits_slice[dst_idx + 1];
-                            let bg_r = bits_slice[dst_idx + 2];
-
-                            let icon_r = 0.0; // 图标颜色：黑色
-                            let icon_g = 0.0;
-                            let icon_b = 0.0;
-
-                            // 混合黑色与背景
-                            bits_slice[dst_idx] = (icon_b * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_g * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_r * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = 255; // 保持不透明
-                        }
-                    }
-                }
-            }
-
-            Some(bitmap)
-        }
-    }
-
-    /// 创建带标题栏背景色的图标位图
-    fn create_transparent_icon_bitmap(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        size: i32,
-    ) -> Option<HBITMAP> {
-        unsafe {
-            // 创建DIB段位图以支持Alpha通道
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: size,
-                    biHeight: -size, // 负值表示自顶向下
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(*screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .ok()?;
-
-            // 处理像素数据，图标部分为黑色，背景使用标题栏背景色
-            let pixel_data = pixmap.data();
-            let render_width = pixmap.width() as usize;
-            let bits_slice =
-                std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
-
-            // 标题栏背景色 - 与 paint_custom_caption 中的颜色保持一致
-            let bg_r = 0xED;
-            let bg_g = 0xED;
-            let bg_b = 0xED;
-            let bg_a = 255;
-
-            for y in 0..size {
-                for x in 0..size {
-                    let dst_idx = (y * size + x) as usize * 4;
-
-                    // 计算2x2区域的平均Alpha - 使用2x超采样下采样
-                    let mut a_sum: u32 = 0;
-                    
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let sx = x * 2 + dx;
-                            let sy = y * 2 + dy;
-                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
-                            if s_idx + 3 < pixel_data.len() {
-                                a_sum += pixel_data[s_idx + 3] as u32;
-                            }
-                        }
-                    }
-                    
-                    let alpha = (a_sum / 4) as u8;
-
-                    if dst_idx + 3 < bits_slice.len() {
-                        if alpha == 0 {
-                            // 完全透明的像素，使用标题栏背景色（不透明）
-                            bits_slice[dst_idx] = bg_b; // B
-                            bits_slice[dst_idx + 1] = bg_g; // G
-                            bits_slice[dst_idx + 2] = bg_r; // R
-                            bits_slice[dst_idx + 3] = bg_a; // A
-                        } else {
-                            // 与背景混合
-                            let alpha_f = alpha as f32 / 255.0;
-                            let inv_alpha_f = 1.0 - alpha_f;
-
-                            let icon_r = 0.0; // 图标颜色：黑色
-                            let icon_g = 0.0;
-                            let icon_b = 0.0;
-
-                            // 混合黑色与背景
-                            bits_slice[dst_idx] = (icon_b * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_g * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_r * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = 255; // 保持不透明
-                        }
-                    }
-                }
-            }
-
-            Some(bitmap)
-        }
-    }
-
-    /// 加载带指定颜色的SVG位图（用于Pin激活为绿色）
-    fn load_colored_pin_bitmaps(
-        filename: &str,
-        size: i32,
-        icon_rgb: (u8, u8, u8),
-    ) -> Option<(HBITMAP, HBITMAP)> {
-        unsafe {
-            let svg_path = format!("icons/{filename}");
-            let svg_data = std::fs::read_to_string(&svg_path).ok()?;
-            let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default()).ok()?;
-
-            // 使用2x超采样
-            let scale = 2.0;
-            let render_size = (size as f32 * scale) as u32;
-            let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)?;
-            pixmap.fill(tiny_skia::Color::TRANSPARENT);
-            let svg_size = tree.size();
-            let render_ts = tiny_skia::Transform::from_scale(
-                size as f32 * scale / svg_size.width(),
-                size as f32 * scale / svg_size.height(),
-            );
-            resvg::render(&tree, render_ts, &mut pixmap.as_mut());
-
-            let screen_dc = GetDC(None);
-
-            // 普通状态（透明背景） + 绿色图标
-            let normal_bitmap = OcrResultWindow::create_transparent_icon_bitmap_colored(
-                &screen_dc, &pixmap, size, icon_rgb,
-            )?;
-
-            // 悬停状态（浅蓝背景） + 绿色图标
-            let hover_bitmap = OcrResultWindow::create_icon_bitmap_colored(
-                &screen_dc,
-                &pixmap,
-                size,
-                ICON_HOVER_BG_COLOR,
-                icon_rgb,
-            )?;
-
-            let _ = ReleaseDC(None, screen_dc);
-
-            Some((normal_bitmap, hover_bitmap))
-        }
-    }
-
-    /// 创建带指定背景色且图标为指定颜色的位图（用于hover）
-    fn create_icon_bitmap_colored(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        size: i32,
-        bg_color: (u8, u8, u8),
-        icon_rgb: (u8, u8, u8),
-    ) -> Option<HBITMAP> {
-        unsafe {
-            let padding = ICON_HOVER_PADDING;
-            let total_size = size + padding * 2;
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: total_size,
-                    biHeight: -total_size,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(*screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .ok()?;
-
-            let pixel_data = pixmap.data();
-            let render_width = pixmap.width() as usize;
-            let bits_slice = std::slice::from_raw_parts_mut(
-                bits_ptr as *mut u8,
-                (total_size * total_size * 4) as usize,
-            );
-
-            // 背景（带圆角）
-            let radius = ICON_HOVER_RADIUS;
-            for y in 0..total_size {
-                for x in 0..total_size {
-                    let dst_idx = (y * total_size + x) as usize * 4;
-                    let in_rounded_rect = OcrResultWindow::is_point_in_rounded_rect(
-                        x as f32,
-                        y as f32,
-                        total_size as f32,
-                        total_size as f32,
-                        radius,
-                    );
-                    if in_rounded_rect {
-                        bits_slice[dst_idx] = bg_color.2;
-                        bits_slice[dst_idx + 1] = bg_color.1;
-                        bits_slice[dst_idx + 2] = bg_color.0;
-                        bits_slice[dst_idx + 3] = 255;
-                    } else {
-                        // 标题栏背景
-                        bits_slice[dst_idx] = 0xED;
-                        bits_slice[dst_idx + 1] = 0xED;
-                        bits_slice[dst_idx + 2] = 0xED;
-                        bits_slice[dst_idx + 3] = 255;
-                    }
-                }
-            }
-
-            // 图标（居中，使用指定颜色） - 使用2x超采样下采样
-            for y in 0..size {
-                for x in 0..size {
-                    // 计算2x2区域的平均Alpha
-                    let mut a_sum: u32 = 0;
-                    
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let sx = x * 2 + dx;
-                            let sy = y * 2 + dy;
-                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
-                            if s_idx + 3 < pixel_data.len() {
-                                a_sum += pixel_data[s_idx + 3] as u32;
-                            }
-                        }
-                    }
-                    
-                    let alpha = (a_sum / 4) as u8;
-                    
-                    let dst_x = x + padding;
-                    let dst_y = y + padding;
-                    let dst_idx = (dst_y * total_size + dst_x) as usize * 4;
-                    
-                    if dst_idx + 3 < bits_slice.len() {
-                        if alpha > 0 {
-                            // 与背景混合
-                            let alpha_f = alpha as f32 / 255.0;
-                            let inv_alpha_f = 1.0 - alpha_f;
-                            
-                            let bg_b = bits_slice[dst_idx];
-                            let bg_g = bits_slice[dst_idx + 1];
-                            let bg_r = bits_slice[dst_idx + 2];
-
-                            // 混合图标颜色与背景
-                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = 255; // 保持不透明
-                        }
-                    }
-                }
-            }
-
-            Some(bitmap)
-        }
-    }
-
-    /// 创建透明背景且图标为指定颜色的位图（用于普通状态）
-    fn create_transparent_icon_bitmap_colored(
-        screen_dc: &HDC,
-        pixmap: &tiny_skia::Pixmap,
-        size: i32,
-        icon_rgb: (u8, u8, u8),
-    ) -> Option<HBITMAP> {
-        unsafe {
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: size,
-                    biHeight: -size,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(*screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .ok()?;
-
-            let pixel_data = pixmap.data();
-            let render_width = pixmap.width() as usize;
-            let bits_slice =
-                std::slice::from_raw_parts_mut(bits_ptr as *mut u8, (size * size * 4) as usize);
-
-            // 填充标题栏背景色
-            for i in 0..(size * size) as usize {
-                let dst_idx = i * 4;
-                bits_slice[dst_idx] = 0xED;
-                bits_slice[dst_idx + 1] = 0xED;
-                bits_slice[dst_idx + 2] = 0xED;
-                bits_slice[dst_idx + 3] = 255;
-            }
-
-            // 绘制图标像素为指定颜色 - 使用2x超采样下采样
-            for y in 0..size {
-                for x in 0..size {
-                    let dst_idx = (y * size + x) as usize * 4;
-
-                    // 计算2x2区域的平均Alpha
-                    let mut a_sum: u32 = 0;
-                    
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let sx = x * 2 + dx;
-                            let sy = y * 2 + dy;
-                            let s_idx = (sy as usize * render_width + sx as usize) * 4;
-                            if s_idx + 3 < pixel_data.len() {
-                                a_sum += pixel_data[s_idx + 3] as u32;
-                            }
-                        }
-                    }
-                    
-                    let alpha = (a_sum / 4) as u8;
-
-                    if dst_idx + 3 < bits_slice.len() {
-                        if alpha > 0 {
-                            // 与背景混合
-                            let alpha_f = alpha as f32 / 255.0;
-                            let inv_alpha_f = 1.0 - alpha_f;
-                            
-                            let bg_b = bits_slice[dst_idx];
-                            let bg_g = bits_slice[dst_idx + 1];
-                            let bg_r = bits_slice[dst_idx + 2];
-
-                            // 混合图标颜色与背景
-                            bits_slice[dst_idx] = (icon_rgb.2 as f32 * alpha_f + bg_b as f32 * inv_alpha_f) as u8; // B
-                            bits_slice[dst_idx + 1] = (icon_rgb.1 as f32 * alpha_f + bg_g as f32 * inv_alpha_f) as u8; // G
-                            bits_slice[dst_idx + 2] = (icon_rgb.0 as f32 * alpha_f + bg_r as f32 * inv_alpha_f) as u8; // R
-                            bits_slice[dst_idx + 3] = 255; // 保持不透明
-                        }
-                    }
-                }
-            }
-
-            Some(bitmap)
-        }
-    }
-
-    /// 创建并显示 OCR 结果窗口
     pub fn show(
         image_data: Vec<u8>,
         ocr_results: Vec<OcrResult>,
         selection_rect: RECT,
     ) -> Result<()> {
         unsafe {
+            // 1. DPI 设置
             let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-            // 注册窗口类
+
+            // 2. 注册窗口类
             let class_name = windows::core::w!("OcrResultWindow");
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
-
-            // 使用默认应用程序图标
-            let _icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
 
             let window_class = WNDCLASSW {
                 lpfnWndProc: Some(Self::window_proc),
                 hInstance: instance.into(),
                 lpszClassName: class_name,
                 hCursor: LoadCursorW(None, IDC_ARROW)?,
-                hbrBackground: HBRUSH(GetStockObject(BLACK_BRUSH).0), // 使用黑色背景以支持DWM扩展
-                style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,          // 添加双缓冲支持
-                hIcon: HICON::default(),                              // 不使用图标
+                // 关键：使用黑色背景刷，防止调整大小时出现白色闪烁
+                hbrBackground: CreateSolidBrush(COLORREF(0)),
+                style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
+                hIcon: HICON::default(),
                 ..Default::default()
             };
 
             RegisterClassW(&window_class);
 
-            // 从 BMP 数据获取实际图片尺寸
-            let (bitmap, actual_width, actual_height) = Self::create_bitmap_from_data(&image_data)?;
+            // 3. 解析图片与计算尺寸
+            let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
 
-            // 获取屏幕尺寸
-            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
-
-            // 右边文字区域宽度（固定350像素）
+            // 布局计算：完全不考虑系统边框高度，只计算我们需要的高度
             let text_area_width = 350;
+            let image_area_width = actual_width + 40;
+            let window_width = image_area_width + text_area_width + 20;
 
-            // 图像保持原始尺寸，不进行缩放
-            let display_image_width = actual_width;
-            let display_image_height = actual_height;
-
-            // 左边图像区域宽度（实际显示宽度 + 边距，比图片大一圈）
-            let image_area_width = display_image_width + 40; // 左右各20像素边距
-            // 总窗口宽度
-            let window_width = image_area_width + text_area_width + 20; // 中间分隔20像素
-
-            // 使用平台封装获取准确的窗口装饰尺寸
-            let caption_height = crate::platform::windows::system::get_caption_height();
-            let border_height = crate::platform::windows::system::get_border_height();
-            let frame_height = crate::platform::windows::system::get_frame_height();
-
-            // 计算窗口装饰的总高度
-            let window_decoration_height =
-                caption_height + (border_height * 2) + (frame_height * 2);
-
-            // 增加更多的内容边距，确保有足够空间
-            let content_padding = 120; // 上下各60像素边距，增加空间
-
-            // 窗口总高度 = 图像高度 + 窗口装饰高度 + 内容边距
-            // 再额外增加一些空间以确保不被截断
-            let extra_space = 50;
+            let content_padding_top = 20;
+            let content_padding_bottom = 20;
+            // 窗口高度 = 自定义标题栏 + 边距 + 内容
             let window_height =
-                display_image_height + window_decoration_height + content_padding + extra_space;
+                TITLE_BAR_HEIGHT + content_padding_top + actual_height + content_padding_bottom;
 
-            // 计算窗口位置（在截图区域附近显示，避免超出屏幕）
-
-            let mut window_x = selection_rect.right + 20; // 在截图区域右侧
+            // 4. 计算位置
+            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
+            let mut window_x = selection_rect.right + 20;
             let mut window_y = selection_rect.top;
 
-            // 确保窗口不超出屏幕边界
             if window_x + window_width > screen_width {
-                window_x = selection_rect.left - window_width - 20; // 放在左侧
+                window_x = selection_rect.left - window_width - 20;
                 if window_x < 0 {
-                    window_x = 50; // 如果左侧也放不下，就放在屏幕左边
+                    window_x = 50;
                 }
             }
             if window_y + window_height > screen_height {
@@ -1568,12 +917,22 @@ impl OcrResultWindow {
                 }
             }
 
-            // 创建窗口 - 使用 WS_OVERLAPPEDWINDOW
+            // 5. 创建窗口 [Zed 风格核心样式]
+            // WS_POPUP 是最纯净的无边框，但 WS_THICKFRAME 让我们可以利用系统的拖拽调整大小
+            // 这里我们手动组合样式，确保没有 WS_CAPTION
+            let dw_style = WS_THICKFRAME
+                | WS_SYSMENU
+                | WS_MAXIMIZEBOX
+                | WS_MINIMIZEBOX
+                | WS_VISIBLE
+                | WS_CLIPCHILDREN;
+            let dw_ex_style = WS_EX_APPWINDOW; // 不使用 NOREDIRECTIONBITMAP，以兼容你的 D2D 写法
+
             let hwnd = CreateWindowExW(
-                WS_EX_APPWINDOW,
+                dw_ex_style,
                 class_name,
                 windows::core::w!("识别结果"),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
+                dw_style,
                 window_x,
                 window_y,
                 window_width,
@@ -1584,16 +943,38 @@ impl OcrResultWindow {
                 None,
             )?;
 
-            // 扩展 DWM 边框以显示阴影
+            // 6. DWM 设置 [修复圆角和边框的关键]
+
+            // 启用沉浸式暗色模式 (让窗口阴影变暗)
+            let dark_mode = 1 as i32;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWINDOWATTRIBUTE(20), // DWMWA_USE_IMMERSIVE_DARK_MODE
+                &dark_mode as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+
+            // [修复圆角] 显式开启 Windows 11 圆角
+            // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
+            let round_preference = 2 as i32;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWINDOWATTRIBUTE(33),
+                &round_preference as *const _ as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+
+            // [修复白色边框] 扩展 Frame，让 DWM 绘制阴影，但内容区覆盖边框
+            // 只要 WM_NCCALCSIZE 返回 0，这里设为 -1 就会产生完美的无边框阴影效果
             let margins = MARGINS {
-                cxLeftWidth: 0,
-                cxRightWidth: 0,
-                cyTopHeight: 1,
-                cyBottomHeight: 0,
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
             };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
 
-            // 触发一次 WM_NCCALCSIZE 以去除标准边框
+            // 触发一次 Frame 改变，强制系统重新计算非客户区
             SetWindowPos(
                 hwnd,
                 None,
@@ -1604,38 +985,11 @@ impl OcrResultWindow {
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             )?;
 
-            // 位图已经在上面创建了
-            let width = actual_width;
-            let height = actual_height;
-
-            // 创建微软雅黑字体
-            let font_name: Vec<u16> = "微软雅黑"
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let font = CreateFontW(
-                24,                                        // 字体高度（增大字体）
-                0,                                         // 字体宽度（0表示自动）
-                0,                                         // 文本角度
-                0,                                         // 基线角度
-                FW_NORMAL.0 as i32,                        // 字体粗细
-                0,                                         // 斜体
-                0,                                         // 下划线
-                0,                                         // 删除线
-                DEFAULT_CHARSET,                           // 字符集
-                OUT_DEFAULT_PRECIS,                        // 输出精度
-                CLIP_DEFAULT_PRECIS,                       // 裁剪精度
-                DEFAULT_QUALITY,                           // 输出质量
-                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,  // 字体间距和族
-                windows::core::PCWSTR(font_name.as_ptr()), // 字体名称
-            );
-
-            // 计算文字显示区域，适应新的标题栏高度
-            let title_bar_height = TITLE_BAR_HEIGHT; // 使用实际的标题栏高度
-            let text_padding_left = 20; // 左侧padding
-            let text_padding_right = 20; // 右侧padding
-            let text_padding_top = title_bar_height + 15; // 顶部padding（包含标题栏高度）
-            let text_padding_bottom = 15; // 底部padding
+            // 7. 初始化逻辑 (保持不变)
+            let text_padding_left = 20;
+            let text_padding_top = TITLE_BAR_HEIGHT + 15;
+            let text_padding_right = 20;
+            let text_padding_bottom = 15;
 
             let text_area_rect = RECT {
                 left: image_area_width + text_padding_left,
@@ -1644,83 +998,39 @@ impl OcrResultWindow {
                 bottom: window_height - text_padding_bottom,
             };
 
-            // 计算行高（基于字体）
-            let line_height = {
-                let hdc = GetDC(Some(hwnd));
-                let old_font = SelectObject(hdc, font.into());
-                let mut tm = TEXTMETRICW::default();
-                let _ = GetTextMetricsW(hdc, &mut tm);
-                let height = tm.tmHeight + tm.tmExternalLeading + 4; // 添加行间距
-                let _ = SelectObject(hdc, old_font);
-                let _ = ReleaseDC(Some(hwnd), hdc);
-                height
-            };
-
-            // 合并所有OCR结果为文本
             let mut all_text = String::new();
-            let mut is_no_text_detected = false;
-
             for (i, result) in ocr_results.iter().enumerate() {
                 if i > 0 {
-                    all_text.push_str("\r\n"); // Windows换行符
+                    all_text.push_str("\r\n");
                 }
-
-                // 检查是否是"未识别到文字"的特殊情况
                 if result.text == "未识别到任何文字" && result.confidence == 0.0 {
-                    is_no_text_detected = true;
                     all_text.push_str("未识别到任何文字");
                 } else {
                     all_text.push_str(&result.text);
                 }
             }
-
             if all_text.trim().is_empty() {
                 all_text = "未识别到文本内容".to_string();
-                is_no_text_detected = true;
             }
 
-            // 分行处理文本
-            let text_lines = Self::wrap_text_lines(&all_text, &text_area_rect, font, hwnd);
+            let text_lines: Vec<String> = all_text.lines().map(|s| s.to_string()).collect();
 
-            // 创建图标缓存
-            let icon_cache = IconCache::new().ok_or_else(|| anyhow::anyhow!("无法创建图标缓存"))?;
-
-            // 创建左侧图标
-            let svg_icons = Self::create_left_icons(&icon_cache);
-
-            // 创建窗口实例
+            let svg_icons = Self::create_left_icons();
             let mut window = Self {
                 hwnd,
-                image_bitmap: Some(bitmap),
-                image_width: width,
-                image_height: height,
-                font,
+                image_pixels,
+                image_width: actual_width,
+                image_height: actual_height,
                 text_area_rect,
                 window_width,
                 window_height,
-                is_no_text_detected,
                 is_maximized: false,
                 svg_icons,
-
-                // 图标缓存
-                icon_cache,
-
-                // 置顶状态
                 is_pinned: false,
-
-                // 初始化缓冲相关字段
-                content_buffer: None,
-                buffer_width: 0,
-                buffer_height: 0,
-                buffer_valid: false,
-
-                // 初始化自绘文本字段
                 text_content: all_text,
                 scroll_offset: 0,
-                line_height,
+                line_height: 24,
                 text_lines,
-
-                // 初始化文本选择字段
                 is_selecting: false,
                 selection_start: None,
                 selection_end: None,
@@ -1728,238 +1038,120 @@ impl OcrResultWindow {
                 selection_end_pixel: None,
                 last_click_time: std::time::Instant::now(),
                 last_click_pos: None,
+                renderer: OcrResultRenderer::new().ok(),
             };
 
-            // 添加标题栏按钮
-            let mut title_bar_buttons =
-                window.create_title_bar_buttons_from_cache(window_width, false);
+            let mut title_bar_buttons = window.create_title_bar_buttons(window_width, false);
             window.svg_icons.append(&mut title_bar_buttons);
 
-            // 将窗口实例指针存储到窗口数据中
             let window_ptr = Box::into_raw(Box::new(window));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_ptr as isize);
 
-            // 获取窗口的实际客户端区域尺寸，重新计算布局
             let window = &mut *window_ptr;
             let mut client_rect = RECT::default();
             let _ = GetClientRect(hwnd, &mut client_rect);
-            let actual_width = client_rect.right - client_rect.left;
-            let actual_height = client_rect.bottom - client_rect.top;
+            let actual_client_width = client_rect.right - client_rect.left;
+            let actual_client_height = client_rect.bottom - client_rect.top;
 
-            // 更新窗口尺寸并重新计算标题栏按钮位置
-            window.window_width = actual_width;
-            window.window_height = actual_height;
+            if let Some(renderer) = &mut window.renderer {
+                let _ = renderer.initialize(hwnd, actual_client_width, actual_client_height);
+            }
+
+            window.window_width = actual_client_width;
+            window.window_height = actual_client_height;
             window.recalculate_layout();
             window.update_title_bar_buttons();
 
-            // 显示窗口
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
 
             Ok(())
         }
     }
+    /// 从 BMP 数据解析像素数据 (RGBA)
+    fn parse_bmp_data(bmp_data: &[u8]) -> Result<(Vec<u8>, i32, i32)> {
+        if bmp_data.len() < 54 {
+            return Err(anyhow::anyhow!("BMP 数据太小"));
+        }
 
-    /// 从 BMP 数据创建位图
-    fn create_bitmap_from_data(bmp_data: &[u8]) -> Result<(HBITMAP, i32, i32)> {
-        unsafe {
-            if bmp_data.len() < 54 {
-                return Err(anyhow::anyhow!("BMP 数据太小"));
-            }
+        // 检查BMP文件签名
+        if bmp_data[0] != b'B' || bmp_data[1] != b'M' {
+            return Err(anyhow::anyhow!("不是有效的BMP文件"));
+        }
 
-            // 检查BMP文件签名
-            if bmp_data[0] != b'B' || bmp_data[1] != b'M' {
-                return Err(anyhow::anyhow!("不是有效的BMP文件"));
-            }
+        // 读取数据偏移量
+        let data_offset =
+            u32::from_le_bytes([bmp_data[10], bmp_data[11], bmp_data[12], bmp_data[13]]) as usize;
 
-            // 读取数据偏移量（像素数据开始位置）
-            let data_offset =
-                u32::from_le_bytes([bmp_data[10], bmp_data[11], bmp_data[12], bmp_data[13]])
-                    as usize;
+        // 解析 BMP 头部获取尺寸信息
+        let width = i32::from_le_bytes([bmp_data[18], bmp_data[19], bmp_data[20], bmp_data[21]]);
+        let height_raw =
+            i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]);
+        let height = height_raw.abs(); // 取绝对值
+        let is_top_down = height_raw < 0; // 负值表示自顶向下
 
-            // 解析 BMP 头部获取尺寸信息
-            let width =
-                i32::from_le_bytes([bmp_data[18], bmp_data[19], bmp_data[20], bmp_data[21]]);
-            let height_raw =
-                i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]);
-            let height = height_raw.abs(); // 取绝对值
-            let is_top_down = height_raw < 0; // 负值表示自顶向下
+        // 读取位深度
+        let bit_count = u16::from_le_bytes([bmp_data[28], bmp_data[29]]);
 
-            // 读取位深度
-            let bit_count = u16::from_le_bytes([bmp_data[28], bmp_data[29]]);
+        // 检查数据偏移量是否有效
+        if data_offset >= bmp_data.len() {
+            return Err(anyhow::anyhow!("BMP数据偏移量无效"));
+        }
 
-            // 检查数据偏移量是否有效
-            if data_offset >= bmp_data.len() {
-                return Err(anyhow::anyhow!("BMP数据偏移量无效"));
-            }
+        // 获取像素数据
+        let pixel_data = &bmp_data[data_offset..];
 
-            // 获取屏幕 DC
-            let screen_dc = GetDC(None);
+        // 计算每行的字节数（考虑4字节对齐）
+        let bytes_per_pixel = (bit_count / 8) as usize;
+        let row_size = (width as usize * bytes_per_pixel).div_ceil(4) * 4; // 4字节对齐
 
-            // 创建DIB段位图以支持更好的像素数据处理
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width,
-                    biHeight: -height, // 负值表示自顶向下
-                    biPlanes: 1,
-                    biBitCount: 32, // 强制使用32位以确保兼容性
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
+        let mut rgba_pixels = vec![0u8; (width * height * 4) as usize];
+
+        // 逐行复制和转换像素数据
+        for y in 0..height {
+            // 计算源数据中的实际行索引
+            let src_y = if is_top_down {
+                y // 自顶向下，行索引不变
+            } else {
+                height - 1 - y // 自底向上，需要翻转行索引
             };
 
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(
-                Some(screen_dc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            )
-            .map_err(|e| anyhow::anyhow!("创建DIB段失败: {:?}", e))?;
+            let src_row_start = src_y as usize * row_size;
 
-            // 获取像素数据（使用正确的偏移量）
-            let pixel_data = &bmp_data[data_offset..];
+            for x in 0..width {
+                let src_idx = src_row_start + x as usize * bytes_per_pixel;
+                let dst_idx = (y * width + x) as usize * 4;
 
-            // 计算每行的字节数（考虑4字节对齐）
-            let bytes_per_pixel = (bit_count / 8) as usize;
-            let row_size = (width as usize * bytes_per_pixel).div_ceil(4) * 4; // 4字节对齐
-
-            if !bits_ptr.is_null() {
-                let bits_slice = std::slice::from_raw_parts_mut(
-                    bits_ptr as *mut u8,
-                    (width * height * 4) as usize, // 输出总是32位
-                );
-
-                // 逐行复制和转换像素数据
-                for y in 0..height {
-                    // 计算源数据中的实际行索引
-                    let src_y = if is_top_down {
-                        y // 自顶向下，行索引不变
-                    } else {
-                        height - 1 - y // 自底向上，需要翻转行索引
-                    };
-
-                    let src_row_start = src_y as usize * row_size;
-
-                    for x in 0..width {
-                        let src_idx = src_row_start + x as usize * bytes_per_pixel;
-                        let dst_idx = (y * width + x) as usize * 4;
-
-                        if src_idx + bytes_per_pixel <= pixel_data.len()
-                            && dst_idx + 3 < bits_slice.len()
-                        {
-                            match bit_count {
-                                24 => {
-                                    // 24位BMP: BGR -> BGRA
-                                    bits_slice[dst_idx] = pixel_data[src_idx]; // B
-                                    bits_slice[dst_idx + 1] = pixel_data[src_idx + 1]; // G
-                                    bits_slice[dst_idx + 2] = pixel_data[src_idx + 2]; // R
-                                    bits_slice[dst_idx + 3] = 255; // A - 不透明
-                                }
-                                32 => {
-                                    // 32位BMP: BGRA -> BGRA，确保Alpha通道不透明
-                                    bits_slice[dst_idx] = pixel_data[src_idx]; // B
-                                    bits_slice[dst_idx + 1] = pixel_data[src_idx + 1]; // G
-                                    bits_slice[dst_idx + 2] = pixel_data[src_idx + 2]; // R
-                                    bits_slice[dst_idx + 3] = 255; // A - 强制设置为不透明
-                                }
-                                _ => {
-                                    // 其他格式，设置为白色
-                                    bits_slice[dst_idx] = 255; // B
-                                    bits_slice[dst_idx + 1] = 255; // G
-                                    bits_slice[dst_idx + 2] = 255; // R
-                                    bits_slice[dst_idx + 3] = 255; // A
-                                }
-                            }
+                if src_idx + bytes_per_pixel <= pixel_data.len() && dst_idx + 3 < rgba_pixels.len()
+                {
+                    match bit_count {
+                        24 => {
+                            // 24位BMP: BGR -> RGBA
+                            rgba_pixels[dst_idx] = pixel_data[src_idx + 2]; // R
+                            rgba_pixels[dst_idx + 1] = pixel_data[src_idx + 1]; // G
+                            rgba_pixels[dst_idx + 2] = pixel_data[src_idx]; // B
+                            rgba_pixels[dst_idx + 3] = 255; // A - 不透明
+                        }
+                        32 => {
+                            // 32位BMP: BGRA -> RGBA
+                            rgba_pixels[dst_idx] = pixel_data[src_idx + 2]; // R
+                            rgba_pixels[dst_idx + 1] = pixel_data[src_idx + 1]; // G
+                            rgba_pixels[dst_idx + 2] = pixel_data[src_idx]; // B
+                            rgba_pixels[dst_idx + 3] = 255; // A
+                        }
+                        _ => {
+                            // 其他格式，设置为白色
+                            rgba_pixels[dst_idx] = 255; // R
+                            rgba_pixels[dst_idx + 1] = 255; // G
+                            rgba_pixels[dst_idx + 2] = 255; // B
+                            rgba_pixels[dst_idx + 3] = 255; // A
                         }
                     }
                 }
             }
-
-            let _ = ReleaseDC(None, screen_dc);
-
-            Ok((bitmap, width, height))
         }
-    }
 
-    /// 绘制窗口内容（不包含BeginPaint/EndPaint调用）- 使用静态缓冲机制
-    fn paint_content_only(&mut self, hdc: HDC) -> Result<()> {
-        unsafe {
-            let mut rect = RECT::default();
-            GetClientRect(self.hwnd, &mut rect)?;
-
-            // 检查是否全屏，计算实际的内容开始位置
-            let _is_fullscreen = {
-                let mut window_rect = RECT::default();
-                let _ = GetWindowRect(self.hwnd, &mut window_rect);
-                let (screen_width, screen_height) =
-                    crate::platform::windows::system::get_screen_size();
-
-                window_rect.left <= 0
-                    && window_rect.top <= 0
-                    && window_rect.right >= screen_width
-                    && window_rect.bottom >= screen_height
-            };
-
-            // 简化的标题栏高度（参考test.rs，不使用偏移）
-            let title_bar_height = TITLE_BAR_HEIGHT;
-            let actual_content_start = title_bar_height;
-
-            // 去掉全屏间隙填充逻辑（参考test.rs的简洁方式）
-
-            // 计算内容区域尺寸（去除标题栏和偏移量）
-            let content_width = rect.right - rect.left;
-            let content_height = rect.bottom - actual_content_start;
-
-            // 检查尺寸是否合理
-            if content_width <= 0 || content_height <= 0 {
-                return Ok(()); // 无效尺寸，跳过绘制
-            }
-
-            // 确保缓冲区存在且尺寸正确
-            self.ensure_content_buffer(content_width, content_height)?;
-
-            // 如果缓冲区无效（第一次创建或尺寸变化），重新渲染静态内容
-            if !self.buffer_valid {
-                self.render_to_buffer(hdc)?;
-            }
-
-            // 将缓冲区内容复制到屏幕（这是唯一每次都要做的操作）
-            if let Some(buffer_bitmap) = self.content_buffer {
-                let buffer_dc = CreateCompatibleDC(Some(hdc));
-                if buffer_dc.is_invalid() {
-                    return Err(anyhow::anyhow!("创建缓冲DC失败"));
-                }
-
-                let old_bitmap = SelectObject(buffer_dc, buffer_bitmap.into());
-
-                // 从实际的内容开始位置绘制
-                let _ = BitBlt(
-                    hdc,
-                    0,
-                    actual_content_start, // 考虑全屏偏移量
-                    content_width,
-                    content_height,
-                    Some(buffer_dc),
-                    0,
-                    0,
-                    SRCCOPY,
-                );
-
-                SelectObject(buffer_dc, old_bitmap);
-                let _ = DeleteDC(buffer_dc);
-            }
-
-            Ok(())
-        }
+        Ok((rgba_pixels, width, height))
     }
 
     /// 处理窗口大小变化，使用缓冲机制减少闪烁
@@ -1970,15 +1162,6 @@ impl OcrResultWindow {
 
         // 重新计算布局（包括文本编辑控件的重新定位）
         self.recalculate_layout();
-
-        // 计算缓冲区变化幅度，只有在尺寸变化较大时才重建缓冲区
-        let buffer_width_diff = (self.buffer_width - new_width).abs();
-        let buffer_height_diff = (self.buffer_height - new_height).abs();
-
-        // 如果缓冲区尺寸变化较大，则使其无效
-        if buffer_width_diff >= 20 || buffer_height_diff >= 20 {
-            self.buffer_valid = false;
-        }
     }
 
     /// 自定义标题栏处理函数（根据官方文档重构）
@@ -1990,282 +1173,142 @@ impl OcrResultWindow {
                     // 我们在 WM_PAINT 中自己处理背景绘制
                     LRESULT(1) // 返回非零值表示已处理
                 }
-                WM_PAINT => {
-                    // 使用 GetDC 替代 BeginPaint 以避免最大化时的绘制限制
-                    let hdc = GetDC(Some(hwnd));
+                WM_SIZE => {
+                    // 处理窗口大小变化
+                    let new_width = (lparam.0 & 0xFFFF) as i32;
+                    let new_height = ((lparam.0 >> 16) & 0xFFFF) as i32;
 
-                    if !hdc.is_invalid() {
-                        // 绘制自定义标题栏
-                        Self::paint_custom_caption(hwnd, hdc);
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
 
-                        // 同时绘制窗口内容，避免重复绘制
-                        let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                        if !window_ptr.is_null() {
-                            let window = &mut *window_ptr;
-                            let _ = window.paint_content_only(hdc);
+                        // 更新最大化状态
+                        if wparam.0 == SIZE_MAXIMIZED as usize {
+                            window.is_maximized = true;
+                        } else if wparam.0 == SIZE_RESTORED as usize {
+                            window.is_maximized = false;
                         }
 
-                        let _ = ReleaseDC(Some(hwnd), hdc);
+                        window.handle_size_change(new_width, new_height);
 
-                        // 手动验证更新区域，防止无限重绘
-                        let _ = ValidateRect(Some(hwnd), None);
+                        // 状态改变后更新按钮
+                        window.update_title_bar_buttons();
                     }
+                    LRESULT(0)
+                }
+                WM_PAINT => {
+                    // 如果有 Direct2D 渲染器，尝试使用它
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
 
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        if let Some(renderer) = &mut window.renderer {
+                            // 尝试初始化渲染器（如果尚未初始化）
+                            let mut rect = RECT::default();
+                            let _ = GetClientRect(hwnd, &mut rect);
+                            let width = rect.right - rect.left;
+                            let height = rect.bottom - rect.top;
+
+                            if width > 0 && height > 0 {
+                                // 确保初始化
+                                let _ = renderer.initialize(hwnd, width, height);
+
+                                // 确保图片已加载
+                                let _ = renderer.set_image_from_pixels(
+                                    &window.image_pixels,
+                                    window.image_width,
+                                    window.image_height,
+                                );
+
+                                // 尝试渲染
+                                let selection = if let (Some(start), Some(end)) =
+                                    (window.selection_start, window.selection_end)
+                                {
+                                    Some((start, end))
+                                } else {
+                                    None
+                                };
+
+                                if renderer
+                                    .render(
+                                        &window.text_lines,
+                                        window.text_area_rect,
+                                        width,
+                                        &window.svg_icons,
+                                        window.is_pinned,
+                                        window.is_maximized,
+                                        window.scroll_offset,
+                                        window.line_height,
+                                        window.image_width,
+                                        window.image_height,
+                                        selection,
+                                    )
+                                    .is_ok()
+                                {
+                                    // 验证更新区域，防止无限重绘
+                                    let _ = ValidateRect(Some(hwnd), None);
+                                }
+                            }
+                        }
+                    }
                     LRESULT(0)
                 }
                 WM_NCCALCSIZE => {
-                    if wparam.0 != 0 {
+                    // 当 wParam 为 TRUE (1) 时，lParam 指向 NCCALCSIZE_PARAMS 结构体
+                    // 系统向我们询问："客户区应该多大？"
+                    if wparam.0 == 1 {
                         let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
-                        if !params.is_null() {
-                            let rgrc = &mut (*params).rgrc;
 
-                            // 获取最大化状态
-                            let is_maximized = {
-                                let window_ptr =
-                                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                                if !window_ptr.is_null() {
-                                    (*window_ptr).is_maximized
-                                } else {
-                                    let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-                                    (style & WS_MAXIMIZE.0) != 0
-                                }
-                            };
+                        // 确保指针有效
+                        if !params.is_null() {
+                            // 检查窗口是否处于最大化状态
+                            // 注意：不能仅依赖 WS_MAXIMIZE 样式位，最好结合 GetWindowPlacement 或 IsZoomed，
+                            // 但在这里，检查 Style 是最快且通常足够的方法。
+                            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                            let is_maximized = (style & WS_MAXIMIZE.0) != 0;
 
                             if is_maximized {
+                                // 【最大化模式】
+                                // Windows 会自动将最大化的窗口尺寸设置为 "屏幕尺寸 + 边框尺寸" (例如各方向超出 8px)。
+                                // 这样做是为了将旧式边框隐藏在屏幕外。
+                                // 但对于无边框窗口，这意味着我们的标题栏会被切掉。
+                                // 修复方法：手动将客户区向内收缩，抵消这个系统行为。
+
                                 let frame_thickness = Self::get_frame_thickness(hwnd);
-                                rgrc[0].left += frame_thickness;
-                                rgrc[0].top += frame_thickness;
-                                rgrc[0].right -= frame_thickness;
-                                rgrc[0].bottom -= frame_thickness;
+
+                                // 获取引用，修改 rgrc[0] (建议的客户区坐标)
+                                let requested_client_rect = &mut (*params).rgrc[0];
+
+                                requested_client_rect.top += frame_thickness;
+                                requested_client_rect.bottom -= frame_thickness;
+                                requested_client_rect.left += frame_thickness;
+                                requested_client_rect.right -= frame_thickness;
+
+                                // 注意：Zed 在这里还处理了任务栏自动隐藏的特殊情况（减去 1px），
+                                // 但通常上述代码已足以解决"顶部陷入"问题。
                             }
+                            // 【窗口模式 / 普通模式】
+                            // 这里我们什么都不做（不修改 rgrc）。
+                            // 也就是：Client Rect == Window Rect。
+                            // 这样：
+                            // 1. 你的 Direct2D 画布将覆盖整个窗口，不会有"白色边框"（那其实是暴露出来的系统背景）。
+                            // 2. Windows 11 的 DWM 会识别这是一个标准的无边框窗口，并正确应用圆角。
+                            // 3. 你的 hit_test_nca 函数会处理边缘的鼠标调整大小事件。
                         }
-                        LRESULT(0)
-                    } else {
-                        DefWindowProcW(hwnd, msg, wparam, lparam)
+
+                        // 返回 0 表示："我已经计算好了，不要应用默认的标题栏和边框"
+                        return LRESULT(0);
                     }
+
+                    // 如果 wParam 为 0，使用默认处理
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
                 WM_NCHITTEST => Self::hit_test_nca(hwnd, wparam, lparam),
-                WM_ACTIVATE => {
-                    let margins = MARGINS {
-                        cxLeftWidth: 0,
-                        cxRightWidth: 0,
-                        cyTopHeight: TITLE_BAR_HEIGHT,
-                        cyBottomHeight: 0,
-                    };
-
-                    let _ =
-                        DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
-                    LRESULT(0)
-                }
                 _ => {
                     // 其他消息交给应用程序处理
                     Self::app_window_proc(hwnd, msg, wparam, lparam)
                 }
             }
-        }
-    }
-    /// 绘制自定义标题栏（静态函数）- 使用双缓冲减少闪烁
-    fn paint_custom_caption(hwnd: HWND, hdc: HDC) {
-        unsafe {
-            let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
-
-            // 创建支持Alpha通道的DIB位图（简化版本）
-            let buffer_width = rect.right;
-
-            // 如果宽度无效，直接返回
-            if buffer_width <= 0 {
-                return;
-            }
-
-            let bitmap_info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: buffer_width,
-                    biHeight: -TITLE_BAR_HEIGHT, // 使用调整后的高度
-                    biPlanes: 1,
-                    biBitCount: 32, // 32位支持Alpha通道
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let buffer_bitmap = CreateDIBSection(
-                Some(hdc),
-                &bitmap_info,
-                DIB_RGB_COLORS,
-                &mut bits_ptr,
-                None,
-                0,
-            );
-
-            let buffer_bitmap = match buffer_bitmap {
-                Ok(bitmap) => {
-                    if bitmap.is_invalid() || bits_ptr.is_null() {
-                        return; // 创建失败，直接返回
-                    }
-                    bitmap
-                }
-                Err(_) => return, // 创建失败，直接返回
-            };
-
-            let mem_dc = CreateCompatibleDC(Some(hdc));
-            let old_bitmap = SelectObject(mem_dc, buffer_bitmap.into());
-
-            // 获取窗口实例来访问标题栏按钮和图标
-            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-            if !window_ptr.is_null() {
-                let window = &*window_ptr;
-
-                // 手动填充像素数据，使用预乘Alpha格式
-                let pixel_count = (buffer_width * TITLE_BAR_HEIGHT) as usize;
-                let bits_slice =
-                    std::slice::from_raw_parts_mut(bits_ptr as *mut u8, pixel_count * 4);
-
-                // 填充自定义标题栏背景色，使用预乘Alpha格式
-                // 使用浅灰色 (#EDEDED) 作为标题栏背景
-                let bg_r = 0xED;
-                let bg_g = 0xED;
-                let bg_b = 0xED;
-                let bg_a = 255; // 完全不透明
-
-                for i in 0..pixel_count {
-                    let idx = i * 4;
-                    if idx + 3 < bits_slice.len() {
-                        // 使用预乘Alpha格式：RGB值需要乘以Alpha值
-                        let alpha_factor = bg_a as f32 / 255.0;
-                        bits_slice[idx] = (bg_b as f32 * alpha_factor) as u8; // B
-                        bits_slice[idx + 1] = (bg_g as f32 * alpha_factor) as u8; // G
-                        bits_slice[idx + 2] = (bg_r as f32 * alpha_factor) as u8; // R
-                        bits_slice[idx + 3] = bg_a; // A
-                    }
-                }
-
-                // 绘制所有SVG图标到内存DC（包括标题栏按钮）。Pin 置顶时为绿色
-                for icon in &window.svg_icons {
-                    // 略过不需要绘制的图标（例如如果窗口太小）
-                    if icon.rect.right > buffer_width {
-                        continue;
-                    }
-
-                    let icon_size = icon.rect.right - icon.rect.left;
-
-                    // 根据悬停状态和是否置顶选择正确的位图（Pin使用绿色激活位图）
-                    let bitmap_to_use = if icon.name == "pin" && window.is_pinned {
-                        if icon.hovered {
-                            window.icon_cache.pin_active_hover
-                        } else {
-                            window.icon_cache.pin_active_normal
-                        }
-                    } else if icon.hovered {
-                        icon.hover_bitmap
-                    } else {
-                        icon.normal_bitmap
-                    };
-
-                    // 绘制图标到内存DC
-                    let icon_mem_dc = CreateCompatibleDC(Some(mem_dc));
-                    let old_icon_bitmap = SelectObject(icon_mem_dc, bitmap_to_use.into());
-
-                    // 对于标题栏按钮，处理 Hover 状态的背景
-                    if icon.hovered && icon.is_title_bar_button {
-                        // 计算按钮区域的左边界
-                        // 对于 Hover 状态，我们可能使用了更宽的位图（如关闭按钮）
-                        let button_left = icon.rect.left - (BUTTON_WIDTH_OCR - icon_size) / 2;
-
-                        // 关闭按钮延伸到窗口右边缘，去掉右边间隙
-                        let (draw_x, draw_width) = if icon.name == "window-close" {
-                            // 关闭按钮：从按钮左边界延伸到窗口右边缘
-                            let window_right = window.window_width;
-                            (button_left, window_right - button_left)
-                        } else {
-                            // 其他按钮：正常的按钮宽度
-                            (button_left, BUTTON_WIDTH_OCR)
-                        };
-
-                        // 绘制hover位图
-                        let _ = BitBlt(
-                            mem_dc,
-                            draw_x,
-                            0, // 从顶部开始绘制
-                            draw_width,
-                            TITLE_BAR_HEIGHT, // 使用标题栏高度
-                            Some(icon_mem_dc),
-                            0,
-                            0,
-                            SRCCOPY,
-                        );
-                    } else if icon.hovered && !icon.is_title_bar_button {
-                        // 普通图标 Hover
-                        let padding = ICON_HOVER_PADDING;
-                        let total_size = icon_size + padding * 2;
-
-                        let _ = BitBlt(
-                            mem_dc,
-                            icon.rect.left - padding,
-                            icon.rect.top - padding,
-                            total_size,
-                            total_size,
-                            Some(icon_mem_dc),
-                            0,
-                            0,
-                            SRCCOPY,
-                        );
-                    } else {
-                        // 普通图标正常状态
-                        let _ = BitBlt(
-                            mem_dc,
-                            icon.rect.left,
-                            icon.rect.top,
-                            icon_size,
-                            icon_size,
-                            Some(icon_mem_dc),
-                            0,
-                            0,
-                            SRCCOPY,
-                        );
-                    }
-
-                    SelectObject(icon_mem_dc, old_icon_bitmap);
-                    let _ = DeleteDC(icon_mem_dc);
-                }
-            }
-
-            // 简化的绘制参数
-            let draw_height = std::cmp::min(TITLE_BAR_HEIGHT, rect.bottom);
-            let draw_width = rect.right;
-
-            // 使用 AlphaBlend 绘制到目标 DC，确保透明通道正确处理
-            let blend_function = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
-                BlendFlags: 0,
-                SourceConstantAlpha: 255,
-                AlphaFormat: AC_SRC_ALPHA as u8,
-            };
-
-            let _ = AlphaBlend(
-                hdc,
-                0,
-                0,
-                draw_width,
-                draw_height,
-                mem_dc,
-                0,
-                0,
-                draw_width,
-                draw_height,
-                blend_function,
-            );
-
-            SelectObject(mem_dc, old_bitmap);
-            let _ = DeleteDC(mem_dc);
-            let _ = DeleteObject(buffer_bitmap.into());
         }
     }
 
@@ -2344,7 +1387,6 @@ impl OcrResultWindow {
         self.selection_end_pixel = Some((self.text_area_rect.right, self.text_area_rect.bottom));
 
         // 使缓冲区失效并重绘
-        self.buffer_valid = false;
         unsafe {
             let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
             let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
@@ -2373,7 +1415,6 @@ impl OcrResultWindow {
             self.selection_end = Some(text_pos);
 
             // 使缓冲区失效并立即触发重绘以显示选择高亮
-            self.buffer_valid = false; // 强制重新渲染缓冲区
             unsafe {
                 let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
                 let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
@@ -2397,7 +1438,6 @@ impl OcrResultWindow {
                 self.selection_end = Some(text_pos);
 
                 // 使缓冲区失效并立即重绘文本区域以显示选择更新
-                self.buffer_valid = false; // 强制重新渲染缓冲区
                 unsafe {
                     let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
                     let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
@@ -2457,7 +1497,6 @@ impl OcrResultWindow {
         self.copy_selected_text_to_clipboard();
 
         // 使缓冲区失效并重绘以清除选择高亮
-        self.buffer_valid = false;
         unsafe {
             let adjusted_rect = self.get_adjusted_text_rect_for_redraw();
             let _ = InvalidateRect(Some(self.hwnd), Some(&adjusted_rect), false);
@@ -2467,63 +1506,34 @@ impl OcrResultWindow {
 
     /// 将像素坐标转换为文本位置 (行号, 字符位置)
     fn pixel_to_text_position(&self, x: i32, y: i32) -> Option<(usize, usize)> {
-        unsafe {
-            // 计算相对于文本区域的坐标，使用与绘制时相同的坐标系
-            let relative_x = x - self.text_area_rect.left - 10; // 减去左边距
-            let relative_y = y - self.text_area_rect.top + self.scroll_offset - 10; // 减去上边距，加上滚动偏移
+        // 计算相对于文本区域的坐标，使用与绘制时相同的坐标系
+        let relative_x = x - self.text_area_rect.left - 10; // 减去左边距
+        let relative_y = y - self.text_area_rect.top + self.scroll_offset - 10; // 减去上边距，加上滚动偏移
 
-            // 计算行号
-            let line_index = (relative_y / self.line_height).max(0) as usize;
+        // 计算行号
+        let line_index = (relative_y / self.line_height).max(0) as usize;
 
-            if line_index >= self.text_lines.len() {
-                // 超出文本范围，返回最后一行的末尾
-                if let Some(last_line) = self.text_lines.last() {
-                    return Some((self.text_lines.len() - 1, last_line.chars().count()));
-                }
-                return None;
+        if line_index >= self.text_lines.len() {
+            // 超出文本范围，返回最后一行的末尾
+            if let Some(last_line) = self.text_lines.last() {
+                return Some((self.text_lines.len() - 1, last_line.chars().count()));
             }
-
-            // 获取当前行的文本
-            let line = &self.text_lines[line_index];
-            if line.is_empty() {
-                return Some((line_index, 0));
-            }
-
-            // 使用实际的字体度量来计算字符位置
-            let hdc = GetDC(Some(self.hwnd));
-            let old_font = SelectObject(hdc, self.font.into());
-
-            let chars: Vec<char> = line.chars().collect();
-            let mut best_char_index = 0;
-            let mut min_distance = i32::MAX;
-
-            // 逐个字符测量，找到最接近点击位置的字符
-            for i in 0..=chars.len() {
-                let text_to_measure: String = chars.iter().take(i).collect();
-                let text_wide: Vec<u16> = text_to_measure.encode_utf16().collect();
-
-                let mut size = SIZE::default();
-                let _ = GetTextExtentPoint32W(hdc, &text_wide, &mut size);
-
-                let char_x = size.cx;
-                let distance = (char_x - relative_x).abs();
-
-                if distance < min_distance {
-                    min_distance = distance;
-                    best_char_index = i;
-                }
-
-                // 如果已经超过了点击位置，可以提前退出
-                if char_x > relative_x {
-                    break;
-                }
-            }
-
-            let _ = SelectObject(hdc, old_font);
-            let _ = ReleaseDC(Some(self.hwnd), hdc);
-
-            Some((line_index, best_char_index))
+            return None;
         }
+
+        // 获取当前行的文本
+        let line = &self.text_lines[line_index];
+        if line.is_empty() {
+            return Some((line_index, 0));
+        }
+
+        let best_char_index = if let Some(renderer) = &self.renderer {
+            renderer.get_text_position_from_point(line, relative_x as f32)
+        } else {
+            0
+        };
+
+        Some((line_index, best_char_index))
     }
 
     /// 获取选中的文本
@@ -2586,150 +1596,6 @@ impl OcrResultWindow {
             }
         } else {
             None
-        }
-    }
-
-    /// 绘制选择高亮背景
-    fn draw_selection_highlight(
-        &self,
-        hdc: HDC,
-        line_index: usize,
-        text_rect: &RECT,
-        y: i32,
-        line_height: i32,
-    ) {
-        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
-            let (start_line, start_char) = start;
-            let (end_line, end_char) = end;
-
-            // 确保开始位置在结束位置之前
-            let (start_line, start_char, end_line, end_char) =
-                if start_line > end_line || (start_line == end_line && start_char > end_char) {
-                    (end_line, end_char, start_line, start_char)
-                } else {
-                    (start_line, start_char, end_line, end_char)
-                };
-
-            // 检查当前行是否在选择范围内
-            if line_index >= start_line && line_index <= end_line {
-                unsafe {
-                    let selection_brush = CreateSolidBrush(COLORREF(0x00C8F7C5)); // 淡绿色高亮
-
-                    let line_text = &self.text_lines[line_index];
-
-                    let (highlight_start_char, highlight_end_char) =
-                        if line_index == start_line && line_index == end_line {
-                            // 同一行内的选择
-                            (start_char, end_char)
-                        } else if line_index == start_line {
-                            // 选择的第一行
-                            (start_char, line_text.chars().count())
-                        } else if line_index == end_line {
-                            // 选择的最后一行
-                            (0, end_char)
-                        } else {
-                            // 中间行，全选
-                            (0, line_text.chars().count())
-                        };
-
-                    // 计算实际的字符位置
-                    let chars: Vec<char> = line_text.chars().collect();
-
-                    // 测量到开始字符的宽度
-                    let start_text: String = chars.iter().take(highlight_start_char).collect();
-                    let start_text_wide: Vec<u16> = start_text.encode_utf16().collect();
-                    let mut start_size = SIZE { cx: 0, cy: 0 };
-                    let _ = GetTextExtentPoint32W(hdc, &start_text_wide, &mut start_size);
-
-                    // 测量到结束字符的宽度
-                    let end_text: String = chars.iter().take(highlight_end_char).collect();
-                    let end_text_wide: Vec<u16> = end_text.encode_utf16().collect();
-                    let mut end_size = SIZE { cx: 0, cy: 0 };
-                    let _ = GetTextExtentPoint32W(hdc, &end_text_wide, &mut end_size);
-
-                    let highlight_start_x = text_rect.left + 10 + start_size.cx;
-                    let highlight_end_x = text_rect.left + 10 + end_size.cx;
-
-                    let highlight_rect = RECT {
-                        left: highlight_start_x,
-                        top: y,
-                        right: highlight_end_x,
-                        bottom: y + line_height,
-                    };
-
-                    let _ = FillRect(hdc, &highlight_rect, selection_brush);
-                    let _ = DeleteObject(selection_brush.into());
-                }
-            }
-        }
-    }
-
-    /// 绘制文本区域到指定的DC（用于缓冲区绘制）
-    fn draw_text_area_to_dc(&self, hdc: HDC) {
-        unsafe {
-            // 计算文本区域在缓冲区中的位置（简化版本）
-            let title_bar_height = TITLE_BAR_HEIGHT;
-            let text_rect = RECT {
-                left: self.text_area_rect.left,
-                top: self.text_area_rect.top - title_bar_height, // 减去实际的标题栏高度
-                right: self.text_area_rect.right,
-                bottom: self.text_area_rect.bottom - title_bar_height,
-            };
-
-            // 绘制文本区域背景（白色）
-            let white_brush = CreateSolidBrush(COLORREF(0x00FFFFFF));
-            let _ = FillRect(hdc, &text_rect, white_brush);
-            let _ = DeleteObject(white_brush.into());
-            // 设置文本绘制属性
-            let old_font = SelectObject(hdc, self.font.into());
-            let _text_color_result = SetTextColor(hdc, COLORREF(0x00000000)); // 黑色文字
-            let _bk_mode_result = SetBkMode(hdc, TRANSPARENT);
-
-            let line_height = self.line_height;
-            let scroll_offset = self.scroll_offset;
-
-            // 如果没有文本内容，显示提示信息
-            if self.text_lines.is_empty() || self.text_content.is_empty() {
-                let hint_text = if self.is_no_text_detected {
-                    "未识别到文字"
-                } else {
-                    "正在加载文本..."
-                };
-                let hint_wide: Vec<u16> = hint_text.encode_utf16().collect();
-                let _ = TextOutW(hdc, text_rect.left + 10, text_rect.top + 10, &hint_wide);
-            } else {
-                // 计算可见区域
-                let visible_height = text_rect.bottom - text_rect.top;
-                let start_line = (scroll_offset / line_height).max(0) as usize;
-                let end_line = ((scroll_offset + visible_height) / line_height + 1)
-                    .min(self.text_lines.len() as i32) as usize;
-
-                // 绘制可见的文本行
-                for (i, line) in self
-                    .text_lines
-                    .iter()
-                    .enumerate()
-                    .skip(start_line)
-                    .take(end_line - start_line)
-                {
-                    let y = text_rect.top + (i as i32 * line_height) - scroll_offset + 10; // 添加上边距
-
-                    if y + line_height > text_rect.top && y < text_rect.bottom {
-                        // 绘制选择高亮背景
-                        self.draw_selection_highlight(hdc, i, &text_rect, y, line_height);
-
-                        let line_wide: Vec<u16> = line.encode_utf16().collect();
-                        let _ = TextOutW(
-                            hdc,
-                            text_rect.left + 10, // 添加左边距
-                            y,
-                            &line_wide,
-                        );
-                    }
-                }
-            }
-
-            let _ = SelectObject(hdc, old_font);
         }
     }
 
@@ -3024,23 +1890,13 @@ impl OcrResultWindow {
                                     "window-maximize" => {
                                         // 执行最大化
                                         let _ = ShowWindow(hwnd, SW_MAXIMIZE);
-                                        // 立即更新状态
-                                        window.is_maximized = true;
-                                        window.update_title_bar_buttons();
-                                        // 最大化完成后调用图标居中函数
-                                        window.center_icons();
-                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        // 状态更新由 WM_SIZE 处理
                                         return LRESULT(0);
                                     }
                                     "window-restore" => {
                                         // 执行还原
                                         let _ = ShowWindow(hwnd, SW_RESTORE);
-                                        // 立即更新状态
-                                        window.is_maximized = false;
-                                        window.update_title_bar_buttons();
-                                        // 还原完成后也调用图标居中函数
-                                        window.center_icons();
-                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        // 状态更新由 WM_SIZE 处理
                                         return LRESULT(0);
                                     }
                                     "window-close" => {

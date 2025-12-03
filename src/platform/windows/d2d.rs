@@ -33,8 +33,8 @@ pub struct Direct2DRenderer {
     text_format_cache: std::sync::Mutex<HashMap<(String, u32), IDWriteTextFormat>>,
 
     // 屏幕尺寸
-    screen_width: i32,
-    screen_height: i32,
+    pub screen_width: i32,
+    pub screen_height: i32,
 }
 
 impl Direct2DRenderer {
@@ -60,6 +60,30 @@ impl Direct2DRenderer {
         width: i32,
         height: i32,
     ) -> std::result::Result<(), PlatformError> {
+        // 如果已经初始化且尺寸未变，直接返回
+        if self.render_target.is_some()
+            && self.screen_width == width
+            && self.screen_height == height
+        {
+            return Ok(());
+        }
+
+        // 如果 RenderTarget 已存在，尝试 Resize
+        if let Some(ref render_target) = self.render_target {
+            let size = D2D_SIZE_U {
+                width: width as u32,
+                height: height as u32,
+            };
+            unsafe {
+                if render_target.Resize(&size).is_ok() {
+                    self.screen_width = width;
+                    self.screen_height = height;
+                    return Ok(());
+                }
+            }
+            // 如果 Resize 失败，则继续往下走，重新创建资源
+        }
+
         self.screen_width = width;
         self.screen_height = height;
 
@@ -67,9 +91,12 @@ impl Direct2DRenderer {
         unsafe {
             let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if result.is_err() {
-                return Err(PlatformError::InitError(format!(
-                    "COM init failed: {result:?}"
-                )));
+                // RPC_E_CHANGED_MODE is ok (already initialized)
+                if result != RPC_E_CHANGED_MODE {
+                    return Err(PlatformError::InitError(format!(
+                        "COM init failed: {result:?}"
+                    )));
+                }
             }
         }
 
@@ -222,7 +249,6 @@ impl Direct2DRenderer {
             cache.clear();
         }
 
-        println!("D2D bitmap created successfully");
         Ok(())
     }
 
@@ -316,6 +342,48 @@ impl Direct2DRenderer {
         }
     }
 
+    /// 从像素数据创建D2D位图
+    pub fn create_bitmap_from_pixels(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> std::result::Result<ID2D1Bitmap, PlatformError> {
+        if let Some(ref render_target) = self.render_target {
+            let bitmap_properties = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    // tiny-skia 输出 RGBA
+                    format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+
+            let size = D2D_SIZE_U { width, height };
+            let stride = width * 4;
+
+            unsafe {
+                render_target
+                    .CreateBitmap(
+                        size,
+                        Some(pixels.as_ptr() as *const std::ffi::c_void),
+                        stride,
+                        &bitmap_properties,
+                    )
+                    .map_err(|e| {
+                        PlatformError::ResourceError(format!(
+                            "CreateBitmap from pixels failed: {e:?}"
+                        ))
+                    })
+            }
+        } else {
+            Err(PlatformError::ResourceError(
+                "No render target available".to_string(),
+            ))
+        }
+    }
+
     /// 将颜色量化为缓存键（ARGB 8bit）
     fn color_key(color: Color) -> u32 {
         let r = (color.r.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
@@ -348,12 +416,12 @@ impl Direct2DRenderer {
         };
         let brush = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }
             .map_err(|e| PlatformError::ResourceError(format!("Failed to create brush: {e:?}")))?;
-        
+
         // 简单清理策略：如果缓存太大，清空它
         if self.brush_cache.len() > 100 {
             self.brush_cache.clear();
         }
-        
+
         self.brush_cache.insert(key, brush.clone());
         Ok(brush)
     }
@@ -366,12 +434,12 @@ impl Direct2DRenderer {
     ) -> std::result::Result<IDWriteTextFormat, PlatformError> {
         // 使用 u32 表示 float bits 作为 key
         let key = (font_family.to_string(), font_size.to_bits());
-        
+
         if let Ok(mut cache) = self.text_format_cache.lock() {
             if let Some(fmt) = cache.get(&key) {
                 return Ok(fmt.clone());
             }
-            
+
             // 创建新的格式
             if let Some(ref dwrite_factory) = self.dwrite_factory {
                 unsafe {
@@ -386,16 +454,20 @@ impl Direct2DRenderer {
                             w!(""),
                         )
                         .map_err(|e| {
-                            PlatformError::ResourceError(format!("Failed to create text format: {e:?}"))
+                            PlatformError::ResourceError(format!(
+                                "Failed to create text format: {e:?}"
+                            ))
                         })?;
-                        
+
                     cache.insert(key, format.clone());
                     return Ok(format);
                 }
             }
         }
-        
-        Err(PlatformError::ResourceError("DWrite factory not available or lock failed".to_string()))
+
+        Err(PlatformError::ResourceError(
+            "DWrite factory not available or lock failed".to_string(),
+        ))
     }
 
     /// 绘制GDI位图作为背景（从原始代码迁移）
@@ -533,6 +605,55 @@ impl PlatformRenderer for Direct2DRenderer {
             if let Some(ref brush) = stroke_brush {
                 unsafe {
                     render_target.DrawRectangle(&d2d_rect, brush, style.stroke_width, None);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_rounded_rectangle(
+        &mut self,
+        rect: Rectangle,
+        radius: f32,
+        style: &DrawStyle,
+    ) -> std::result::Result<(), Self::Error> {
+        // 实现Direct2D的圆角矩形绘制
+        // 先创建需要的画刷，避免借用冲突
+        let fill_brush = if let Some(fill_color) = style.fill_color {
+            Some(self.get_or_create_brush(fill_color)?)
+        } else {
+            None
+        };
+
+        let stroke_brush = if style.stroke_width > 0.0 {
+            Some(self.get_or_create_brush(style.stroke_color)?)
+        } else {
+            None
+        };
+
+        if let Some(ref render_target) = self.render_target {
+            let rounded_rect = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: rect.x,
+                    top: rect.y,
+                    right: rect.x + rect.width,
+                    bottom: rect.y + rect.height,
+                },
+                radiusX: radius,
+                radiusY: radius,
+            };
+
+            unsafe {
+                if let Some(ref brush) = fill_brush {
+                    render_target.FillRoundedRectangle(&rounded_rect, brush);
+                }
+                if let Some(ref brush) = stroke_brush {
+                    render_target.DrawRoundedRectangle(
+                        &rounded_rect,
+                        brush,
+                        style.stroke_width,
+                        None,
+                    );
                 }
             }
         }
@@ -680,7 +801,7 @@ impl PlatformRenderer for Direct2DRenderer {
         if self.render_target.is_none() || self.dwrite_factory.is_none() {
             return Ok(());
         }
-        
+
         // 使用缓存获取文本格式，并修复字体硬编码问题
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
@@ -722,7 +843,7 @@ impl PlatformRenderer for Direct2DRenderer {
         if text.is_empty() {
             return Ok((0.0, style.font_size));
         }
-        
+
         let dwrite_factory = match &self.dwrite_factory {
             Some(f) => f,
             None => {
@@ -730,10 +851,10 @@ impl PlatformRenderer for Direct2DRenderer {
                 return Ok((text.len() as f32 * style.font_size * 0.6, style.font_size));
             }
         };
-        
+
         // 使用缓存获取文本格式
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
-        
+
         unsafe {
             // 文本 UTF-16
             let utf16: Vec<u16> = text.encode_utf16().collect();
@@ -1079,6 +1200,239 @@ impl PlatformRenderer for Direct2DRenderer {
 }
 
 impl Direct2DRenderer {
+    /// 绘制多行文本（支持滚动和裁剪）
+    pub fn draw_multiline_text(
+        &mut self,
+        text: &str,
+        rect: Rectangle,
+        style: &TextStyle,
+        scroll_offset: f32,
+    ) -> std::result::Result<(), PlatformError> {
+        if self.render_target.is_none() || self.dwrite_factory.is_none() {
+            return Ok(());
+        }
+
+        // 使用缓存获取文本格式
+        let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
+
+        // 获取画刷（避免借用冲突，提前获取）
+        let brush = self.get_or_create_brush(style.color)?;
+
+        // 必须使用 dwrite_factory 的引用
+        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let render_target = self.render_target.as_ref().unwrap();
+
+        unsafe {
+            // 创建文本布局
+            let text_utf16: Vec<u16> = text.encode_utf16().collect();
+            let text_layout = dwrite_factory
+                .CreateTextLayout(
+                    &text_utf16,
+                    &text_format,
+                    rect.width as f32,
+                    f32::MAX, // 高度不限制，允许完全布局
+                )
+                .map_err(|e| {
+                    PlatformError::RenderError(format!("Failed to create text layout: {:?}", e))
+                })?;
+
+            // 设置裁剪区域（限制在rect内显示）
+            let clip_rect = D2D_RECT_F {
+                left: rect.x,
+                top: rect.y,
+                right: rect.x + rect.width,
+                bottom: rect.y + rect.height,
+            };
+
+            render_target.PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            // 绘制文本布局
+            // 文本起点为 rect.x, rect.y，由于滚动，y 需要减去 offset
+            let origin = windows_numerics::Vector2 {
+                X: rect.x,
+                Y: rect.y - scroll_offset,
+            };
+
+            render_target.DrawTextLayout(origin, &text_layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+
+            render_target.PopAxisAlignedClip();
+        }
+
+        Ok(())
+    }
+
+    /// 测量多行文本尺寸（用于计算滚动高度）
+    pub fn measure_text_layout_size(
+        &self,
+        text: &str,
+        width: f32,
+        style: &TextStyle,
+    ) -> std::result::Result<(f32, f32), PlatformError> {
+        if text.is_empty() {
+            return Ok((0.0, 0.0));
+        }
+
+        if self.dwrite_factory.is_none() {
+            return Ok((0.0, 0.0));
+        }
+
+        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
+
+        unsafe {
+            let text_utf16: Vec<u16> = text.encode_utf16().collect();
+            let text_layout = dwrite_factory
+                .CreateTextLayout(&text_utf16, &text_format, width, f32::MAX)
+                .map_err(|e| {
+                    PlatformError::RenderError(format!(
+                        "Failed to create text layout for measure: {:?}",
+                        e
+                    ))
+                })?;
+
+            let mut metrics = DWRITE_TEXT_METRICS::default();
+            let _ = text_layout.GetMetrics(&mut metrics);
+            Ok((metrics.width, metrics.height))
+        }
+    }
+
+    /// 将文本按指定宽度分行
+    pub fn split_text_into_lines(
+        &self,
+        text: &str,
+        width: f32,
+        font_family: &str,
+        font_size: f32,
+    ) -> std::result::Result<Vec<String>, PlatformError> {
+        if self.dwrite_factory.is_none() {
+            return Ok(vec![text.to_string()]);
+        }
+
+        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        // Use internal helper or just create format here
+        let text_format = self.get_or_create_text_format(font_family, font_size)?;
+
+        unsafe {
+            let text_utf16: Vec<u16> = text.encode_utf16().collect();
+            let text_layout = dwrite_factory
+                .CreateTextLayout(&text_utf16, &text_format, width, f32::MAX)
+                .map_err(|e| {
+                    PlatformError::RenderError(format!(
+                        "Failed to create text layout for split: {:?}",
+                        e
+                    ))
+                })?;
+
+            let mut line_count = 0;
+            let _ = text_layout.GetLineMetrics(None, &mut line_count);
+
+            if line_count == 0 {
+                return Ok(Vec::new());
+            }
+
+            let mut metrics = vec![DWRITE_LINE_METRICS::default(); line_count as usize];
+            let _ = text_layout.GetLineMetrics(Some(&mut metrics), &mut line_count);
+
+            let mut lines = Vec::with_capacity(line_count as usize);
+            let mut current_pos = 0;
+
+            for metric in metrics {
+                let len = metric.length as usize;
+                // metric.length includes trailing whitespace/newline
+                // but we might want to trim newline if we are storing lines for rendering individually
+                // However, OcrResultWindow logic seems to handle lines individually.
+                // The original GDI logic split by \n first, then wrapped words.
+                // DWrite CreateTextLayout handles \n too.
+
+                if current_pos + len <= text_utf16.len() {
+                    let line_utf16 = &text_utf16[current_pos..current_pos + len];
+                    // Convert back to String
+                    let line_str = String::from_utf16_lossy(line_utf16);
+                    // Trim trailing newline if desired, but maybe keep it to match original behavior?
+                    // The original wrap_text_lines output lines without \n usually, but let's check.
+                    // Original split by \n, then wrapped.
+                    // DWrite will generate a line for \n.
+                    // Let's just return what DWrite gives.
+                    // Remove \r\n or \n at end if present?
+                    // render loop draws text. DrawText accepts \n but if we draw line by line...
+                    // The previous logic in OcrResultWindow used TextOutW which doesn't handle \n (displays block).
+                    // So lines should probably be clean.
+
+                    lines.push(line_str.trim_end_matches(&['\r', '\n'][..]).to_string());
+
+                    current_pos += len;
+                }
+            }
+
+            Ok(lines)
+        }
+    }
+
+    /// 根据坐标获取文本位置 (用于点击测试)
+    pub fn get_text_position_from_point(
+        &self,
+        text: &str,
+        point_x: f32,
+        font_family: &str,
+        font_size: f32,
+    ) -> std::result::Result<usize, PlatformError> {
+        if text.is_empty() {
+            return Ok(0);
+        }
+        if self.dwrite_factory.is_none() {
+            return Ok(0);
+        }
+
+        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let text_format = self.get_or_create_text_format(font_family, font_size)?;
+
+        unsafe {
+            let text_utf16: Vec<u16> = text.encode_utf16().collect();
+            // Layout width doesn't matter for single line hit test, make it large
+            let text_layout = dwrite_factory
+                .CreateTextLayout(&text_utf16, &text_format, 10000.0, 1000.0)
+                .map_err(|e| {
+                    PlatformError::RenderError(format!(
+                        "Failed to create text layout for hit test: {:?}",
+                        e
+                    ))
+                })?;
+
+            let mut is_trailing_hit = BOOL(0);
+            let mut is_inside = BOOL(0);
+            let mut metrics = DWRITE_HIT_TEST_METRICS::default();
+
+            let _ = text_layout.HitTestPoint(
+                point_x,
+                0.0, // line_y relative to layout top
+                &mut is_trailing_hit,
+                &mut is_inside,
+                &mut metrics,
+            );
+
+            // metrics.textPosition is the index of the character
+            // If trailing hit, we want the position AFTER this character
+            let mut pos = metrics.textPosition as usize;
+            if is_trailing_hit.as_bool() {
+                pos += 1;
+            }
+
+            // Ensure we don't go out of bounds (UTF-16 length)
+            // But we want to return character index (Rust char index)?
+            // metrics.textPosition is UTF-16 index.
+            // We need to convert UTF-16 index to char index.
+
+            // Simple approach: count chars up to UTF-16 pos
+            let utf16_pos = pos.min(text_utf16.len());
+            // Convert utf16_pos to char count
+            let char_count = String::from_utf16_lossy(&text_utf16[..utf16_pos])
+                .chars()
+                .count();
+
+            Ok(char_count)
+        }
+    }
+
     /// 绘制D2D位图（从原始代码迁移）
     pub fn draw_d2d_bitmap(
         &self,

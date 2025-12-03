@@ -160,6 +160,12 @@ pub const ICON_CLICK_PADDING: i32 = 16; // 图标点击检测区域 padding
 pub const ICON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE1, 0xF3, 0xFF); // 悬停背景颜色（浅蓝色）
 pub const ICON_HOVER_RADIUS: f32 = 6.0; // 悬停背景圆角半径
 
+// D2D 颜色常量适配
+pub const ICON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.88, g: 0.95, b: 1.0, a: 1.0 }; // 0xE1F3FF
+pub const TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.88, g: 0.88, b: 0.88, a: 1.0 }; // 0xE0E0E0
+pub const CLOSE_BUTTON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.91, g: 0.07, b: 0.14, a: 1.0 }; // 0xE81123
+pub const TITLE_BAR_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.93, g: 0.93, b: 0.93, a: 1.0 }; // 0xEDEDED
+
 // 标题栏按钮常量（简化版本）
 pub const TITLE_BAR_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE0, 0xE0, 0xE0); // 悬停背景颜色（灰色）
 pub const CLOSE_BUTTON_HOVER_BG_COLOR: (u8, u8, u8) = (0xE8, 0x11, 0x23); // 关闭按钮悬停背景颜色（红色）

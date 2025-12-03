@@ -144,7 +144,7 @@ impl OcrManager {
         &mut self,
         selection_rect: windows::Win32::Foundation::RECT,
         hwnd: windows::Win32::Foundation::HWND,
-        _screenshot_manager: &mut crate::screenshot::ScreenshotManager,
+        screenshot_manager: &mut crate::screenshot::ScreenshotManager,
     ) -> Result<(), SystemError> {
         use windows::Win32::Foundation::*;
         use windows::Win32::UI::WindowsAndMessaging::*;
@@ -166,6 +166,10 @@ impl OcrManager {
             return Ok(());
         }
 
+        // 获取缓存的图像数据（如果有），避免重复截图
+        // 注意：必须在隐藏窗口之前获取，虽然数据已经在内存中，但这是一个逻辑点
+        let cached_image = screenshot_manager.get_current_image_data().map(|d| d.to_vec());
+
         // 彻底隐藏窗口进行干净的截图 (UI线程执行)
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::*;
@@ -180,8 +184,10 @@ impl OcrManager {
             // 重构 HWND
             let hwnd = windows::Win32::Foundation::HWND(hwnd_ptr as *mut std::ffi::c_void);
 
-            // 给予系统足够时间重绘被遮挡的桌面区域
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            // 如果没有缓存图像，给予系统足够时间重绘被遮挡的桌面区域
+            if cached_image.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
 
             let result = {
                 let width = selection_rect.right - selection_rect.left;
@@ -195,52 +201,65 @@ impl OcrManager {
                     return;
                 }
 
-                // 使用统一的平台层截图函数，避免重复的GDI代码
-                let bitmap = match unsafe {
-                    crate::platform::windows::gdi::capture_screen_region_to_hbitmap(selection_rect)
-                } {
-                    Ok(bitmap) => bitmap,
-                    Err(e) => {
-                        eprintln!("截图失败: {:?}", e);
-                        // 恢复窗口
-                        unsafe {
-                            PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
-                        }
-                        return;
+                // 优先使用缓存数据进行裁剪
+                let mut image_data = None;
+                if let Some(ref data) = cached_image {
+                    if let Ok(cropped) = crate::ocr::crop_bmp(data, &selection_rect) {
+                        image_data = Some(cropped);
                     }
-                };
+                }
 
-                // 将位图转换为 BMP 数据
-                let image_data = unsafe {
-                    use windows::Win32::Foundation::HWND;
-                    use windows::Win32::Graphics::Gdi::*;
-
-                    let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                    let mem_dc = CreateCompatibleDC(Some(screen_dc));
-                    let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                    let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
-                        Ok(data) => Ok(data),
-                        Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
+                if let Some(data) = image_data {
+                    data
+                } else {
+                    // 缓存不可用或裁剪失败，回退到实时截图
+                    // 使用统一的平台层截图函数，避免重复的GDI代码
+                    let bitmap = match unsafe {
+                        crate::platform::windows::gdi::capture_screen_region_to_hbitmap(selection_rect)
+                    } {
+                        Ok(bitmap) => bitmap,
+                        Err(e) => {
+                            eprintln!("截图失败: {:?}", e);
+                            // 恢复窗口
+                            unsafe {
+                                PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                            }
+                            return;
+                        }
                     };
 
-                    // 清理 GDI 资源
-                    let _ = SelectObject(mem_dc, old_bitmap);
-                    let _ = DeleteObject(bitmap.into());
-                    let _ = DeleteDC(mem_dc);
-                    let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+                    // 将位图转换为 BMP 数据
+                    let image_data = unsafe {
+                        use windows::Win32::Foundation::HWND;
+                        use windows::Win32::Graphics::Gdi::*;
 
-                    result
-                };
+                        let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
+                        let mem_dc = CreateCompatibleDC(Some(screen_dc));
+                        let old_bitmap = SelectObject(mem_dc, bitmap.into());
 
-                match image_data {
-                    Ok(data) => data,
-                    Err(e) => {
-                        eprintln!("图片处理失败: {:?}", e);
-                        unsafe {
-                            PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                        let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
+                            Ok(data) => Ok(data),
+                            Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
+                        };
+
+                        // 清理 GDI 资源
+                        let _ = SelectObject(mem_dc, old_bitmap);
+                        let _ = DeleteObject(bitmap.into());
+                        let _ = DeleteDC(mem_dc);
+                        let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
+
+                        result
+                    };
+
+                    match image_data {
+                        Ok(data) => data,
+                        Err(e) => {
+                            eprintln!("图片处理失败: {:?}", e);
+                            unsafe {
+                                PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                            }
+                            return;
                         }
-                        return;
                     }
                 }
             };

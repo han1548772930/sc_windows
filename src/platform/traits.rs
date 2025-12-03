@@ -115,6 +115,17 @@ pub trait PlatformRenderer: Send + Sync {
     /// 绘制矩形
     fn draw_rectangle(&mut self, rect: Rectangle, style: &DrawStyle) -> Result<(), Self::Error>;
 
+    /// 绘制圆角矩形
+    fn draw_rounded_rectangle(
+        &mut self,
+        rect: Rectangle,
+        radius: f32,
+        style: &DrawStyle,
+    ) -> Result<(), Self::Error> {
+        // 默认实现回退到绘制普通矩形
+        self.draw_rectangle(rect, style)
+    }
+
     /// 绘制圆形（支持填充color）
     fn draw_circle(
         &mut self,

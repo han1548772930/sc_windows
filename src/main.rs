@@ -25,6 +25,28 @@ unsafe fn handle_commands(app: &mut App, commands: Vec<Command>, hwnd: HWND) {
     app.execute_command_chain(commands, hwnd);
 }
 
+/// 执行截图并显示窗口
+unsafe fn perform_capture_and_show(hwnd: HWND, app: &mut App) {
+    sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
+    app.start_async_ocr_check(hwnd);
+    app.reset_to_initial_state();
+    let (screen_width, screen_height) = win_api::get_screen_size();
+
+    if app.capture_screen_direct().is_ok() {
+        let _ = app.create_d2d_bitmap_from_gdi();
+        let _ = win_api::show_window(hwnd);
+        let _ = win_api::set_window_topmost(
+            hwnd,
+            0,
+            0,
+            screen_width,
+            screen_height,
+        );
+        let _ = win_api::request_redraw(hwnd);
+        let _ = win_api::update_window(hwnd);
+    }
+}
+
 fn main() -> Result<()> {
     unsafe {
         let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
@@ -303,26 +325,10 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = get_app_state(hwnd) {
                         if win_api::is_window_visible(hwnd) {
                             let _ = win_api::hide_window(hwnd);
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                        }
-
-                        sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
-                        app.start_async_ocr_check(hwnd);
-                        app.reset_to_initial_state();
-                        let (screen_width, screen_height) = win_api::get_screen_size();
-
-                        if app.capture_screen_direct().is_ok() {
-                            let _ = app.create_d2d_bitmap_from_gdi();
-                            let _ = win_api::show_window(hwnd);
-                            let _ = win_api::set_window_topmost(
-                                hwnd,
-                                0,
-                                0,
-                                screen_width,
-                                screen_height,
-                            );
-                            let _ = win_api::request_redraw(hwnd);
-                            let _ = win_api::update_window(hwnd);
+                            // 使用定时器替代线程休眠，避免阻塞主线程
+                            let _ = SetTimer(Some(hwnd), 2001, 50, None);
+                        } else {
+                            perform_capture_and_show(hwnd, app);
                         }
                     }
                 }
@@ -338,11 +344,20 @@ unsafe extern "system" fn window_proc(
             }
 
             WM_TIMER => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let commands = app.handle_cursor_timer(wparam.0 as u32);
-                    handle_commands(app, commands, hwnd);
+                if wparam.0 == 2001 {
+                    // 截图延迟定时器触发
+                    let _ = KillTimer(Some(hwnd), 2001);
+                    if let Some(app) = get_app_state(hwnd) {
+                        perform_capture_and_show(hwnd, app);
+                    }
+                    LRESULT(0)
+                } else {
+                    if let Some(app) = get_app_state(hwnd) {
+                        let commands = app.handle_cursor_timer(wparam.0 as u32);
+                        handle_commands(app, commands, hwnd);
+                    }
+                    LRESULT(0)
                 }
-                LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
