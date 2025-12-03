@@ -1,5 +1,3 @@
-// 文本编辑模块 - 处理文本输入、光标和文本渲染
-
 use crate::message::Command;
 use crate::types::{DrawingElement, DrawingTool};
 

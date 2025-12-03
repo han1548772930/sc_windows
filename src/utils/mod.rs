@@ -1,5 +1,3 @@
-// 工具函数模块
-
 use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 
 pub mod command_helpers;

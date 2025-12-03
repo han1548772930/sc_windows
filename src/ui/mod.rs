@@ -1,7 +1,3 @@
-// UI管理器模块
-//
-// 负责用户界面相关功能：工具栏、覆盖层、对话框等
-
 use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 

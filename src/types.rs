@@ -4,7 +4,6 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 
-// use crate::svg_icons::SvgIconManager; // 临时注释，待迁移
 use crate::utils::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,8 +15,8 @@ pub enum ToolbarButton {
     Pen,
     Text,
     Undo,
-    ExtractText, // 新增：文本提取按钮
-    Languages,   // 新增：语言按钮
+    ExtractText,
+    Languages,
     Confirm,
     Cancel,
     None,
@@ -74,7 +73,6 @@ pub enum DragMode {
     ResizingMiddleLeft,   // 调整大小 - 左边中心
 }
 
-// IconData 结构体已移除，现在只使用 SVG 图标
 impl DrawingElement {
     pub fn new(tool: DrawingTool) -> Self {
         Self {
@@ -106,11 +104,6 @@ impl DrawingElement {
         }
     }
 
-    // 注意：from_legacy_data 方法已被移除
-    // 该方法用于兼容旧数据格式，现在所有新的绘图元素都通过 new() 方法创建
-
-    /// 获取用于渲染的字体大小（兼容性方法）
-    /// 确保文本元素使用font_size字段，其他元素可能仍使用thickness
     pub fn get_effective_font_size(&self) -> f32 {
         if self.tool == DrawingTool::Text {
             self.font_size.max(8.0)
@@ -480,4 +473,3 @@ impl DrawingElement {
     }
 }
 
-// IconData 实现已移除

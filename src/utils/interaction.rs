@@ -1,7 +1,3 @@
-// 交互工具函数
-//
-// 提供选择框和绘图元素的通用交互功能
-
 use crate::constants::HANDLE_DETECTION_RADIUS;
 use crate::types::DragMode;
 use windows::Win32::Foundation::RECT;

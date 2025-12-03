@@ -1,7 +1,3 @@
-// Direct2D 绘图辅助函数
-//
-// 统一的Direct2D操作封装，减少重复代码
-
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;

@@ -1,7 +1,3 @@
-// Windows API Helper Functions
-//
-// Centralized Windows API wrappers to reduce code duplication
-
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;

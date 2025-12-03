@@ -1914,41 +1914,6 @@ impl SettingsWindow {
         }
     }
 
-    /// 显示文字颜色选择对话框
-    fn show_text_color_dialog(&mut self) {
-        unsafe {
-            // 创建自定义颜色数组
-            let mut custom_colors = [COLORREF(0); 16];
-
-            let mut cc = CHOOSECOLORW {
-                lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
-                hwndOwner: self.hwnd,
-                hInstance: HWND::default(),
-                rgbResult: COLORREF(
-                    (self.settings.text_color_red as u32)
-                        | ((self.settings.text_color_green as u32) << 8)
-                        | ((self.settings.text_color_blue as u32) << 16),
-                ),
-                lpCustColors: custom_colors.as_mut_ptr(),
-                Flags: CC_FULLOPEN | CC_RGBINIT,
-                lCustData: LPARAM(0),
-                lpfnHook: None,
-                lpTemplateName: PCWSTR::null(),
-            };
-
-            if ChooseColorW(&mut cc).as_bool() {
-                // 用户选择了颜色，更新设置
-                let color = cc.rgbResult.0;
-                self.settings.text_color_red = (color & 0xFF) as u8;
-                self.settings.text_color_green = ((color >> 8) & 0xFF) as u8;
-                self.settings.text_color_blue = ((color >> 16) & 0xFF) as u8;
-
-                // 更新颜色预览
-                self.update_color_preview();
-            }
-        }
-    }
-
     /// 更新颜色预览
     fn update_color_preview(&self) {
         unsafe {

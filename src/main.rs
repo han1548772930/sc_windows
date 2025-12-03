@@ -16,8 +16,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 unsafe fn get_app_state(hwnd: HWND) -> Option<&'static mut App> {
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
-    if ptr.is_null() { None } else { Some(&mut *ptr) }
+    unsafe {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
+        if ptr.is_null() { None } else { Some(&mut *ptr) }
+    }
 }
 
 /// 处理命令的辅助函数
@@ -267,12 +269,10 @@ unsafe extern "system" fn window_proc(
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
 
-                        // Check if we have results
                         let has_results = !data.ocr_results.is_empty();
                         let is_ocr_failed = data.ocr_results.len() == 1
                             && data.ocr_results[0].text == "OCR识别失败";
 
-                        // Show OCR Result Window
                         if let Err(e) = sc_windows::preview_window::PreviewWindow::show(
                             data.image_data,
                             data.ocr_results.clone(),
@@ -282,7 +282,6 @@ unsafe extern "system" fn window_proc(
                             eprintln!("Failed to show OCR result window: {:?}", e);
                         }
 
-                        // Copy to clipboard
                         if has_results {
                             let text: String = data
                                 .ocr_results
@@ -298,7 +297,6 @@ unsafe extern "system" fn window_proc(
                             }
                         }
 
-                        // Message Box if no text
                         if !has_results || is_ocr_failed {
                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
                             let message_w: Vec<u16> =
@@ -314,7 +312,6 @@ unsafe extern "system" fn window_proc(
                             );
                         }
 
-                        // Cleanup and ensure main window is hidden
                         app.stop_ocr_engine_async();
                         let _ = win_api::hide_window(hwnd);
                     }
@@ -326,7 +323,6 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = get_app_state(hwnd) {
                         if win_api::is_window_visible(hwnd) {
                             let _ = win_api::hide_window(hwnd);
-                            // 使用定时器替代线程休眠，避免阻塞主线程
                             let _ = SetTimer(Some(hwnd), 2001, 50, None);
                         } else {
                             perform_capture_and_show(hwnd, app);
@@ -346,7 +342,6 @@ unsafe extern "system" fn window_proc(
 
             WM_TIMER => {
                 if wparam.0 == 2001 {
-                    // 截图延迟定时器触发
                     let _ = KillTimer(Some(hwnd), 2001);
                     if let Some(app) = get_app_state(hwnd) {
                         perform_capture_and_show(hwnd, app);

@@ -1,7 +1,3 @@
-// OCR管理
-//
-// 负责OCR引擎的管理和文本识别
-
 use super::SystemError;
 use windows::Win32::UI::WindowsAndMessaging::WM_USER;
 
@@ -196,7 +192,7 @@ impl OcrManager {
                 if width <= 0 || height <= 0 {
                     // 恢复窗口
                     unsafe {
-                        PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
+                        let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
                     }
                     return;
                 }

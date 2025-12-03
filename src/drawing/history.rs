@@ -1,7 +1,3 @@
-// 撤销/重做系统
-//
-// 负责管理绘图操作的历史记录
-
 use super::elements::ElementManager;
 use crate::types::DrawingElement;
 

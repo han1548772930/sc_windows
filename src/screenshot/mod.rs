@@ -1,7 +1,3 @@
-// 截图管理器模块
-//
-// 负责屏幕捕获、选择区域管理、保存和导出功能
-
 use crate::interaction::InteractionController;
 use crate::message::{Command, ScreenshotMessage};
 use crate::platform::windows::SafeHwnd;

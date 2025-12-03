@@ -1,7 +1,3 @@
-// 窗口检测管理
-//
-// 负责检测和高亮窗口
-
 use super::SystemError;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};

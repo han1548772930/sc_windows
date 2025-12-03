@@ -1,7 +1,3 @@
-// SVG图标管理器
-//
-// 负责加载、渲染和缓存SVG图标
-
 use crate::types::ToolbarButton;
 use std::cell::RefCell;
 use std::collections::HashMap;

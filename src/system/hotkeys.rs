@@ -1,7 +1,3 @@
-// 全局热键管理
-//
-// 负责全局热键的注册、注销和处理
-
 use super::SystemError;
 use crate::message::Command;
 use windows::Win32::Foundation::HWND;

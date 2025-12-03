@@ -1,8 +1,3 @@
-// Windows GDI utility helpers
-//
-// Provide small, reusable helpers to keep platform-specific GDI operations
-// out of higher-level modules without changing behavior.
-
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, GetDC, HBITMAP, ReleaseDC,

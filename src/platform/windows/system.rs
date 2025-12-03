@@ -1,7 +1,3 @@
-// Windows system helpers
-//
-// Centralize common system queries used across the app.
-
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXSCREEN, SM_CYBORDER, SM_CYCAPTION, SM_CYFRAME, SM_CYSCREEN,
 };

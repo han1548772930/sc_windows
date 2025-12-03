@@ -1,7 +1,3 @@
-// 系统托盘管理（从原始代码完整迁移）
-//
-// 负责系统托盘的创建、消息处理和菜单管理
-
 use super::SystemError;
 use crate::message::Command;
 use crate::platform::windows::SafeHwnd;

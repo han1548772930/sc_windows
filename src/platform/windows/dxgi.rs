@@ -1,8 +1,3 @@
-// Windows DXGI Desktop Duplication implementation
-//
-// Provides high-performance screen capture using DXGI Desktop Duplication API.
-// Falls back to GDI if not available.
-
 use windows::core::{Interface, Result};
 use windows::Win32::Foundation::{RECT, E_FAIL, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -13,7 +8,6 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::{
     IDXGIDevice, IDXGIAdapter, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication,
-    Common::DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, CreateDIBSection, HBITMAP, RGBQUAD,

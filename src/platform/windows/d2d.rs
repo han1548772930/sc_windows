@@ -1,12 +1,7 @@
-// Direct2D渲染器实现
-//
-// 基于Direct2D的Windows平台渲染器
-
 use crate::platform::traits;
 use crate::platform::traits::*;
 use std::collections::HashMap;
 
-// 添加Windows API导入（从原始代码迁移）
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -15,7 +10,6 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::System::Com::*;
 use windows::core::*;
 
-/// Direct2D渲染器（从原始WindowState迁移）
 pub struct Direct2DRenderer {
     // Direct2D 资源（从原始代码迁移）
     pub d2d_factory: Option<ID2D1Factory>,

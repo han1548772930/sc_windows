@@ -1,7 +1,3 @@
-// 系统集成管理器模块
-//
-// 负责系统级功能：托盘、热键、窗口检测、OCR等
-
 use crate::message::{Command, SystemMessage};
 
 pub mod hotkeys;

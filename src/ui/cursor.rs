@@ -1,7 +1,3 @@
-// 光标管理器
-//
-// 负责根据应用状态设置合适的鼠标光标
-
 use crate::types::{DragMode, DrawingTool, ToolbarButton};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;

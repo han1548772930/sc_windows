@@ -7,20 +7,17 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::DataExchange::*;
-use windows::Win32::System::Memory::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, GetSystemMetricsForDpi, PROCESS_PER_MONITOR_DPI_AWARE, SetProcessDpiAwareness,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-// 自定义标题栏/图标常量集中到 crate::constants
 use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D,
-    ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR, ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING,
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D,
+    ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING,
     ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X, TITLE_BAR_BG_COLOR_D2D,
-    TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
+    TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
 };
 
 use std::collections::HashMap;
@@ -281,7 +278,7 @@ impl PreviewRenderer {
         icons: &[SvgIcon],
         is_pinned: bool,
     ) -> Result<()> {
-        use crate::platform::traits::{Color, DrawStyle, PlatformRenderer, Rectangle, RendererExt};
+        use crate::platform::traits::{Color, DrawStyle, PlatformRenderer, Rectangle};
 
         // 绘制标题栏背景
         let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
@@ -493,41 +490,15 @@ impl PreviewRenderer {
 
         // 4. 绘制窗口边框 - 仅在非最大化时绘制
         // 如果是 pin 模式且 is_pinned，可能不画边框？保持一致吧
+        // 注意：边框绘制逻辑暂时未实现，保留框架以便后续完善
         if !is_pinned && !is_maximized {
-            let border_color = crate::platform::traits::Color {
+            let _border_color = crate::platform::traits::Color {
                 r: 0.8,
                 g: 0.8,
                 b: 0.8,
                 a: 1.0,
             }; // 浅灰色边框
-            let border_style = crate::platform::traits::DrawStyle {
-                stroke_color: border_color,
-                fill_color: None,
-                stroke_width: 1.0,
-            };
-            
-            let content_height = if show_text_area {
-                (text_rect.bottom + 15) as f32
-            } else {
-                 (crate::platform::windows::system::get_screen_size().1 as f32) // 这里的逻辑有点粗糙，先简化
-            };
-            // 实际上边框应该画满窗口
-            let border_rect = crate::platform::traits::Rectangle {
-                x: 0.5, // 0.5 偏移以获得清晰的线条
-                y: 0.5,
-                width: width as f32 - 1.0,
-                height: if show_text_area { (text_rect.bottom + 15) as f32 - 1.0 } else { (TITLE_BAR_HEIGHT + image_height + 40) as f32 - 1.0}, // 简单估算
-            };
-            // 修正：边框应该根据窗口实际客户区大小绘制，而不是根据内容推算
-            // 这里我们没有 height 参数，所以只能用 approximate
-            // 但是 Windows 已经通过 WM_PAINT 的 GetClientRect 获取了宽高并传入 initialize
-            // 这里的 render 参数 width 是 client width
-            // 我们缺少 height 参数在 render 函数中
-            // 原代码 OcrResultWindow::render 中 height 参数没有传进来!
-            // 它是根据 text_rect 计算的?
-            // 原代码: height: (text_rect.bottom + 15) as f32 - 1.0
-            // 
-            // 我应该在 render 中传入 client_height
+            // TODO: 实现边框绘制逻辑
         }
         
         // 修正：边框绘制逻辑。原代码确实有点奇怪。
@@ -686,9 +657,14 @@ pub struct PreviewWindow {
     is_selecting: bool,                        // 是否正在选择文本
     selection_start: Option<(usize, usize)>,   // 选择开始位置 (行号, 字符位置)
     selection_end: Option<(usize, usize)>,     // 选择结束位置 (行号, 字符位置)
+    // 注意：以下字段预留用于双击选词等功能，暂未实现
+    #[allow(dead_code)]
     selection_start_pixel: Option<(i32, i32)>, // 选择开始的像素位置
+    #[allow(dead_code)]
     selection_end_pixel: Option<(i32, i32)>,   // 选择结束的像素位置
+    #[allow(dead_code)]
     last_click_time: std::time::Instant,       // 上次点击时间，用于双击检测
+    #[allow(dead_code)]
     last_click_pos: Option<(i32, i32)>,        // 上次点击位置
 
     // 置顶/Pin 状态

@@ -258,18 +258,9 @@ impl DrawingManager {
         }
     }
 
-    // save_history 方法已移除，使用 HistoryManager 代替
-
-    /// 检查是否可以撤销（从WindowState迁移）
     pub fn can_undo(&self) -> bool {
-        // 使用新的历史管理器而不是legacy history_stack
         self.history.can_undo()
     }
-
-    // 移除 legacy 接口，统一使用 ElementManager/HistoryManager
-
-    /// 处理鼠标移动（从原始代码迁移，支持拖拽模式）
-    /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_move(
         &mut self,
         x: i32,
@@ -302,84 +293,6 @@ impl DrawingManager {
         }
     }
 
-    /// 计算文本元素在当前字体大小下的最小尺寸
-    fn calculate_text_min_size_for_element(element: &DrawingElement) -> (i32, i32) {
-        use crate::constants::TEXT_PADDING;
-        use windows::Win32::Graphics::DirectWrite::*;
-        use windows::core::w;
-
-        let font_size = element.get_effective_font_size();
-        let dynamic_line_height =
-            (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
-
-        let text_content = &element.text;
-        let lines: Vec<&str> = if text_content.is_empty() {
-            vec![""]
-        } else {
-            text_content.lines().collect()
-        };
-        let line_count = if text_content.is_empty() {
-            1
-        } else if text_content.ends_with('\n') {
-            lines.len() + 1
-        } else {
-            lines.len()
-        } as i32;
-
-        // 使用 DirectWrite 精确测量最长行宽度
-        let mut max_width_f = 0.0f32;
-        unsafe {
-            if let Ok(factory) = DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
-                let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
-                let weight = if element.font_weight > 400 {
-                    DWRITE_FONT_WEIGHT_BOLD
-                } else {
-                    DWRITE_FONT_WEIGHT_NORMAL
-                };
-                let style = if element.font_italic {
-                    DWRITE_FONT_STYLE_ITALIC
-                } else {
-                    DWRITE_FONT_STYLE_NORMAL
-                };
-                if let Ok(text_format) = factory.CreateTextFormat(
-                    windows::core::PCWSTR(font_name_wide.as_ptr()),
-                    None,
-                    weight,
-                    style,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    w!(""),
-                ) {
-                    for line in &lines {
-                        let wide: Vec<u16> = line.encode_utf16().collect();
-                        if let Ok(layout) =
-                            factory.CreateTextLayout(&wide, &text_format, f32::MAX, f32::MAX)
-                        {
-                            let mut metrics = DWRITE_TEXT_METRICS::default();
-                            let _ = layout.GetMetrics(&mut metrics);
-                            if metrics.width > max_width_f {
-                                max_width_f = metrics.width;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 增加适当的缓冲，避免字符被挤压
-        if max_width_f > 0.0 {
-            max_width_f += (font_size * 0.2).max(4.0);
-        }
-
-        let min_width = ((max_width_f + TEXT_PADDING * 2.0).ceil() as i32)
-            .max(crate::constants::MIN_TEXT_WIDTH);
-        let min_height = (line_count * dynamic_line_height + (TEXT_PADDING * 2.0) as i32)
-            .max(crate::constants::MIN_TEXT_HEIGHT);
-
-        (min_width, min_height)
-    }
-
-    /// 更新拖拽操作（从原始代码迁移）
     fn update_drag(
         &mut self,
         x: i32,
@@ -676,8 +589,6 @@ impl DrawingManager {
         crate::utils::detect_handle_at_position_unified(x, y, rect, config, false)
     }
 
-    /// 处理鼠标按下（从原始代码迁移，支持拖拽模式）
-    /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_down(
         &mut self,
         x: i32,
@@ -893,7 +804,6 @@ impl DrawingManager {
         }
     }
 
-    /// 开始绘制图形（从原始代码迁移）
     fn start_drawing_shape(&mut self, x: i32, y: i32) {
         // 在开始新的绘制前清除元素选择（保持原始行为）
         self.selected_element = None;
@@ -951,8 +861,6 @@ impl DrawingManager {
         self.current_element = Some(new_element);
     }
 
-    /// 处理鼠标释放（从原始代码迁移，支持拖拽模式）
-    /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
             self.end_drag();
@@ -965,7 +873,6 @@ impl DrawingManager {
         }
     }
 
-    /// 结束拖拽操作（从原始代码迁移）
     fn end_drag(&mut self) {
         if self.interaction_mode == ElementInteractionMode::Drawing {
             if let Some(mut element) = self.current_element.take() {
@@ -1002,9 +909,7 @@ impl DrawingManager {
         }
     }
 
-    /// 处理键盘输入（从原始代码迁移，支持文本编辑）
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
-        // 处理文字编辑相关按键（从原始代码迁移）
         if self.text_editing {
             match key {
                 0x1B => {
@@ -1117,12 +1022,8 @@ impl DrawingManager {
         None
     }
 
-    /// 重新加载绘图属性（从设置中同步最新的颜色和粗细等属性）
-    /// 注意：现在 ToolManager 直接从设置读取配置，无需手动同步
     pub fn reload_drawing_properties(&mut self) {
-        // ToolManager 现在直接从 SimpleSettings 读取配置
-        // 无需手动同步，配置会在需要时自动从设置中读取
-        // 这个方法保留是为了兼容性，但实际上不再需要做任何操作
+        // ToolManager 直接从设置读取配置
     }
 
     /// 处理双击事件（优先用于文本编辑）
@@ -1138,8 +1039,6 @@ impl DrawingManager {
         }
         vec![]
     }
-
-    // 文本编辑相关方法已移到 text_editing.rs 模块
 }
 
 /// 绘图错误类型

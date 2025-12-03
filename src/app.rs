@@ -242,8 +242,6 @@ impl App {
             .map_err(|e| AppError::Render(format!("Failed to create D2D bitmap: {e:?}")))
     }
 
-    // execute_command 方法已经移动到 command_executor.rs
-
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
         let mut commands = Vec::new();
@@ -681,9 +679,6 @@ impl WindowEventHandler for App {
     }
 }
 
-// AppError已在error.rs中定义，这里仅导入额外的转换实现
-
-// 错误转换实现
 impl From<crate::screenshot::ScreenshotError> for AppError {
     fn from(err: crate::screenshot::ScreenshotError) -> Self {
         AppError::Screenshot(err.to_string())

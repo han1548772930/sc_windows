@@ -1,5 +1,3 @@
-// 绘图渲染模块 - 处理所有绘图元素的渲染逻辑
-
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::{DrawingElement, DrawingTool};
 use crate::utils::d2d_helpers::ellipse;

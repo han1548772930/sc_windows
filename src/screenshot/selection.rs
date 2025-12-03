@@ -1,7 +1,3 @@
-// 选择区域管理
-//
-// 负责管理用户的选择区域状态
-
 use crate::constants::MIN_BOX_SIZE;
 use crate::types::DragMode;
 use windows::Win32::Foundation::{POINT, RECT};

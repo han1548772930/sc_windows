@@ -1,4 +1,3 @@
-// Command execution helpers to reduce code duplication
 use crate::message::Command;
 use crate::utils::win_api;
 use windows::Win32::Foundation::HWND;

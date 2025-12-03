@@ -1,7 +1,3 @@
-// 工具栏管理
-//
-// 负责工具栏的显示、交互和状态管理
-
 use super::UIError;
 use crate::message::Command;
 use crate::platform::{PlatformError, PlatformRenderer};

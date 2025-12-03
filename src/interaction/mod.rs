@@ -1,9 +1,3 @@
-// 统一交互抽象（阶段1 PoC）
-//
-// 目标：以最小侵入的方式引入 InteractionTarget + InteractionController，
-// 仅用于 Selection 路径，复用现有 SelectionState 的交互实现，
-// 不搬迁内部状态，后续阶段可逐步内聚到控制器。
-
 use crate::types::DragMode;
 use windows::Win32::Foundation::RECT;
 

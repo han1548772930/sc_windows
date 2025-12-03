@@ -1,7 +1,3 @@
-// 绘图元素管理
-//
-// 负责管理所有的绘图元素
-
 use super::DrawingError;
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::DrawingElement;
