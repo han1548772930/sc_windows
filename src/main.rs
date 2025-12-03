@@ -35,13 +35,7 @@ unsafe fn perform_capture_and_show(hwnd: HWND, app: &mut App) {
     if app.capture_screen_direct().is_ok() {
         let _ = app.create_d2d_bitmap_from_gdi();
         let _ = win_api::show_window(hwnd);
-        let _ = win_api::set_window_topmost(
-            hwnd,
-            0,
-            0,
-            screen_width,
-            screen_height,
-        );
+        let _ = win_api::set_window_topmost(hwnd, 0, 0, screen_width, screen_height);
         let _ = win_api::request_redraw(hwnd);
         let _ = win_api::update_window(hwnd);
     }
@@ -272,47 +266,54 @@ unsafe extern "system" fn window_proc(
                     let data_ptr = lparam.0 as *mut sc_windows::system::ocr::OcrCompletionData;
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
-                        
+
                         // Check if we have results
                         let has_results = !data.ocr_results.is_empty();
-                        let is_ocr_failed = data.ocr_results.len() == 1 && data.ocr_results[0].text == "OCR识别失败";
+                        let is_ocr_failed = data.ocr_results.len() == 1
+                            && data.ocr_results[0].text == "OCR识别失败";
 
                         // Show OCR Result Window
-                        if let Err(e) = sc_windows::ocr_result_window::OcrResultWindow::show(
+                        if let Err(e) = sc_windows::preview_window::PreviewWindow::show(
                             data.image_data,
                             data.ocr_results.clone(),
                             data.selection_rect,
+                            false,
                         ) {
-                             eprintln!("Failed to show OCR result window: {:?}", e);
+                            eprintln!("Failed to show OCR result window: {:?}", e);
                         }
 
                         // Copy to clipboard
                         if has_results {
-                            let text: String = data.ocr_results
+                            let text: String = data
+                                .ocr_results
                                 .iter()
                                 .map(|r| r.text.clone())
                                 .collect::<Vec<_>>()
                                 .join("\n");
 
-                            if let Err(e) = sc_windows::screenshot::save::copy_text_to_clipboard(&text) {
+                            if let Err(e) =
+                                sc_windows::screenshot::save::copy_text_to_clipboard(&text)
+                            {
                                 eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
                             }
                         }
 
                         // Message Box if no text
                         if !has_results || is_ocr_failed {
-                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
-                             let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
-                             let title_w: Vec<u16> = "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
-                             
-                             let _ = MessageBoxW(
+                            let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
+                            let message_w: Vec<u16> =
+                                message.encode_utf16().chain(std::iter::once(0)).collect();
+                            let title_w: Vec<u16> =
+                                "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
+
+                            let _ = MessageBoxW(
                                 Some(hwnd),
                                 PCWSTR(message_w.as_ptr()),
                                 PCWSTR(title_w.as_ptr()),
                                 MB_OK | MB_ICONINFORMATION,
                             );
                         }
-                        
+
                         // Cleanup and ensure main window is hidden
                         app.stop_ocr_engine_async();
                         let _ = win_api::hide_window(hwnd);

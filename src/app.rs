@@ -156,10 +156,7 @@ impl App {
     }
 
     /// 初始化系统托盘
-    pub fn init_system_tray(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> AppResult<()> {
+    pub fn init_system_tray(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         self.system
             .initialize(hwnd)
             .map_err(|e| AppError::Init(format!("Failed to initialize system tray: {e}")))
@@ -422,10 +419,7 @@ impl App {
     }
 
     /// 执行截图
-    pub fn take_screenshot(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> AppResult<()> {
+    pub fn take_screenshot(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         use crate::utils::win_api;
 
         // 重置状态并开始截图（按照原始代码逻辑）
@@ -476,13 +470,50 @@ impl App {
         self.ui.set_toolbar_disabled(disabled);
     }
 
-    /// 保存选择区域到剪贴板（使用 screenshot 模块的统一接口）
+    /// 合成选择区域图像和绘图元素，返回BMP数据
+    fn compose_selection_with_drawings(
+        &mut self,
+        selection_rect: &windows::Win32::Foundation::RECT,
+    ) -> AppResult<Vec<u8>> {
+        // 获取D2D位图
+        let Some(source_bitmap) = self.screenshot.get_d2d_bitmap() else {
+            return Err(AppError::Screenshot("No D2D bitmap available".to_string()));
+        };
+        let source_bitmap = source_bitmap.clone();
+        
+        // 克隆selection_rect以便在闭包中使用
+        let sel_rect = *selection_rect;
+
+        // 使用Direct2D渲染器进行合成
+        if let Some(d2d_renderer) = self
+            .platform
+            .as_any_mut()
+            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
+        {
+            // 使用闭包来渲染元素
+            let drawing_ref = &self.drawing;
+            
+            let bmp_data = d2d_renderer.render_selection_to_bmp(
+                &source_bitmap,
+                &sel_rect,
+                |render_target, renderer| {
+                    drawing_ref
+                        .render_elements_to_target(render_target, renderer, &sel_rect)
+                        .map_err(|e| crate::platform::PlatformError::RenderError(format!("{e}")))
+                },
+            ).map_err(|e| AppError::Render(format!("Failed to compose image: {e:?}")))?;
+
+            Ok(bmp_data)
+        } else {
+            Err(AppError::Render("Failed to get D2D renderer".to_string()))
+        }
+    }
+
+    /// 保存选择区域到剪贴板（包含绘图元素）
     pub fn save_selection_to_clipboard(
         &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
+        _hwnd: windows::Win32::Foundation::HWND,
     ) -> AppResult<()> {
-        use windows::Win32::Graphics::Gdi::DeleteObject;
-
         // 获取选择区域
         let Some(selection_rect) = self.screenshot.get_selection() else {
             return Ok(());
@@ -494,46 +525,22 @@ impl App {
             return Ok(());
         }
 
-        // 临时隐藏UI元素
-        self.screenshot.hide_ui_for_capture(hwnd);
+        // 合成图像（截图 + 绘图元素）
+        let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
-        let result = {
-            // 使用 screenshot 模块捕获区域
-            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    self.screenshot.show_ui_after_capture(hwnd);
-                    return Err(AppError::Screenshot(format!(
-                        "Failed to capture region: {e:?}"
-                    )));
-                }
-            };
-
-            // 使用 screenshot 模块复制到剪贴板
-            let copy_result = crate::screenshot::save::copy_hbitmap_to_clipboard(bitmap);
-
-            // 清理位图资源
-            unsafe {
-                let _ = DeleteObject(bitmap.into());
-            }
-
-            copy_result
-                .map_err(|e| AppError::Screenshot(format!("Failed to copy to clipboard: {e:?}")))
-        };
-
-        // 恢复UI元素
-        self.screenshot.show_ui_after_capture(hwnd);
-        result
+        // 将 BMP 数据复制到剪贴板
+        crate::screenshot::save::copy_bmp_data_to_clipboard(&bmp_data)
+            .map_err(|e| AppError::Screenshot(format!("Failed to copy to clipboard: {e:?}")))
     }
 
-    /// 保存选择区域到文件（严格遵循原始同步逻辑）
+    /// 保存选择区域到文件（包含绘图元素）
     /// 返回 Ok(true) 表示保存成功，Ok(false) 表示用户取消，Err 表示错误
     pub fn save_selection_to_file(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
     ) -> Result<bool, AppError> {
-        use windows::Win32::Graphics::Gdi::DeleteObject;
+        use std::fs::File;
+        use std::io::Write;
 
         // 没有有效选择则直接返回
         let Some(selection_rect) = self.screenshot.get_selection() else {
@@ -552,37 +559,16 @@ impl App {
             return Ok(false); // 用户取消了对话框
         };
 
-        // 临时隐藏UI元素
-        self.screenshot.hide_ui_for_capture(hwnd);
+        // 合成图像（截图 + 绘图元素）
+        let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
-        let result = {
-            // 使用 screenshot 模块捕获区域
-            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    self.screenshot.show_ui_after_capture(hwnd);
-                    return Err(AppError::Screenshot(format!(
-                        "Failed to capture region: {e:?}"
-                    )));
-                }
-            };
+        // 将 BMP 数据写入文件
+        let mut file = File::create(&file_path)
+            .map_err(|e| AppError::File(format!("Failed to create file: {e}")))?;
+        file.write_all(&bmp_data)
+            .map_err(|e| AppError::File(format!("Failed to write file: {e}")))?;
 
-            // 使用 screenshot 模块保存到文件
-            let save_result =
-                crate::screenshot::save::save_hbitmap_to_file(bitmap, &file_path, width, height);
-
-            // 清理资源（保存后释放位图）
-            unsafe {
-                let _ = DeleteObject(bitmap.into());
-            }
-
-            save_result.map_err(|e| format!("Failed to save file: {e:?}"))
-        };
-
-        // 恢复UI元素
-        self.screenshot.show_ui_after_capture(hwnd);
-        result.map(|_| true).map_err(|e| AppError::File(e))
+        Ok(true)
     }
 
     /// 从选择区域提取文本（简化版本 - 委托给OcrManager）
@@ -601,11 +587,8 @@ impl App {
             .map_err(|e| AppError::System(format!("OCR识别失败: {e}")))
     }
 
-    /// 固定选择区域
-    pub fn pin_selection(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> AppResult<()> {
+    /// 固定选择区域（包含绘图元素）
+    pub fn pin_selection(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         // 检查是否有选择区域
         let Some(selection_rect) = self.screenshot.get_selection() else {
             return Ok(());
@@ -618,14 +601,15 @@ impl App {
             return Ok(());
         }
 
-        // 临时隐藏UI元素进行截图
-        self.screenshot.hide_ui_for_capture(hwnd);
+        // 合成图像（截图 + 绘图元素）
+        let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
         // 创建固钉窗口
-        let result = self.create_pin_window(hwnd, width, height, selection_rect);
-
-        // 恢复UI元素显示（虽然窗口即将隐藏，但保持一致性）
-        self.screenshot.show_ui_after_capture(hwnd);
+        if let Err(e) = crate::preview_window::PreviewWindow::show(bmp_data, vec![], selection_rect, true) {
+            return Err(AppError::WinApi(format!(
+                "Failed to show pin window: {e:?}"
+            )));
+        }
 
         // 隐藏原始截屏窗口
         let _ = crate::utils::win_api::hide_window(hwnd);
@@ -633,88 +617,7 @@ impl App {
         // 重置原始窗口状态，准备下次截屏
         self.reset_to_initial_state();
 
-        result
-    }
-
-    /// 创建固钉窗口
-    fn create_pin_window(
-        &self,
-        _parent_hwnd: windows::Win32::Foundation::HWND,
-        width: i32,
-        height: i32,
-        selection_rect: windows::Win32::Foundation::RECT,
-    ) -> AppResult<()> {
-        use windows::Win32::Foundation::*;
-        use windows::Win32::Graphics::Gdi::*;
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows::Win32::UI::WindowsAndMessaging::*;
-
-        unsafe {
-            // 获取选择区域的屏幕截图（通过 screenshot 统一入口，包含绘图内容）
-            let bitmap = match crate::screenshot::capture::capture_region_to_hbitmap(selection_rect)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    return Err(AppError::Screenshot(format!(
-                        "Failed to capture pin image: {e:?}"
-                    )));
-                }
-            };
-
-            // 注册固钉窗口类
-            let hinstance = GetModuleHandleW(None)
-                .map_err(|e| AppError::WinApi(format!("Failed to get module handle: {e:?}")))?;
-
-            let class_name: Vec<u16> = "PinWindow\0".encode_utf16().collect();
-
-            let wc = WNDCLASSEXW {
-                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(pin_window_proc),
-                cbClsExtra: 0,
-                cbWndExtra: 0,
-                hInstance: hinstance.into(),
-                hIcon: HICON::default(),
-                hCursor: LoadCursorW(Some(HINSTANCE(std::ptr::null_mut())), IDC_ARROW)
-                    .unwrap_or_default(),
-                hbrBackground: HBRUSH::default(),
-                lpszMenuName: windows::core::PCWSTR::null(),
-                lpszClassName: windows::core::PCWSTR(class_name.as_ptr()),
-                hIconSm: HICON::default(),
-            };
-
-            RegisterClassExW(&wc);
-
-            // 创建固钉窗口
-            let pin_hwnd = CreateWindowExW(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                windows::core::PCWSTR(class_name.as_ptr()),
-                windows::core::w!("Pin Window"),
-                WS_POPUP | WS_VISIBLE,
-                selection_rect.left,
-                selection_rect.top,
-                width,
-                height,
-                None,
-                None,
-                Some(hinstance.into()),
-                None,
-            )
-            .map_err(|e| AppError::WinApi(format!("Failed to create pin window: {e:?}")))?;
-
-            if pin_hwnd.0.is_null() {
-                return Err(AppError::WinApi("Pin window handle is null".to_string()));
-            }
-
-            // 将位图句柄存储到窗口数据中
-            SetWindowLongPtrW(pin_hwnd, GWLP_USERDATA, bitmap.0 as isize);
-
-            // 显示固钉窗口
-            let _ = ShowWindow(pin_hwnd, SW_SHOW);
-            let _ = UpdateWindow(pin_hwnd);
-
-            Ok(())
-        }
+        Ok(())
     }
 
     /// 检查是否可以撤销
@@ -808,94 +711,5 @@ impl From<crate::system::SystemError> for AppError {
 impl From<PlatformError> for AppError {
     fn from(err: PlatformError) -> Self {
         AppError::Platform(err.to_string())
-    }
-}
-
-/// 固钉窗口过程
-unsafe extern "system" fn pin_window_proc(
-    hwnd: windows::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::*;
-    use windows::Win32::Graphics::Gdi::*;
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-    use windows::Win32::UI::WindowsAndMessaging::*;
-
-    unsafe {
-        match msg {
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                let hdc = BeginPaint(hwnd, &mut ps);
-
-                // 获取存储的位图句柄
-                let bitmap_handle = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut std::ffi::c_void;
-                if !bitmap_handle.is_null() {
-                    let bitmap = HBITMAP(bitmap_handle);
-
-                    // 创建兼容DC并绘制位图
-                    let mem_dc = CreateCompatibleDC(Some(hdc));
-                    let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                    // 获取窗口尺寸
-                    let mut rect = RECT::default();
-                    let _ = GetClientRect(hwnd, &mut rect);
-
-                    // 绘制位图到窗口
-                    let _ = BitBlt(
-                        hdc,
-                        0,
-                        0,
-                        rect.right - rect.left,
-                        rect.bottom - rect.top,
-                        Some(mem_dc),
-                        0,
-                        0,
-                        SRCCOPY,
-                    );
-
-                    // 清理
-                    SelectObject(mem_dc, old_bitmap);
-                    let _ = DeleteDC(mem_dc);
-                }
-
-                let _ = EndPaint(hwnd, &ps);
-                LRESULT(0)
-            }
-            WM_LBUTTONDOWN => {
-                // 开始拖拽窗口
-                let _ = SendMessageW(
-                    hwnd,
-                    WM_NCLBUTTONDOWN,
-                    Some(WPARAM(HTCAPTION as usize)),
-                    Some(lparam),
-                );
-                LRESULT(0)
-            }
-            WM_RBUTTONUP => {
-                // 右键菜单：关闭窗口
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
-            }
-            WM_KEYDOWN => {
-                // 处理键盘按键（从原始代码迁移）
-                if wparam.0 == VK_ESCAPE.0 as usize {
-                    // ESC键关闭固钉窗口
-                    let _ = DestroyWindow(hwnd);
-                }
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                // 清理位图资源
-                let bitmap_handle = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut std::ffi::c_void;
-                if !bitmap_handle.is_null() {
-                    let bitmap = HBITMAP(bitmap_handle);
-                    let _ = DeleteObject(bitmap.into());
-                }
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-        }
     }
 }

@@ -10,7 +10,6 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 // use windows::core::Result; // 不需要，会与std::result::Result冲突
 
-pub mod capture;
 pub mod save;
 pub mod selection;
 

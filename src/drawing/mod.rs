@@ -58,6 +58,7 @@ pub struct DrawingManager {
     pub(super) text_cursor_visible: bool,
     pub(super) cursor_timer_id: usize,
     pub(super) just_saved_text: bool,
+    pub(super) cache_dirty: std::cell::RefCell<bool>,
 }
 
 impl DrawingManager {
@@ -88,6 +89,7 @@ impl DrawingManager {
             text_cursor_visible: false,
             cursor_timer_id: 1001,
             just_saved_text: false,
+            cache_dirty: std::cell::RefCell::new(true),
         })
     }
 
@@ -105,6 +107,7 @@ impl DrawingManager {
         self.text_cursor_pos = 0;
         self.text_cursor_visible = false;
         self.just_saved_text = false;
+        self.cache_dirty.replace(true);
     }
 
     /// 处理绘图消息
@@ -144,6 +147,8 @@ impl DrawingManager {
                             element
                                 .points
                                 .push(windows::Win32::Foundation::POINT { x, y });
+                            // Invalidate geometry cache
+                            element.path_geometry.replace(None);
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.len() >= 2 {
@@ -165,6 +170,7 @@ impl DrawingManager {
             DrawingMessage::FinishDrawing => {
                 if let Some(element) = self.current_element.take() {
                     self.elements.add_element(element);
+                    self.cache_dirty.replace(true);
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![]
@@ -175,6 +181,7 @@ impl DrawingManager {
                     self.elements.restore_state(elements);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
+                    self.cache_dirty.replace(true);
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![Command::UpdateToolbar]
@@ -185,6 +192,7 @@ impl DrawingManager {
                     self.elements.restore_state(elements);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
+                    self.cache_dirty.replace(true);
                     vec![Command::RequestRedraw]
                 } else {
                     vec![]
@@ -195,12 +203,14 @@ impl DrawingManager {
                     .save_state(&self.elements, self.selected_element);
                 if self.elements.remove_element(index) {
                     self.selected_element = None;
+                    self.cache_dirty.replace(true);
                     vec![Command::RequestRedraw]
                 } else {
                     vec![]
                 }
             }
             DrawingMessage::SelectElement(index) => {
+                let old_selection = self.selected_element;
                 self.selected_element = index;
                 self.elements.set_selected(index);
 
@@ -211,22 +221,37 @@ impl DrawingManager {
                     }
                 }
 
+                // Only invalidate cache if selection changed (an element moves from static layer to dynamic, or vice-versa)
+                if old_selection != index {
+                    self.cache_dirty.replace(true);
+                }
+
                 vec![Command::UpdateToolbar, Command::RequestRedraw]
             }
             DrawingMessage::AddElement(element) => {
                 self.history
                     .save_state(&self.elements, self.selected_element);
-                self.elements.add_element(element);
+                self.elements.add_element(*element);
                 vec![Command::RequestRedraw]
             }
             DrawingMessage::CheckElementClick(x, y) => {
                 if let Some(element_index) = self.elements.get_element_at_position(x, y) {
+                    let old_selection = self.selected_element;
                     self.selected_element = Some(element_index);
                     self.elements.set_selected(self.selected_element);
+
+                    if old_selection != self.selected_element {
+                        self.cache_dirty.replace(true);
+                    }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
+                    let old_selection = self.selected_element;
                     self.selected_element = None;
                     self.elements.set_selected(None);
+
+                    if old_selection.is_some() {
+                        self.cache_dirty.replace(true);
+                    }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 }
             }
@@ -277,6 +302,83 @@ impl DrawingManager {
         }
     }
 
+    /// 计算文本元素在当前字体大小下的最小尺寸
+    fn calculate_text_min_size_for_element(element: &DrawingElement) -> (i32, i32) {
+        use crate::constants::TEXT_PADDING;
+        use windows::Win32::Graphics::DirectWrite::*;
+        use windows::core::w;
+
+        let font_size = element.get_effective_font_size();
+        let dynamic_line_height =
+            (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
+
+        let text_content = &element.text;
+        let lines: Vec<&str> = if text_content.is_empty() {
+            vec![""]
+        } else {
+            text_content.lines().collect()
+        };
+        let line_count = if text_content.is_empty() {
+            1
+        } else if text_content.ends_with('\n') {
+            lines.len() + 1
+        } else {
+            lines.len()
+        } as i32;
+
+        // 使用 DirectWrite 精确测量最长行宽度
+        let mut max_width_f = 0.0f32;
+        unsafe {
+            if let Ok(factory) = DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
+                let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
+                let weight = if element.font_weight > 400 {
+                    DWRITE_FONT_WEIGHT_BOLD
+                } else {
+                    DWRITE_FONT_WEIGHT_NORMAL
+                };
+                let style = if element.font_italic {
+                    DWRITE_FONT_STYLE_ITALIC
+                } else {
+                    DWRITE_FONT_STYLE_NORMAL
+                };
+                if let Ok(text_format) = factory.CreateTextFormat(
+                    windows::core::PCWSTR(font_name_wide.as_ptr()),
+                    None,
+                    weight,
+                    style,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    w!(""),
+                ) {
+                    for line in &lines {
+                        let wide: Vec<u16> = line.encode_utf16().collect();
+                        if let Ok(layout) =
+                            factory.CreateTextLayout(&wide, &text_format, f32::MAX, f32::MAX)
+                        {
+                            let mut metrics = DWRITE_TEXT_METRICS::default();
+                            let _ = layout.GetMetrics(&mut metrics);
+                            if metrics.width > max_width_f {
+                                max_width_f = metrics.width;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 增加适当的缓冲，避免字符被挤压
+        if max_width_f > 0.0 {
+            max_width_f += (font_size * 0.2).max(4.0);
+        }
+
+        let min_width = ((max_width_f + TEXT_PADDING * 2.0).ceil() as i32)
+            .max(crate::constants::MIN_TEXT_WIDTH);
+        let min_height = (line_count * dynamic_line_height + (TEXT_PADDING * 2.0) as i32)
+            .max(crate::constants::MIN_TEXT_HEIGHT);
+
+        (min_width, min_height)
+    }
+
     /// 更新拖拽操作（从原始代码迁移）
     fn update_drag(
         &mut self,
@@ -300,6 +402,8 @@ impl DrawingManager {
                                 x: clamped_x,
                                 y: clamped_y,
                             });
+                            // Invalidate geometry cache
+                            element.path_geometry.replace(None);
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.is_empty() {
@@ -409,66 +513,109 @@ impl DrawingManager {
                                 }
                             }
                             DrawingTool::Text => {
-                                // 文本元素：按比例缩放并同步字体大小（基于拖拽起始字号）
-                                let original_width = (self.interaction_start_rect.right
-                                    - self.interaction_start_rect.left)
-                                    .max(1);
-                                let original_height = (self.interaction_start_rect.bottom
-                                    - self.interaction_start_rect.top)
-                                    .max(1);
+                                // 文本元素：只允许通过四个角等比例缩放
+                                // 边缘中点不允许调整文本框大小
+                                let is_corner_resize = matches!(
+                                    resize_mode,
+                                    crate::types::DragMode::ResizingTopLeft
+                                        | crate::types::DragMode::ResizingTopRight
+                                        | crate::types::DragMode::ResizingBottomLeft
+                                        | crate::types::DragMode::ResizingBottomRight
+                                );
 
-                                // 计算比例（不同手柄采用对应方向）
-                                let (scale_x, scale_y) = match resize_mode {
-                                    crate::types::DragMode::ResizingTopLeft => (
-                                        (original_width - dx) as f32 / original_width as f32,
-                                        (original_height - dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingTopRight => (
-                                        (original_width + dx) as f32 / original_width as f32,
-                                        (original_height - dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingBottomRight => (
-                                        (original_width + dx) as f32 / original_width as f32,
-                                        (original_height + dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingBottomLeft => (
-                                        (original_width - dx) as f32 / original_width as f32,
-                                        (original_height + dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingTopCenter => (
-                                        1.0,
-                                        (original_height - dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingBottomCenter => (
-                                        1.0,
-                                        (original_height + dy) as f32 / original_height as f32,
-                                    ),
-                                    crate::types::DragMode::ResizingMiddleLeft => {
-                                        ((original_width - dx) as f32 / original_width as f32, 1.0)
-                                    }
-                                    crate::types::DragMode::ResizingMiddleRight => {
-                                        ((original_width + dx) as f32 / original_width as f32, 1.0)
-                                    }
-                                    _ => (1.0, 1.0),
-                                };
+                                if is_corner_resize {
+                                    let original_width = (self.interaction_start_rect.right
+                                        - self.interaction_start_rect.left)
+                                        .max(1);
+                                    let original_height = (self.interaction_start_rect.bottom
+                                        - self.interaction_start_rect.top)
+                                        .max(1);
 
-                                let scale = scale_x.min(scale_y).max(0.1);
-                                // 使用兼容性方法设置字体大小
-                                let new_font_size =
-                                    (self.interaction_start_font_size * scale).max(8.0);
-                                el.set_font_size(new_font_size);
+                                    // 计算缩放比例（取X和Y方向的平均值，确保等比例缩放）
+                                    let (scale_x, scale_y) = match resize_mode {
+                                        crate::types::DragMode::ResizingTopLeft => (
+                                            (original_width - dx) as f32 / original_width as f32,
+                                            (original_height - dy) as f32 / original_height as f32,
+                                        ),
+                                        crate::types::DragMode::ResizingTopRight => (
+                                            (original_width + dx) as f32 / original_width as f32,
+                                            (original_height - dy) as f32 / original_height as f32,
+                                        ),
+                                        crate::types::DragMode::ResizingBottomRight => (
+                                            (original_width + dx) as f32 / original_width as f32,
+                                            (original_height + dy) as f32 / original_height as f32,
+                                        ),
+                                        crate::types::DragMode::ResizingBottomLeft => (
+                                            (original_width - dx) as f32 / original_width as f32,
+                                            (original_height + dy) as f32 / original_height as f32,
+                                        ),
+                                        _ => (1.0, 1.0),
+                                    };
 
-                                // 重要：根据新的字体大小重新计算文本框尺寸（与旧代码保持一致）
-                                // 先应用新的矩形，然后调用update_text_element_size来精确调整
-                                el.resize(new_rect);
+                                    // 等比例缩放：取两个方向的平均值作为统一缩放比例
+                                    // 最小缩放到原始大小的 0.6
+                                    let scale = ((scale_x + scale_y) / 2.0).max(0.7);
 
-                                // 获取当前元素索引并调用文本尺寸更新函数
-                                if let Some(element_index) = self.selected_element {
-                                    self.update_text_element_size(element_index);
+                                    // 计算新字体大小
+                                    let new_font_size =
+                                        (self.interaction_start_font_size * scale).max(8.0);
+                                    el.set_font_size(new_font_size);
+
+                                    // 计算等比例缩放后的新尺寸
+                                    let new_width = (original_width as f32 * scale) as i32;
+                                    let new_height = (original_height as f32 * scale) as i32;
+
+                                    // 根据拖拽的角确定新矩形的位置
+                                    let proportional_rect = match resize_mode {
+                                        crate::types::DragMode::ResizingTopLeft => {
+                                            // 右下角固定
+                                            windows::Win32::Foundation::RECT {
+                                                left: self.interaction_start_rect.right - new_width,
+                                                top: self.interaction_start_rect.bottom
+                                                    - new_height,
+                                                right: self.interaction_start_rect.right,
+                                                bottom: self.interaction_start_rect.bottom,
+                                            }
+                                        }
+                                        crate::types::DragMode::ResizingTopRight => {
+                                            // 左下角固定
+                                            windows::Win32::Foundation::RECT {
+                                                left: self.interaction_start_rect.left,
+                                                top: self.interaction_start_rect.bottom
+                                                    - new_height,
+                                                right: self.interaction_start_rect.left + new_width,
+                                                bottom: self.interaction_start_rect.bottom,
+                                            }
+                                        }
+                                        crate::types::DragMode::ResizingBottomRight => {
+                                            // 左上角固定
+                                            windows::Win32::Foundation::RECT {
+                                                left: self.interaction_start_rect.left,
+                                                top: self.interaction_start_rect.top,
+                                                right: self.interaction_start_rect.left + new_width,
+                                                bottom: self.interaction_start_rect.top
+                                                    + new_height,
+                                            }
+                                        }
+                                        crate::types::DragMode::ResizingBottomLeft => {
+                                            // 右上角固定
+                                            windows::Win32::Foundation::RECT {
+                                                left: self.interaction_start_rect.right - new_width,
+                                                top: self.interaction_start_rect.top,
+                                                right: self.interaction_start_rect.right,
+                                                bottom: self.interaction_start_rect.top
+                                                    + new_height,
+                                            }
+                                        }
+                                        _ => new_rect,
+                                    };
+
+                                    el.resize(proportional_rect);
                                 }
+                                // 边缘中点拖拽不做任何处理，保持文本框不变
                             }
                             _ => {
-                                // 其他元素：按矩形调整
+                                // 其他元素（Rectangle, Circle, Pen等）：按矩形调整
                                 el.resize(new_rect);
                             }
                         }
@@ -811,7 +958,8 @@ impl DrawingManager {
             self.end_drag();
             self.mouse_pressed = false;
             self.interaction_mode = ElementInteractionMode::None;
-            (vec![Command::RequestRedraw], true)
+            // 添加 UpdateToolbar 以便画完元素后立即更新撤回按钮状态
+            (vec![Command::UpdateToolbar, Command::RequestRedraw], true)
         } else {
             (vec![], false)
         }

@@ -19,6 +19,15 @@ pub fn d2d_point(x: i32, y: i32) -> Vector2 {
     }
 }
 
+/// 创建Direct2D点（从f32坐标）
+#[inline]
+pub fn d2d_point_f(x: f32, y: f32) -> Vector2 {
+    Vector2 {
+        X: x,
+        Y: y,
+    }
+}
+
 /// 创建Direct2D矩形
 #[inline]
 pub fn d2d_rect(left: i32, top: i32, right: i32, bottom: i32) -> D2D_RECT_F {

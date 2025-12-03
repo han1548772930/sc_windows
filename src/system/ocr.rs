@@ -201,65 +201,23 @@ impl OcrManager {
                     return;
                 }
 
-                // 优先使用缓存数据进行裁剪
-                let mut image_data = None;
-                if let Some(ref data) = cached_image {
-                    if let Ok(cropped) = crate::ocr::crop_bmp(data, &selection_rect) {
-                        image_data = Some(cropped);
+                // 使用缓存数据进行裁剪
+                let Some(ref data) = cached_image else {
+                    eprintln!("没有缓存图像数据");
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
                     }
-                }
+                    return;
+                };
 
-                if let Some(data) = image_data {
-                    data
-                } else {
-                    // 缓存不可用或裁剪失败，回退到实时截图
-                    // 使用统一的平台层截图函数，避免重复的GDI代码
-                    let bitmap = match unsafe {
-                        crate::platform::windows::gdi::capture_screen_region_to_hbitmap(selection_rect)
-                    } {
-                        Ok(bitmap) => bitmap,
-                        Err(e) => {
-                            eprintln!("截图失败: {:?}", e);
-                            // 恢复窗口
-                            unsafe {
-                                PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
-                            }
-                            return;
+                match crate::ocr::crop_bmp(data, &selection_rect) {
+                    Ok(cropped) => cropped,
+                    Err(e) => {
+                        eprintln!("裁剪图像失败: {:?}", e);
+                        unsafe {
+                            let _ = PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
                         }
-                    };
-
-                    // 将位图转换为 BMP 数据
-                    let image_data = unsafe {
-                        use windows::Win32::Foundation::HWND;
-                        use windows::Win32::Graphics::Gdi::*;
-
-                        let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                        let mem_dc = CreateCompatibleDC(Some(screen_dc));
-                        let old_bitmap = SelectObject(mem_dc, bitmap.into());
-
-                        let result = match crate::ocr::bitmap_to_bmp_data(mem_dc, bitmap, width, height) {
-                            Ok(data) => Ok(data),
-                            Err(e) => Err(SystemError::OcrError(format!("位图转换失败: {e}"))),
-                        };
-
-                        // 清理 GDI 资源
-                        let _ = SelectObject(mem_dc, old_bitmap);
-                        let _ = DeleteObject(bitmap.into());
-                        let _ = DeleteDC(mem_dc);
-                        let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-
-                        result
-                    };
-
-                    match image_data {
-                        Ok(data) => data,
-                        Err(e) => {
-                            eprintln!("图片处理失败: {:?}", e);
-                            unsafe {
-                                PostMessageW(Some(hwnd), WM_USER + 2, WPARAM(0), LPARAM(0));
-                            }
-                            return;
-                        }
+                        return;
                     }
                 }
             };

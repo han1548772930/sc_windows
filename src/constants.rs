@@ -75,6 +75,9 @@ pub const COLOR_TEXT_CURSOR: D2D1_COLOR_F = D2D1_COLOR_F {
     a: 1.0,
 };
 
+// 文本光标宽度（像素）
+pub const TEXT_CURSOR_WIDTH: f32 = 3.0;
+
 // 工具栏尺寸常量
 pub const TOOLBAR_HEIGHT: f32 = 40.0;
 pub const BUTTON_WIDTH: f32 = 30.0;
@@ -101,6 +104,9 @@ pub const DRAG_THRESHOLD: i32 = 5;
 pub const LINE_HEIGHT: i32 = 24; // 每行高度
 pub const CHAR_WIDTH: f32 = 15.0; // 平均字符宽度（进一步增大以确保准确性）
 pub const TEXT_PADDING: f32 = 8.0; // 增加内边距以确保文字不被挤压
+
+// 文本行高系数（用于光标定位与文本框高度计算）
+pub const TEXT_LINE_HEIGHT_SCALE: f32 = 1.35;
 
 /// 从设置文件加载颜色，如果加载失败则使用默认值
 pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {

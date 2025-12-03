@@ -3,6 +3,7 @@
 // 提供Windows平台特定的渲染实现
 
 pub mod d2d;
+pub mod dxgi;
 pub mod gdi;
 pub mod system;
 

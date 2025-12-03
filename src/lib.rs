@@ -7,7 +7,7 @@ pub mod event_handler;
 pub mod file_dialog;
 pub mod message;
 pub mod ocr;
-pub mod ocr_result_window;
+pub mod preview_window;
 pub mod platform;
 
 pub mod interaction;

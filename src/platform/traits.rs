@@ -119,7 +119,7 @@ pub trait PlatformRenderer: Send + Sync {
     fn draw_rounded_rectangle(
         &mut self,
         rect: Rectangle,
-        radius: f32,
+        _radius: f32,
         style: &DrawStyle,
     ) -> Result<(), Self::Error> {
         // 默认实现回退到绘制普通矩形

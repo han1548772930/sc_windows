@@ -2,7 +2,6 @@
 
 use crate::message::Command;
 use crate::types::{DrawingElement, DrawingTool};
-use crate::utils::d2d_helpers::create_solid_brush;
 
 use super::{DrawingError, DrawingManager};
 
@@ -11,14 +10,42 @@ impl DrawingManager {
     pub(super) fn draw_text_element_d2d(
         &self,
         element: &DrawingElement,
+        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
         d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
     ) -> Result<(), DrawingError> {
         if element.points.is_empty() {
             return Ok(());
         }
 
-        if let (Some(render_target), Some(dwrite_factory)) =
-            (&d2d_renderer.render_target, &d2d_renderer.dwrite_factory)
+        // Create brush directly from the passed render_target
+        let d2d_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+            r: element.color.r,
+            g: element.color.g,
+            b: element.color.b,
+            a: element.color.a,
+        };
+        
+        let brush = unsafe {
+            render_target.CreateSolidColorBrush(&d2d_color, None)
+                .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?
+        };
+        
+        let cursor_brush = if self.text_editing && self.text_cursor_visible {
+             let cursor_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                r: crate::constants::COLOR_TEXT_CURSOR.r,
+                g: crate::constants::COLOR_TEXT_CURSOR.g,
+                b: crate::constants::COLOR_TEXT_CURSOR.b,
+                a: crate::constants::COLOR_TEXT_CURSOR.a,
+            };
+             unsafe {
+                 Some(render_target.CreateSolidColorBrush(&cursor_color, None)
+                    .map_err(|e| DrawingError::RenderError(format!("Failed to create cursor brush: {e:?}")))?)
+             }
+        } else {
+             None
+        };
+
+        if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory
         {
             unsafe {
                 // 计算文本区域（从原始代码迁移）
@@ -41,33 +68,22 @@ impl DrawingManager {
                     return Ok(());
                 };
 
-                // 使用元素自身的颜色属性创建文本画刷
-                let font_color = element.color;
-
-                // 使用新的辅助函数创建文本画刷
-                let text_brush = create_solid_brush(render_target, &font_color);
-
-                if let Ok(brush) = text_brush {
-                    // 添加内边距（从原始代码迁移）
-                    let text_content_rect =
-                        windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: text_rect.left + crate::constants::TEXT_PADDING,
-                            top: text_rect.top + crate::constants::TEXT_PADDING,
-                            right: text_rect.right - crate::constants::TEXT_PADDING,
-                            bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
-                        };
-
-                    // 支持多行文字显示（从原始代码迁移）
-                    let lines: Vec<&str> = if element.text.is_empty() {
-                        vec![""] // 空文本时显示一个空行（用于显示光标）
-                    } else {
-                        element.text.lines().collect()
-                    };
-
-                    let font_size = element.font_size.max(12.0); // 最小字体大小12
-                    let line_height = font_size * 1.2;
-                    let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
-                    let font_weight = if element.font_weight > 400 {
+                // 添加内边距
+                let text_content_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: text_rect.left + crate::constants::TEXT_PADDING,
+                    top: text_rect.top + crate::constants::TEXT_PADDING,
+                    right: text_rect.right - crate::constants::TEXT_PADDING,
+                    bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
+                };
+                
+                // Use cached layout or create new one
+                let mut cached_layout = element.text_layout.borrow_mut();
+                
+                if cached_layout.is_none() {
+                    // Create Text Format
+                     let font_size = element.font_size.max(12.0);
+                     let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
+                     let font_weight = if element.font_weight > 400 {
                         windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD
                     } else {
                         windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL
@@ -77,8 +93,7 @@ impl DrawingManager {
                     } else {
                         windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL
                     };
-
-                    // 创建动态字体格式，使用设置中的字体属性（与旧代码保持一致）
+                    
                     if let Ok(text_format) = dwrite_factory.CreateTextFormat(
                         windows::core::PCWSTR(font_name_wide.as_ptr()),
                         None,
@@ -88,107 +103,61 @@ impl DrawingManager {
                         font_size,
                         windows::core::w!(""),
                     ) {
-                        // 设置文本对齐
-                        let _ = text_format.SetTextAlignment(
+                         let _ = text_format.SetTextAlignment(
                             windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_LEADING,
                         );
                         let _ = text_format.SetParagraphAlignment(
                             windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
                         );
-
-                        // 逐行绘制文本（从原始代码迁移）
-                        for (line_index, line) in lines.iter().enumerate() {
-                            let line_y = text_content_rect.top + (line_index as f32 * line_height);
-
-                            // 检查是否超出文本区域
-                            if line_y + line_height > text_content_rect.bottom {
-                                break;
+                        
+                        let wide_text: Vec<u16> = element.text.encode_utf16().collect();
+                        
+                        if let Ok(layout) = dwrite_factory.CreateTextLayout(
+                            &wide_text,
+                            &text_format,
+                            text_content_rect.right - text_content_rect.left,
+                            text_content_rect.bottom - text_content_rect.top,
+                        ) {
+                            if element.font_underline && !wide_text.is_empty() {
+                                let _ = layout.SetUnderline(true, windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                    startPosition: 0,
+                                    length: wide_text.len() as u32,
+                                });
                             }
-
-                            let line_rect =
-                                windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                    left: text_content_rect.left,
-                                    top: line_y,
-                                    right: text_content_rect.right,
-                                    bottom: line_y + line_height,
-                                };
-
-                            // 转换文本为宽字符
-                            let wide_text: Vec<u16> = line.encode_utf16().collect();
-
-                            // 如果需要下划线或删除线，使用TextLayout；否则使用简单的DrawText
-                            if element.font_underline || element.font_strikeout {
-                                // 创建文本布局以支持下划线和删除线（使用元素属性）
-                                if let Ok(text_layout) = dwrite_factory.CreateTextLayout(
-                                    &wide_text,
-                                    &text_format,
-                                    line_rect.right - line_rect.left,
-                                    line_rect.bottom - line_rect.top,
-                                ) {
-                                    // 应用下划线和删除线（与旧代码保持一致）
-                                    if element.font_underline && !wide_text.is_empty() {
-                                        let _ = text_layout.SetUnderline(
-                                            true,
-                                            windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                                startPosition: 0,
-                                                length: wide_text.len() as u32,
-                                            },
-                                        );
-                                    }
-                                    if element.font_strikeout && !wide_text.is_empty() {
-                                        let _ = text_layout.SetStrikethrough(
-                                            true,
-                                            windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                                startPosition: 0,
-                                                length: wide_text.len() as u32,
-                                            },
-                                        );
-                                    }
-
-                                    // 绘制文本布局（与旧代码保持一致）
-                                    render_target.DrawTextLayout(
-                                        crate::utils::d2d_point(line_rect.left as i32, line_rect.top as i32),
-                                        &text_layout,
-                                        &brush,
-                                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    );
-                                }
-                            } else {
-                                // 简单文本绘制（无特殊样式）
-                                render_target.DrawText(
-                                    &wide_text,
-                                    &text_format,
-                                    &line_rect,
-                                    &brush,
-                                    windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-                                );
+                            if element.font_strikeout && !wide_text.is_empty() {
+                                let _ = layout.SetStrikethrough(true, windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                    startPosition: 0,
+                                    length: wide_text.len() as u32,
+                                });
                             }
+                            
+                            *cached_layout = Some(layout);
                         }
+                    }
+                }
+                
+                if let Some(layout) = cached_layout.as_ref() {
+                    render_target.DrawTextLayout(
+                        crate::utils::d2d_point(text_content_rect.left as i32, text_content_rect.top as i32),
+                        layout,
+                        &brush,
+                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE
+                    );
 
-                        // 绘制文本输入光标（caret），仅当该元素正在编辑且光标可见
-                        if self.text_editing && self.text_cursor_visible {
-                            if let Some(edit_idx) = self.editing_element_index {
-                                // 通过指针相等找到当前元素索引
-                                if let Some(current_idx) = self
-                                    .elements
-                                    .get_elements()
-                                    .iter()
-                                    .position(|e| std::ptr::eq(e, element))
-                                {
-                                    if current_idx == edit_idx {
-                                        self.draw_text_cursor(
-                                            element,
-                                            render_target,
-                                            dwrite_factory,
-                                            &text_format,
-                                            &text_content_rect,
-                                            line_height,
-                                        )?;
-                                    }
+                    if self.text_editing && self.text_cursor_visible {
+                         if let Some(edit_idx) = self.editing_element_index {
+                            if let Some(current_idx) = self.elements.get_elements().iter().position(|e| std::ptr::eq(e, element)) {
+                                if current_idx == edit_idx {
+                                     self.draw_text_cursor_optimized(
+                                         element,
+                                         render_target,
+                                         layout,
+                                         &text_content_rect,
+                                         cursor_brush.as_ref()
+                                     )?;
                                 }
                             }
-                        }
+                         }
                     }
                 }
             }
@@ -196,57 +165,219 @@ impl DrawingManager {
         Ok(())
     }
 
-    /// 绘制文本光标
-    fn draw_text_cursor(
+    /// 使用Direct2D渲染文本元素（带坐标偏移，用于离屏合成，不绘制光标）
+    pub(super) fn draw_text_element_d2d_with_offset(
         &self,
         element: &DrawingElement,
         render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
-        dwrite_factory: &windows::Win32::Graphics::DirectWrite::IDWriteFactory,
-        text_format: &windows::Win32::Graphics::DirectWrite::IDWriteTextFormat,
-        text_content_rect: &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
-        line_height: f32,
+        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
+        offset_x: f32,
+        offset_y: f32,
     ) -> Result<(), DrawingError> {
-        unsafe {
-            // 基于字符计算当前行与列
-            let before: String = element.text.chars().take(self.text_cursor_pos).collect();
-            let lines_before: Vec<&str> = before.lines().collect();
-            let caret_line = if before.ends_with('\n') {
-                lines_before.len()
-            } else {
-                lines_before.len().saturating_sub(1)
-            };
-            let current_line_text = if before.ends_with('\n') {
-                ""
-            } else {
-                lines_before.last().copied().unwrap_or("")
-            };
+        if element.points.is_empty() {
+            return Ok(());
+        }
 
-            // 使用 DirectWrite 精确测量光标前文本宽度
-            let before_wide: Vec<u16> = current_line_text.encode_utf16().collect();
-            let mut caret_x = text_content_rect.left;
-            if let Ok(layout) =
-                dwrite_factory.CreateTextLayout(&before_wide, text_format, f32::MAX, f32::MAX)
-            {
-                let mut metrics =
-                    windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_METRICS::default();
-                let _ = layout.GetMetrics(&mut metrics);
-                caret_x += metrics.width;
+        // 创建画笔
+        let d2d_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+            r: element.color.r,
+            g: element.color.g,
+            b: element.color.b,
+            a: element.color.a,
+        };
+
+        let brush = unsafe {
+            render_target
+                .CreateSolidColorBrush(&d2d_color, None)
+                .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?    
+        };
+
+        if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory {
+            unsafe {
+                // 计算文本区域（应用偏移）
+                let text_rect = if element.points.len() >= 2 {
+                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                        left: (element.points[0].x as f32 - offset_x).min(element.points[1].x as f32 - offset_x),
+                        top: (element.points[0].y as f32 - offset_y).min(element.points[1].y as f32 - offset_y),
+                        right: (element.points[0].x as f32 - offset_x).max(element.points[1].x as f32 - offset_x),
+                        bottom: (element.points[0].y as f32 - offset_y).max(element.points[1].y as f32 - offset_y),
+                    }
+                } else if !element.points.is_empty() {
+                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                        left: element.points[0].x as f32 - offset_x,
+                        top: element.points[0].y as f32 - offset_y,
+                        right: element.points[0].x as f32 - offset_x + crate::constants::DEFAULT_TEXT_WIDTH as f32,
+                        bottom: element.points[0].y as f32 - offset_y + crate::constants::DEFAULT_TEXT_HEIGHT as f32,
+                    }
+                } else {
+                    return Ok(());
+                };
+
+                // 添加内边距
+                let text_content_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                    left: text_rect.left + crate::constants::TEXT_PADDING,
+                    top: text_rect.top + crate::constants::TEXT_PADDING,
+                    right: text_rect.right - crate::constants::TEXT_PADDING,
+                    bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
+                };
+
+                // 创建文本格式
+                let font_size = element.font_size.max(12.0);
+                let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
+                let font_weight = if element.font_weight > 400 {
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD
+                } else {
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL
+                };
+                let font_style = if element.font_italic {
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_ITALIC
+                } else {
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL
+                };
+
+                if let Ok(text_format) = dwrite_factory.CreateTextFormat(
+                    windows::core::PCWSTR(font_name_wide.as_ptr()),
+                    None,
+                    font_weight,
+                    font_style,
+                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    windows::core::w!(""),
+                ) {
+                    let _ = text_format.SetTextAlignment(
+                        windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_LEADING,
+                    );
+                    let _ = text_format.SetParagraphAlignment(
+                        windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                    );
+
+                    let wide_text: Vec<u16> = element.text.encode_utf16().collect();
+
+                    if let Ok(layout) = dwrite_factory.CreateTextLayout(
+                        &wide_text,
+                        &text_format,
+                        text_content_rect.right - text_content_rect.left,
+                        text_content_rect.bottom - text_content_rect.top,
+                    ) {
+                        if element.font_underline && !wide_text.is_empty() {
+                            let _ = layout.SetUnderline(
+                                true,
+                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                    startPosition: 0,
+                                    length: wide_text.len() as u32,
+                                },
+                            );
+                        }
+                        if element.font_strikeout && !wide_text.is_empty() {
+                            let _ = layout.SetStrikethrough(
+                                true,
+                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
+                                    startPosition: 0,
+                                    length: wide_text.len() as u32,
+                                },
+                            );
+                        }
+
+                        render_target.DrawTextLayout(
+                            crate::utils::d2d_helpers::d2d_point_f(
+                                text_content_rect.left,
+                                text_content_rect.top,
+                            ),
+                            &layout,
+                            &brush,
+                            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
+                }
             }
+        }
+        Ok(())
+    }
 
-            let caret_y_top = text_content_rect.top + (caret_line as f32) * line_height;
-            let caret_y_bottom = (caret_y_top + line_height).min(text_content_rect.bottom);
-
-            let caret_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                left: caret_x,
-                top: caret_y_top,
-                right: caret_x + 1.0,
-                bottom: caret_y_bottom,
+    /// 绘制文本光标（优化版：使用 DirectWrite HitTest）
+    fn draw_text_cursor_optimized(
+        &self,
+        _element: &DrawingElement,
+        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+        layout: &windows::Win32::Graphics::DirectWrite::IDWriteTextLayout,
+        text_content_rect: &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F,
+        cursor_brush: Option<&windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush>,
+    ) -> Result<(), DrawingError> {
+        let mut point_x = 0.0f32;
+        let mut point_y = 0.0f32;
+        let mut metrics = windows::Win32::Graphics::DirectWrite::DWRITE_HIT_TEST_METRICS::default();
+        
+        unsafe {
+            let font_size = _element.get_effective_font_size();
+            // 与 update_text_element_size 中的行高系数保持一致
+            let line_height = font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE;
+            
+            // Convert text_cursor_pos (char index) to UTF-16 index for DirectWrite
+            let text_utf16: Vec<u16> = _element.text.encode_utf16().collect();
+            let utf16_len = text_utf16.len();
+            
+            // Calculate UTF-16 offset corresponding to text_cursor_pos
+            let utf16_pos = _element.text.chars().take(self.text_cursor_pos).map(|c| c.len_utf16()).sum::<usize>();
+            
+            // 检查光标是否在换行符之后（需要特殊处理）
+            let text_before_cursor: String = _element.text.chars().take(self.text_cursor_pos).collect();
+            let cursor_after_newline = text_before_cursor.ends_with('\n');
+            
+            if utf16_len == 0 {
+                // 空文本：光标在起始位置
+                point_x = 0.0;
+                point_y = 0.0;
+                metrics.height = line_height;
+            } else if cursor_after_newline {
+                // 光标在换行符之后：手动计算新行的位置
+                // 计算光标之前有多少行
+                let lines_before: Vec<&str> = text_before_cursor.lines().collect();
+                let line_count = if text_before_cursor.ends_with('\n') {
+                    lines_before.len() // 换行符后是新的一行
+                } else {
+                    lines_before.len().saturating_sub(1)
+                };
+                
+                point_x = 0.0; // 新行从行首开始
+                point_y = line_count as f32 * line_height;
+                metrics.height = line_height;
+            } else if utf16_pos >= utf16_len {
+                // 光标在文本末尾（但不是在换行符之后）
+                let _ = layout.HitTestTextPosition(
+                    (utf16_len - 1) as u32,
+                    true,
+                    &mut point_x,
+                    &mut point_y,
+                    &mut metrics
+                );
+            } else {
+                // 光标在文本中间
+                let _ = layout.HitTestTextPosition(
+                    utf16_pos as u32,
+                    false,
+                    &mut point_x,
+                    &mut point_y,
+                    &mut metrics
+                );
+            }
+            
+            // 确保 metrics.height 有效
+            if metrics.height <= 0.0 {
+                metrics.height = line_height;
+            }
+            
+            let abs_x = text_content_rect.left + point_x;
+            let abs_y = text_content_rect.top + point_y;
+            
+            let cursor_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                left: abs_x,
+                top: abs_y,
+                right: abs_x + crate::constants::TEXT_CURSOR_WIDTH,
+                bottom: abs_y + metrics.height,
             };
-
-            if let Ok(cursor_brush) =
-                create_solid_brush(render_target, &crate::constants::COLOR_TEXT_CURSOR)
-            {
-                render_target.FillRectangle(&caret_rect, &cursor_brush);
+             
+            if let Some(brush) = cursor_brush {
+                render_target.FillRectangle(&cursor_rect, brush);
             }
         }
         Ok(())
@@ -328,9 +459,10 @@ impl DrawingManager {
         text_element.text = String::new(); // 空文本，等待用户输入
         text_element.selected = true;
 
-        // 根据字体大小动态计算初始文本框尺寸（与旧代码保持一致）
+        // 根据字体大小动态计算初始文本框尺寸
         let font_size = text_element.font_size;
-        let dynamic_line_height = (font_size * 1.2) as i32;
+        // 与 update_text_element_size 和 draw_text_cursor_optimized 保持一致的行高系数
+        let dynamic_line_height = (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE) as i32;
         let initial_width = (font_size * 6.0) as i32; // 大约6个字符的宽度
         let initial_height = dynamic_line_height + (crate::constants::TEXT_PADDING * 2.0) as i32;
 
@@ -415,6 +547,7 @@ impl DrawingManager {
 
         vec![
             Command::StopTimer(self.cursor_timer_id as u32), // 停止光标闪烁定时器
+            Command::UpdateToolbar, // 更新工具栏状态（启用撤回按钮）
             Command::RequestRedraw,
         ]
     }
@@ -643,8 +776,11 @@ impl DrawingManager {
         use windows::core::w;
 
         if let Some(element) = self.elements.get_element_mut(element_index) {
+            // Invalidate text layout cache as text or size changed
+            element.text_layout.replace(None);
+
             let font_size = element.get_effective_font_size();
-            let dynamic_line_height = (font_size * 1.2).ceil() as i32;
+            let dynamic_line_height = (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
 
             let text_content = element.text.clone();
             let lines: Vec<&str> = if text_content.is_empty() {
@@ -710,6 +846,7 @@ impl DrawingManager {
             }
 
             let new_width = ((max_width_f + TEXT_PADDING * 2.0).ceil() as i32).max(MIN_TEXT_WIDTH);
+            // 使用行高系数计算高度（与光标定位一致）
             let new_height = (line_count * dynamic_line_height + (TEXT_PADDING * 2.0) as i32)
                 .max(MIN_TEXT_HEIGHT);
 

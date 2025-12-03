@@ -6,7 +6,7 @@ use super::UIError;
 use crate::message::Command;
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::ToolbarButton;
-use crate::utils::d2d_helpers::{create_solid_brush, rounded_rect};
+use crate::utils::d2d_helpers::rounded_rect;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 /// 工具栏管理器（从原始Toolbar迁移）
@@ -240,22 +240,23 @@ impl ToolbarManager {
 
         // 尝试使用Direct2D直接渲染
         if let Some(d2d_renderer) = renderer
-            .as_any()
-            .downcast_ref::<crate::platform::windows::d2d::Direct2DRenderer>()
+            .as_any_mut()
+            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
         {
+            // Get brushes with caching
+            let bg_color = crate::platform::traits::Color { r: 1.0, g: 1.0, b: 1.0, a: 0.95 };
+            let hover_color = crate::platform::traits::Color { r: 0.75, g: 0.75, b: 0.75, a: 1.0 };
+            
+            let bg_brush = d2d_renderer.get_or_create_brush(bg_color).ok();
+            let hover_brush = d2d_renderer.get_or_create_brush(hover_color).ok();
+
             unsafe {
                 if let Some(render_target) = &d2d_renderer.render_target {
                     // 绘制工具栏背景
                     let toolbar_rect = self.rect;
 
                     // 使用新的辅助函数创建工具栏背景画刷并绘制圆角矩形
-                    let bg_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                        r: 1.0,
-                        g: 1.0,
-                        b: 1.0,
-                        a: 0.95,
-                    };
-                    if let Ok(bg_brush) = create_solid_brush(render_target, &bg_color) {
+                    if let Some(bg_brush) = &bg_brush {
                         let rounded_rect = rounded_rect(
                             toolbar_rect.left,
                             toolbar_rect.top,
@@ -263,7 +264,7 @@ impl ToolbarManager {
                             toolbar_rect.bottom - toolbar_rect.top,
                             10.0,
                         );
-                        render_target.FillRoundedRectangle(&rounded_rect, &bg_brush);
+                        render_target.FillRoundedRectangle(&rounded_rect, bg_brush);
                     }
 
                     for (button_rect, button_type) in &self.buttons {
@@ -271,15 +272,7 @@ impl ToolbarManager {
                         // 绘制按钮背景状态 - 只有 hover 时才显示背景（从原始代码迁移）
                         if self.hovered_button == *button_type {
                             // 悬停状态 - 使用新的辅助函数
-                            let hover_color =
-                                windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                                    r: 0.75,
-                                    g: 0.75,
-                                    b: 0.75,
-                                    a: 1.0,
-                                };
-                            if let Ok(hover_brush) = create_solid_brush(render_target, &hover_color)
-                            {
+                            if let Some(hover_brush) = &hover_brush {
                                 let button_rounded_rect = rounded_rect(
                                     button_rect.left,
                                     button_rect.top,
@@ -288,7 +281,7 @@ impl ToolbarManager {
                                     6.0,
                                 );
                                 render_target
-                                    .FillRoundedRectangle(&button_rounded_rect, &hover_brush);
+                                    .FillRoundedRectangle(&button_rounded_rect, hover_brush);
                             }
                         }
 
@@ -351,17 +344,7 @@ impl ToolbarManager {
         }
 
         // 检查鼠标是否悬停在按钮上
-        let mut hovered_button = ToolbarButton::None;
-        for (button_rect, button_type) in &self.buttons {
-            if x as f32 >= button_rect.left
-                && x as f32 <= button_rect.right
-                && y as f32 >= button_rect.top
-                && y as f32 <= button_rect.bottom
-            {
-                hovered_button = *button_type;
-                break;
-            }
-        }
+        let hovered_button = self.get_button_at_position(x, y);
 
         if self.hovered_button != hovered_button {
             self.hovered_button = hovered_button;
@@ -378,25 +361,20 @@ impl ToolbarManager {
         }
 
         // 检查是否点击了工具栏按钮（按照原始代码逻辑）
-        for (button_rect, button_type) in &self.buttons {
-            if x as f32 >= button_rect.left
-                && x as f32 <= button_rect.right
-                && y as f32 >= button_rect.top
-                && y as f32 <= button_rect.bottom
-            {
-                // 禁用按钮不可点击
-                if self.disabled_buttons.contains(button_type) {
-                    return vec![];
-                }
+        let button_type = self.get_button_at_position(x, y);
+        if button_type != crate::types::ToolbarButton::None {
+             // 禁用按钮不可点击
+             if self.disabled_buttons.contains(&button_type) {
+                 return vec![];
+             }
 
-                // 记录按下的按钮（从原始代码迁移）
-                self.pressed_button = *button_type;
-                // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
-                // 调试输出
-                eprintln!("Toolbar button clicked: {button_type:?}");
-                // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
-                return self.handle_button_click(*button_type);
-            }
+             // 记录按下的按钮（从原始代码迁移）
+             self.pressed_button = button_type;
+             // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
+             // 调试输出
+             eprintln!("Toolbar button clicked: {button_type:?}");
+             // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
+             return self.handle_button_click(button_type);
         }
 
         vec![]

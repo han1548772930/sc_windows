@@ -20,6 +20,8 @@ pub struct Direct2DRenderer {
     // Direct2D 资源（从原始代码迁移）
     pub d2d_factory: Option<ID2D1Factory>,
     pub render_target: Option<ID2D1HwndRenderTarget>,
+    // Cache for layered rendering
+    pub layer_target: Option<ID2D1BitmapRenderTarget>,
 
     // DirectWrite 资源
     pub dwrite_factory: Option<IDWriteFactory>,
@@ -27,10 +29,13 @@ pub struct Direct2DRenderer {
 
     // 画刷缓存（真正的Direct2D画刷）
     brushes: HashMap<BrushId, ID2D1SolidColorBrush>,
-    // 颜色到画刷的缓存（避免每帧创建）
-    brush_cache: HashMap<u32, ID2D1SolidColorBrush>,
+    // 颜色到画刷的缓存（避免每帧创建）: (Brush, LastUsedFrame)
+    brush_cache: HashMap<u32, (ID2D1SolidColorBrush, u64)>,
     // 文本格式缓存（避免每次测量/绘制时创建）
     text_format_cache: std::sync::Mutex<HashMap<(String, u32), IDWriteTextFormat>>,
+
+    // Frame counter for LRU
+    frame_count: u64,
 
     // 屏幕尺寸
     pub screen_width: i32,
@@ -43,11 +48,13 @@ impl Direct2DRenderer {
         Ok(Self {
             d2d_factory: None,
             render_target: None,
+            layer_target: None,
             dwrite_factory: None,
             text_format: None,
             brushes: HashMap::new(),
             brush_cache: HashMap::new(),
             text_format_cache: std::sync::Mutex::new(HashMap::new()),
+            frame_count: 0,
             screen_width: 0,
             screen_height: 0,
         })
@@ -67,6 +74,9 @@ impl Direct2DRenderer {
         {
             return Ok(());
         }
+
+        // Resize logic: if size changed, we need to recreate layer_target too
+        self.layer_target = None;
 
         // 如果 RenderTarget 已存在，尝试 Resize
         if let Some(ref render_target) = self.render_target {
@@ -404,7 +414,8 @@ impl Direct2DRenderer {
             ));
         }
         let key = Self::color_key(color);
-        if let Some(brush) = self.brush_cache.get(&key) {
+        if let Some((brush, last_used)) = self.brush_cache.get_mut(&key) {
+            *last_used = self.frame_count;
             return Ok(brush.clone());
         }
         let render_target = self.render_target.as_ref().unwrap();
@@ -417,12 +428,18 @@ impl Direct2DRenderer {
         let brush = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }
             .map_err(|e| PlatformError::ResourceError(format!("Failed to create brush: {e:?}")))?;
 
-        // 简单清理策略：如果缓存太大，清空它
+        // LRU 清理策略：如果缓存太大，移除最近最少使用的
         if self.brush_cache.len() > 100 {
-            self.brush_cache.clear();
+            // 找出最久未使用的 20 个
+            let mut entries: Vec<(u32, u64)> = self.brush_cache.iter().map(|(k, v)| (*k, v.1)).collect();
+            entries.sort_by_key(|&(_, last_used)| last_used);
+            
+            for (k, _) in entries.iter().take(20) {
+                self.brush_cache.remove(k);
+            }
         }
 
-        self.brush_cache.insert(key, brush.clone());
+        self.brush_cache.insert(key, (brush.clone(), self.frame_count));
         Ok(brush)
     }
 
@@ -521,12 +538,243 @@ impl Direct2DRenderer {
     pub fn get_brush(&self, id: &u32) -> Option<&ID2D1SolidColorBrush> {
         self.brushes.get(id)
     }
+
+    /// 渲染选择区域到BMP数据（包含绘图元素）
+    /// 
+    /// 创建一个GDI兼容的离屏渲染目标，将源位图和绘图元素合成，返回BMP格式数据
+    pub fn render_selection_to_bmp(
+        &mut self,
+        source_bitmap: &ID2D1Bitmap,
+        selection_rect: &windows::Win32::Foundation::RECT,
+        render_elements_fn: impl FnOnce(&ID2D1RenderTarget, &mut Self) -> std::result::Result<(), PlatformError>,
+    ) -> std::result::Result<Vec<u8>, PlatformError> {
+        use windows::Win32::Graphics::Gdi::*;
+
+        let render_target = self.render_target.as_ref().ok_or_else(|| {
+            PlatformError::ResourceError("No render target available".to_string())
+        })?;
+
+        let width = (selection_rect.right - selection_rect.left) as u32;
+        let height = (selection_rect.bottom - selection_rect.top) as u32;
+
+        if width == 0 || height == 0 {
+            return Err(PlatformError::ResourceError(
+                "Invalid selection dimensions".to_string(),
+            ));
+        }
+
+        // 创建GDI兼容的离屏渲染目标
+        let size = D2D_SIZE_F {
+            width: width as f32,
+            height: height as f32,
+        };
+        let pixel_size = D2D_SIZE_U { width, height };
+        let pixel_format = D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        };
+
+        let offscreen_target: ID2D1BitmapRenderTarget = unsafe {
+            render_target
+                .CreateCompatibleRenderTarget(
+                    Some(&size),
+                    Some(&pixel_size),
+                    Some(&pixel_format),
+                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_GDI_COMPATIBLE,
+                )
+                .map_err(|e| {
+                    PlatformError::ResourceError(format!(
+                        "Failed to create GDI compatible offscreen target: {e:?}"
+                    ))
+                })?
+        };
+
+        // 获取GDI互操作接口
+        let gdi_target: ID2D1GdiInteropRenderTarget = offscreen_target.cast().map_err(|e| {
+            PlatformError::ResourceError(format!("Failed to cast to GDI interop: {e:?}"))
+        })?;
+
+        // 开始离屏渲染
+        unsafe {
+            offscreen_target.BeginDraw();
+
+            // 清除背景
+            let clear_color = D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
+            offscreen_target.Clear(Some(&clear_color));
+
+            // 绘制源位图（选择区域）
+            let dest_rect = D2D_RECT_F {
+                left: 0.0,
+                top: 0.0,
+                right: width as f32,
+                bottom: height as f32,
+            };
+            let source_rect = D2D_RECT_F {
+                left: selection_rect.left as f32,
+                top: selection_rect.top as f32,
+                right: selection_rect.right as f32,
+                bottom: selection_rect.bottom as f32,
+            };
+
+            offscreen_target.DrawBitmap(
+                source_bitmap,
+                Some(&dest_rect),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                Some(&source_rect),
+            );
+        }
+
+        // 渲染绘图元素（通过回调函数）
+        let offscreen_render_target: &ID2D1RenderTarget = &offscreen_target;
+        render_elements_fn(offscreen_render_target, self)?;
+
+        // 在EndDraw之前获取DC（这是关键！GetDC必须在BeginDraw和EndDraw之间调用）
+        let pixel_data = unsafe {
+            let hdc = gdi_target.GetDC(D2D1_DC_INITIALIZE_MODE_COPY).map_err(|e| {
+                PlatformError::ResourceError(format!("Failed to get DC: {e:?}"))
+            })?;
+
+            // 创建DIB来提取像素
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32), // 负值表示自上而下
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD::default(); 1],
+            };
+
+            let data_size = (width * height * 4) as usize;
+            let mut pixel_data = vec![0u8; data_size];
+
+            // 获取当前选中的位图
+            let current_obj = GetCurrentObject(hdc, OBJ_BITMAP);
+            let hbitmap = HBITMAP(current_obj.0);
+
+            let result = GetDIBits(
+                hdc,
+                hbitmap,
+                0,
+                height,
+                Some(pixel_data.as_mut_ptr() as *mut _),
+                &bmi as *const _ as *mut _,
+                DIB_RGB_COLORS,
+            );
+
+            // 释放DC（必须在EndDraw之前）
+            let _ = gdi_target.ReleaseDC(None);
+
+            if result == 0 {
+                // 仍然需要EndDraw
+                let _ = offscreen_target.EndDraw(None, None);
+                return Err(PlatformError::ResourceError(
+                    "Failed to get bitmap pixels".to_string(),
+                ));
+            }
+
+            pixel_data
+        };
+
+        // 结束渲染
+        unsafe {
+            if let Err(e) = offscreen_target.EndDraw(None, None) {
+                return Err(PlatformError::RenderError(format!("Offscreen EndDraw failed: {e:?}")));
+            }
+        }
+
+        // 构建BMP文件格式
+        let row_size = ((width * 4 + 3) / 4) * 4; // 4字节对齐
+        let image_size = row_size * height;
+        let file_size = 54 + image_size;
+
+        let mut bmp_data = Vec::with_capacity(file_size as usize);
+
+        // BMP 文件头 (14 字节)
+        bmp_data.extend_from_slice(b"BM"); // 签名
+        bmp_data.extend_from_slice(&file_size.to_le_bytes()); // 文件大小
+        bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留1
+        bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留2
+        bmp_data.extend_from_slice(&54u32.to_le_bytes()); // 数据偏移
+
+        // DIB 头 (40 字节)
+        bmp_data.extend_from_slice(&40u32.to_le_bytes()); // 头大小
+        bmp_data.extend_from_slice(&(width as i32).to_le_bytes()); // 宽度
+        bmp_data.extend_from_slice(&(-(height as i32)).to_le_bytes()); // 高度 (Top-Down)
+        bmp_data.extend_from_slice(&1u16.to_le_bytes()); // 颜色平面
+        bmp_data.extend_from_slice(&32u16.to_le_bytes()); // 位深度
+        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 压缩方式 (BI_RGB)
+        bmp_data.extend_from_slice(&image_size.to_le_bytes()); // 图像大小
+        bmp_data.extend_from_slice(&0i32.to_le_bytes()); // X 分辨率
+        bmp_data.extend_from_slice(&0i32.to_le_bytes()); // Y 分辨率
+        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 颜色数
+        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 重要颜色数
+
+        // 像素数据
+        bmp_data.extend_from_slice(&pixel_data);
+
+        Ok(bmp_data)
+    }
+
+    /// Get or create the intermediate layer render target
+    pub fn get_or_create_layer_target(&mut self) -> Option<&ID2D1BitmapRenderTarget> {
+        if self.layer_target.is_some() {
+            return self.layer_target.as_ref();
+        }
+
+        if let Some(ref render_target) = self.render_target {
+            let _size = D2D_SIZE_F {
+                width: self.screen_width as f32,
+                height: self.screen_height as f32,
+            };
+            let _pixel_size = D2D_SIZE_U {
+                width: self.screen_width as u32,
+                height: self.screen_height as u32,
+            };
+            let _pixel_format = D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            };
+
+            unsafe {
+                // Create compatible render target
+                // Use default options (None) to inherit properties from parent which is safer
+                // We pass None for size/format to inherit from the parent render target
+                // This ensures compatibility with the window's pixel format and DPI
+                if let Ok(target) = render_target.CreateCompatibleRenderTarget(
+                    None, // Inherit size
+                    None, // Inherit pixel size
+                    None, // Inherit pixel format
+                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+                ) {
+                    self.layer_target = Some(target);
+                } else {
+                    eprintln!("Failed to create compatible render target");
+                }
+            }
+        }
+        self.layer_target.as_ref()
+    }
 }
 
 impl PlatformRenderer for Direct2DRenderer {
     type Error = PlatformError;
 
     fn begin_frame(&mut self) -> std::result::Result<(), Self::Error> {
+        self.frame_count += 1;
         // 实现Direct2D的BeginDraw（从原始代码迁移）
         if let Some(ref render_target) = self.render_target {
             unsafe {

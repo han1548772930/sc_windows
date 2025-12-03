@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
+use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
+use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 
 // use crate::svg_icons::SvgIconManager; // 临时注释，待迁移
 use crate::utils::*;
@@ -47,6 +50,10 @@ pub struct DrawingElement {
     pub font_underline: bool,
     pub font_strikeout: bool,
     pub selected: bool,
+    // Cache for Pen tool geometry
+    pub path_geometry: RefCell<Option<ID2D1PathGeometry>>,
+    // Cache for Text tool layout
+    pub text_layout: RefCell<Option<IDWriteTextLayout>>,
 }
 
 /// 拖拽模式枚举（从原始代码迁移）
@@ -94,6 +101,8 @@ impl DrawingElement {
             font_underline: false,
             font_strikeout: false,
             selected: false,
+            path_geometry: RefCell::new(None),
+            text_layout: RefCell::new(None),
         }
     }
 
@@ -115,7 +124,10 @@ impl DrawingElement {
     /// 确保正确更新font_size字段
     pub fn set_font_size(&mut self, size: f32) {
         if self.tool == DrawingTool::Text {
-            self.font_size = size.max(8.0);
+            if (self.font_size - size).abs() > 0.001 {
+                self.font_size = size.max(8.0);
+                self.text_layout.replace(None);
+            }
         }
     }
 
@@ -320,6 +332,9 @@ impl DrawingElement {
     }
 
     pub fn resize(&mut self, new_rect: RECT) {
+        // Invalidate geometry cache when resizing
+        self.path_geometry.replace(None);
+        self.text_layout.replace(None);
         match self.tool {
             DrawingTool::Rectangle | DrawingTool::Circle => {
                 if self.points.len() >= 2 {
@@ -409,6 +424,8 @@ impl DrawingElement {
     }
 
     pub fn move_by(&mut self, dx: i32, dy: i32) {
+        // Invalidate geometry cache when moving
+        self.path_geometry.replace(None);
         for point in &mut self.points {
             point.x += dx;
             point.y += dy;

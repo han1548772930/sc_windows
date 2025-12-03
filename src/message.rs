@@ -41,7 +41,7 @@ pub enum DrawingMessage {
     /// 完成绘制
     FinishDrawing,
     /// 添加元素
-    AddElement(crate::types::DrawingElement),
+    AddElement(Box<crate::types::DrawingElement>),
     /// 撤销
     Undo,
     /// 重做
