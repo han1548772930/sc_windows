@@ -21,6 +21,8 @@ pub struct App {
     system: SystemManager,
     /// 平台渲染器
     platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
+    /// 缓存的屏幕尺寸 (宽度, 高度)
+    screen_size: (i32, i32),
 }
 
 impl App {
@@ -28,6 +30,9 @@ impl App {
         platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
     ) -> AppResult<Self> {
         let screenshot = ScreenshotManager::new()?;
+        
+        // 缓存屏幕尺寸，避免重复调用系统API
+        let screen_size = crate::platform::windows::system::get_screen_size();
 
         Ok(Self {
             screenshot,
@@ -35,7 +40,13 @@ impl App {
             ui: UIManager::new()?,
             system: SystemManager::new()?,
             platform,
+            screen_size,
         })
+    }
+    
+    /// 获取缓存的屏幕尺寸
+    pub fn get_screen_size(&self) -> (i32, i32) {
+        self.screen_size
     }
 
     /// 重置到初始状态
@@ -122,8 +133,8 @@ impl App {
             Message::Screenshot(msg) => {
                 let mut commands = self.screenshot.handle_message(msg.clone());
 
-                if let ScreenshotMessage::StartCapture = msg {
-                    if commands.contains(&Command::ShowOverlay) {
+                if let ScreenshotMessage::StartCapture = msg
+                    && commands.contains(&Command::ShowOverlay) {
                         let _ = self
                             .screenshot
                             .create_d2d_bitmap_from_gdi(&mut *self.platform);
@@ -133,22 +144,13 @@ impl App {
                         commands.push(Command::UpdateToolbar);
                         commands.push(Command::RequestRedraw);
                     }
-                }
 
                 commands
             }
             Message::Drawing(msg) => self.drawing.handle_message(msg),
             Message::UI(msg) => {
-                let screen_width = unsafe {
-                    windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
-                        windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
-                    )
-                };
-                let screen_height = unsafe {
-                    windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
-                        windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN,
-                    )
-                };
+                // 使用缓存的屏幕尺寸，避免重复的系统API调用
+                let (screen_width, screen_height) = self.screen_size;
                 self.ui.handle_message(msg, screen_width, screen_height)
             }
             Message::System(msg) => self.system.handle_message(msg),
@@ -627,6 +629,42 @@ impl App {
     pub fn is_ocr_engine_available(&self) -> bool {
         // 使用 SystemManager 中缓存的引擎可用状态，避免阻塞 UI
         self.system.ocr_is_available()
+    }
+    
+    /// 处理OCR完成消息
+    /// 返回: (has_results, is_ocr_failed, ocr_text)
+    pub fn handle_ocr_completed(
+        &mut self,
+        ocr_results: Vec<crate::ocr::OcrResult>,
+        image_data: Vec<u8>,
+        selection_rect: windows::Win32::Foundation::RECT,
+    ) -> (bool, bool, String) {
+        let has_results = !ocr_results.is_empty();
+        let is_ocr_failed = ocr_results.len() == 1
+            && ocr_results[0].text == "OCR识别失败";
+        
+        // 显示OCR结果窗口
+        if let Err(e) = crate::preview_window::PreviewWindow::show(
+            image_data,
+            ocr_results.clone(),
+            selection_rect,
+            false,
+        ) {
+            eprintln!("Failed to show OCR result window: {:?}", e);
+        }
+        
+        // 提取文本
+        let text: String = if has_results {
+            ocr_results
+                .iter()
+                .map(|r| r.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        };
+        
+        (has_results, is_ocr_failed, text)
     }
 }
 

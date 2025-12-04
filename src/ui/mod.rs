@@ -1,3 +1,13 @@
+//! 用户界面模块
+//!
+//! 提供工具栏、图标和光标等 UI 组件。
+//!
+//! # 主要组件
+//! - [`UIManager`]: UI 管理器，统一管理用户界面
+//! - [`ToolbarManager`](toolbar::ToolbarManager): 工具栏管理
+//! - [`SvgIconManager`](svg_icons::SvgIconManager): SVG 图标管理
+//! - [`cursor`]: 光标管理功能
+
 use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 

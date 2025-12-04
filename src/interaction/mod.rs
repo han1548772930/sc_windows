@@ -1,3 +1,15 @@
+//! 交互控制模块
+//!
+//! 提供统一的鼠标交互处理逻辑。
+//!
+//! # 主要组件
+//! - [`InteractionTarget`]: 交互目标 trait，由可交互对象实现
+//! - [`InteractionController`]: 交互控制器，负责编排交互流程
+//!
+//! # 设计理念
+//! 采用 trait object 设计，将交互逻辑与具体对象解耦，
+//! 便于统一处理选区边框、绘图元素等的拖拽和调整操作。
+
 use crate::types::DragMode;
 use windows::Win32::Foundation::RECT;
 

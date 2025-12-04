@@ -300,14 +300,14 @@ impl Direct2DRenderer {
                     PlatformError::ResourceError(format!("CreateDIBSection failed: {e:?}"))
                 })?;
 
-                let temp_dc = CreateCompatibleDC(Some(gdi_dc));
-                let old_bitmap = SelectObject(temp_dc, dib.into());
+                let temp_dc = super::resources::ManagedDC::new(CreateCompatibleDC(Some(gdi_dc)));
+                let old_bitmap = SelectObject(temp_dc.handle(), dib.into());
 
-                BitBlt(temp_dc, 0, 0, width, height, Some(gdi_dc), 0, 0, SRCCOPY)
+                BitBlt(temp_dc.handle(), 0, 0, width, height, Some(gdi_dc), 0, 0, SRCCOPY)
                     .map_err(|e| PlatformError::ResourceError(format!("BitBlt failed: {e:?}")))?;
 
-                SelectObject(temp_dc, old_bitmap);
-                let _ = DeleteDC(temp_dc);
+                SelectObject(temp_dc.handle(), old_bitmap);
+                // temp_dc 会在函数结束时自动释放
 
                 // 创建D2D位图（从原始代码迁移）
                 let bitmap_properties = D2D1_BITMAP_PROPERTIES {
@@ -336,7 +336,8 @@ impl Direct2DRenderer {
                         PlatformError::ResourceError(format!("CreateBitmap failed: {e:?}"))
                     })?;
 
-                let _ = DeleteObject(dib.into());
+                // dib 在函数结束时会被 DeleteObject 释放
+                let _managed_dib = super::resources::ManagedBitmap::new(dib);
                 Ok(bitmap)
             }
         } else {
@@ -412,7 +413,11 @@ impl Direct2DRenderer {
             *last_used = self.frame_count;
             return Ok(brush.clone());
         }
-        let render_target = self.render_target.as_ref().unwrap();
+        // Safety: 前面已经检查过 render_target.is_none() 会提前返回错误
+        let render_target = match self.render_target.as_ref() {
+            Some(rt) => rt,
+            None => return Err(PlatformError::ResourceError("No render target available".to_string())),
+        };
         let d2d_color = D2D1_COLOR_F {
             r: color.r,
             g: color.g,
@@ -691,7 +696,7 @@ impl Direct2DRenderer {
         }
 
         // 构建BMP文件格式
-        let row_size = ((width * 4 + 3) / 4) * 4; // 4字节对齐
+        let row_size = (width * 4).div_ceil(4) * 4; // 4字节对齐
         let image_size = row_size * height;
         let file_size = 54 + image_size;
 
@@ -1062,7 +1067,11 @@ impl PlatformRenderer for Direct2DRenderer {
         let brush = self.get_or_create_brush(style.color)?;
 
         // 为避免同时借用self和render_target，改为重新获取render_target局部变量
-        let rt = self.render_target.as_ref().unwrap();
+        // Safety: 前面已经检查过 render_target.is_none() 会提前返回
+        let rt = match self.render_target.as_ref() {
+            Some(rt) => rt,
+            None => return Ok(()), // 前面已经检查过，这里不应该到达
+        };
         unsafe {
             rt.DrawText(
                 &text_utf16,
@@ -1461,8 +1470,11 @@ impl Direct2DRenderer {
         let brush = self.get_or_create_brush(style.color)?;
 
         // 必须使用 dwrite_factory 的引用
-        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
-        let render_target = self.render_target.as_ref().unwrap();
+        // Safety: 前面已经检查过 is_none() 会提前返回
+        let (dwrite_factory, render_target) = match (&self.dwrite_factory, &self.render_target) {
+            (Some(dw), Some(rt)) => (dw, rt),
+            _ => return Ok(()), // 前面已经检查过，这里不应该到达
+        };
 
         unsafe {
             // 创建文本布局
@@ -1471,7 +1483,7 @@ impl Direct2DRenderer {
                 .CreateTextLayout(
                     &text_utf16,
                     &text_format,
-                    rect.width as f32,
+                    rect.width,
                     f32::MAX, // 高度不限制，允许完全布局
                 )
                 .map_err(|e| {
@@ -1514,11 +1526,10 @@ impl Direct2DRenderer {
             return Ok((0.0, 0.0));
         }
 
-        if self.dwrite_factory.is_none() {
-            return Ok((0.0, 0.0));
-        }
-
-        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let dwrite_factory = match &self.dwrite_factory {
+            Some(dw) => dw,
+            None => return Ok((0.0, 0.0)),
+        };
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
         unsafe {
@@ -1546,11 +1557,10 @@ impl Direct2DRenderer {
         font_family: &str,
         font_size: f32,
     ) -> std::result::Result<Vec<String>, PlatformError> {
-        if self.dwrite_factory.is_none() {
-            return Ok(vec![text.to_string()]);
-        }
-
-        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let dwrite_factory = match &self.dwrite_factory {
+            Some(dw) => dw,
+            None => return Ok(vec![text.to_string()]),
+        };
         // Use internal helper or just create format here
         let text_format = self.get_or_create_text_format(font_family, font_size)?;
 
@@ -1621,11 +1631,10 @@ impl Direct2DRenderer {
         if text.is_empty() {
             return Ok(0);
         }
-        if self.dwrite_factory.is_none() {
-            return Ok(0);
-        }
-
-        let dwrite_factory = self.dwrite_factory.as_ref().unwrap();
+        let dwrite_factory = match &self.dwrite_factory {
+            Some(dw) => dw,
+            None => return Ok(0),
+        };
         let text_format = self.get_or_create_text_format(font_family, font_size)?;
 
         unsafe {

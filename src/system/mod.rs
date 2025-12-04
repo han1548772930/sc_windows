@@ -1,3 +1,14 @@
+//! 系统集成模块
+//!
+//! 提供与 Windows 系统的集成功能。
+//!
+//! # 主要组件
+//! - [`SystemManager`]: 系统管理器，统一管理系统集成
+//! - [`TrayManager`](tray::TrayManager): 系统托盘管理
+//! - [`HotkeyManager`](hotkeys::HotkeyManager): 全局热键管理
+//! - [`OcrManager`](ocr::OcrManager): OCR 文字识别
+//! - [`WindowDetectionManager`](window_detection::WindowDetectionManager): 窗口检测
+
 use crate::message::{Command, SystemMessage};
 
 pub mod hotkeys;

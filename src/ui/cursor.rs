@@ -133,13 +133,11 @@ impl CursorManager {
                 // 选中元素内部命中（文本未编辑时箭头，编辑中或非文本显示移动）
                 if element.contains_point(x, y) {
                     if element.tool == DrawingTool::Text {
-                        if is_text_editing {
-                            if let Some((_, edit_idx)) = editing_element_info {
-                                if edit_idx == element_index {
+                        if is_text_editing
+                            && let Some((_, edit_idx)) = editing_element_info
+                                && edit_idx == element_index {
                                     return IDC_SIZEALL;
                                 }
-                            }
-                        }
                         return IDC_ARROW;
                     } else {
                         return IDC_SIZEALL;

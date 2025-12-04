@@ -1,12 +1,30 @@
+//! 绘图模块
+//!
+//! 提供截图编辑功能，包括各种绘图工具和元素管理。
+//!
+//! # 主要组件
+//! - [`DrawingManager`]: 绘图管理器，统一管理绘图状态和操作
+//! - [`ElementManager`](elements::ElementManager): 元素管理器，管理所有绘图元素
+//! - [`HistoryManager`](history::HistoryManager): 历史记录管理器，支持撤销/重做
+//!
+//! # 支持的绘图工具
+//! - 铅笔（自由绘制）
+//! - 矩形
+//! - 圆形/椭圆
+//! - 箭头
+//! - 文本标注
+
 use crate::message::{Command, DrawingMessage};
 use crate::types::{DrawingElement, DrawingTool};
 
+pub mod cache;
 pub mod elements;
 pub mod history;
 pub mod rendering;
 pub mod text_editing;
 pub mod tools;
 
+use cache::GeometryCache;
 use elements::ElementManager;
 use history::HistoryManager;
 use tools::ToolManager;
@@ -44,6 +62,8 @@ pub struct DrawingManager {
     pub(super) tools: ToolManager,
     pub(super) elements: ElementManager,
     pub(super) history: HistoryManager,
+    /// 几何体缓存管理器
+    pub(super) geometry_cache: GeometryCache,
     pub(super) current_tool: DrawingTool,
     pub(super) current_element: Option<DrawingElement>,
     pub(super) selected_element: Option<usize>,
@@ -68,6 +88,7 @@ impl DrawingManager {
             tools: ToolManager::new(),
             elements: ElementManager::new(),
             history: HistoryManager::new(),
+            geometry_cache: GeometryCache::new(),
             current_tool: DrawingTool::None,
             current_element: None,
             selected_element: None,
@@ -100,6 +121,7 @@ impl DrawingManager {
         self.current_tool = DrawingTool::None;
         self.history.clear();
         self.elements.clear();
+        self.geometry_cache.invalidate_all();
         self.interaction_mode = ElementInteractionMode::None;
         self.mouse_pressed = false;
         self.text_editing = false;
@@ -182,6 +204,7 @@ impl DrawingManager {
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
                     self.cache_dirty.replace(true);
+                    self.geometry_cache.invalidate_all(); // 撤销后清理所有缓存
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![Command::UpdateToolbar]
@@ -193,6 +216,7 @@ impl DrawingManager {
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
                     self.cache_dirty.replace(true);
+                    self.geometry_cache.invalidate_all(); // 重做后清理所有缓存
                     vec![Command::RequestRedraw]
                 } else {
                     vec![]
@@ -204,6 +228,7 @@ impl DrawingManager {
                 if self.elements.remove_element(index) {
                     self.selected_element = None;
                     self.cache_dirty.replace(true);
+                    self.geometry_cache.remove(index); // 删除对应元素的缓存
                     vec![Command::RequestRedraw]
                 } else {
                     vec![]
@@ -214,12 +239,11 @@ impl DrawingManager {
                 self.selected_element = index;
                 self.elements.set_selected(index);
 
-                if let Some(idx) = index {
-                    if let Some(element) = self.elements.get_elements().get(idx) {
+                if let Some(idx) = index
+                    && let Some(element) = self.elements.get_elements().get(idx) {
                         self.current_tool = element.tool;
                         self.tools.set_current_tool(element.tool);
                     }
-                }
 
                 // Only invalidate cache if selection changed (an element moves from static layer to dynamic, or vice-versa)
                 if old_selection != index {
@@ -348,9 +372,9 @@ impl DrawingManager {
                 }
             }
             ElementInteractionMode::MovingElement => {
-                if let Some(index) = self.selected_element {
-                    if let Some(element) = self.elements.get_elements().get(index) {
-                        if element.tool != DrawingTool::Pen {
+                if let Some(index) = self.selected_element
+                    && let Some(element) = self.elements.get_elements().get(index)
+                        && element.tool != DrawingTool::Pen {
                             let dx = x - self.interaction_start_pos.x;
                             let dy = y - self.interaction_start_pos.y;
                             if let Some(el) = self.elements.get_element_mut(index) {
@@ -360,12 +384,10 @@ impl DrawingManager {
                                 el.move_by(dx, dy);
                             }
                         }
-                    }
-                }
             }
             ElementInteractionMode::ResizingElement(resize_mode) => {
-                if let Some(index) = self.selected_element {
-                    if let Some(el) = self.elements.get_element_mut(index) {
+                if let Some(index) = self.selected_element
+                    && let Some(el) = self.elements.get_element_mut(index) {
                         if el.tool == DrawingTool::Pen {
                             return;
                         }
@@ -533,7 +555,6 @@ impl DrawingManager {
                             }
                         }
                     }
-                }
             }
             _ => {}
         }
@@ -563,8 +584,8 @@ impl DrawingManager {
             crate::types::DrawingTool::Arrow => {
                 // 箭头元素的特殊处理
                 let detection_radius = crate::constants::HANDLE_DETECTION_RADIUS as i32;
-                if let Some(points) = element_points {
-                    if points.len() >= 2 {
+                if let Some(points) = element_points
+                    && points.len() >= 2 {
                         let start = points[0];
                         let end = points[1];
                         let dx = x - start.x;
@@ -578,7 +599,6 @@ impl DrawingManager {
                             return crate::types::DragMode::ResizingBottomRight;
                         }
                     }
-                }
                 return crate::types::DragMode::None;
             }
             crate::types::DrawingTool::Text => crate::utils::HandleConfig::Corners,
@@ -606,11 +626,11 @@ impl DrawingManager {
         };
 
         // 文本编辑状态下的特殊处理（从原始代码迁移）
-        if self.text_editing {
-            if let Some(editing_index) = self.editing_element_index {
+        if self.text_editing
+            && let Some(editing_index) = self.editing_element_index {
                 // 检查是否点击了正在编辑的文本元素
-                if let Some(element) = self.elements.get_elements().get(editing_index) {
-                    if element.contains_point(x, y) {
+                if let Some(element) = self.elements.get_elements().get(editing_index)
+                    && element.contains_point(x, y) {
                         // 点击正在编辑的文本元素，检查是否点击了手柄
                         let handle_mode = self.get_element_handle_at_position(
                             x,
@@ -632,13 +652,11 @@ impl DrawingManager {
                         // 点击文本内容区域，继续编辑；返回重绘以消费事件，避免上层退出
                         return (vec![Command::RequestRedraw], true);
                     }
-                }
                 // 点击了其他地方，停止编辑并立即返回（修复空文本框删除问题）
                 // 避免后续逻辑干扰 stop_text_editing 的清理操作
                 let stop_commands = self.stop_text_editing();
                 return (stop_commands, true);
             }
-        }
 
         // 文本工具特殊处理（从原始代码迁移）
         if inside_selection
@@ -649,8 +667,8 @@ impl DrawingManager {
             // 检查是否点击了任何现有元素（与原始代码保持一致）
             if let Some(idx) = self.elements.get_element_at_position(x, y) {
                 // 如果点击的是文本元素，选择它
-                if let Some(element) = self.elements.get_elements().get(idx) {
-                    if element.tool == DrawingTool::Text {
+                if let Some(element) = self.elements.get_elements().get(idx)
+                    && element.tool == DrawingTool::Text {
                         // 先获取元素信息，避免借用冲突
                         let element_rect = element.rect;
                         let element_font_size = element.font_size;
@@ -667,7 +685,6 @@ impl DrawingManager {
 
                         return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                     }
-                }
                 // 点击了其他类型元素：不在此处处理，继续后续通用元素命中逻辑（允许选择并拖动该元素）
             } else {
                 // 未命中任何元素：在选框内空白处创建新文本并直接进入编辑
@@ -685,10 +702,10 @@ impl DrawingManager {
 
         // 先尝试与现有元素交互（无论当前工具是什么）
         // 1) 已选元素的手柄优先 - 但必须在选择框内
-        if inside_selection {
-            if let Some(sel_idx) = self.selected_element {
-                if let Some(element) = self.elements.get_elements().get(sel_idx) {
-                    if element.tool != DrawingTool::Pen {
+        if inside_selection
+            && let Some(sel_idx) = self.selected_element
+                && let Some(element) = self.elements.get_elements().get(sel_idx)
+                    && element.tool != DrawingTool::Pen {
                         let handle_mode = self.get_element_handle_at_position(
                             x,
                             y,
@@ -725,13 +742,10 @@ impl DrawingManager {
                             }
                         }
                     }
-                }
-            }
-        }
 
         // 3) 检查是否点击其他元素 - 但必须在选择框内
-        if inside_selection {
-            if let Some(idx) =
+        if inside_selection
+            && let Some(idx) =
                 self.elements
                     .get_element_at_position_with_selection(x, y, selection_rect)
             {
@@ -778,7 +792,6 @@ impl DrawingManager {
                     return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                 }
             }
-        }
 
         // 4) 若没有元素命中，且选择了绘图工具，则尝试开始绘制
         if self.current_tool != DrawingTool::None {
@@ -874,8 +887,8 @@ impl DrawingManager {
     }
 
     fn end_drag(&mut self) {
-        if self.interaction_mode == ElementInteractionMode::Drawing {
-            if let Some(mut element) = self.current_element.take() {
+        if self.interaction_mode == ElementInteractionMode::Drawing
+            && let Some(mut element) = self.current_element.take() {
                 // 根据不同工具类型判断是否保存
                 let should_save = match element.tool {
                     DrawingTool::Pen => {
@@ -906,7 +919,6 @@ impl DrawingManager {
                     self.elements.add_element(element);
                 }
             }
-        }
     }
 
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
@@ -1014,11 +1026,10 @@ impl DrawingManager {
 
     /// 获取选中元素的工具类型（用于同步工具栏状态）
     pub fn get_selected_element_tool(&self) -> Option<DrawingTool> {
-        if let Some(index) = self.selected_element {
-            if let Some(element) = self.elements.get_elements().get(index) {
+        if let Some(index) = self.selected_element
+            && let Some(element) = self.elements.get_elements().get(index) {
                 return Some(element.tool);
             }
-        }
         None
     }
 

@@ -140,11 +140,10 @@ fn default_config_path() -> String {
     }
 
     // 备用方案：获取当前程序所在目录
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent() {
             return exe_dir.to_string_lossy().to_string();
         }
-    }
 
     // 最后的备用路径：当前工作目录
     std::env::current_dir()
@@ -215,15 +214,13 @@ impl Settings {
         };
 
         // 如果配置文件存在，尝试读取其中的config_path设置
-        if let Ok(content) = fs::read_to_string(&default_path) {
-            if let Ok(settings) = serde_json::from_str::<Settings>(&content) {
-                if !settings.config_path.is_empty() {
+        if let Ok(content) = fs::read_to_string(&default_path)
+            && let Ok(settings) = serde_json::from_str::<Settings>(&content)
+                && !settings.config_path.is_empty() {
                     let mut custom_path = PathBuf::from(&settings.config_path);
                     custom_path.push("simple_settings.json");
                     return custom_path;
                 }
-            }
-        }
 
         // 如果无法读取或路径为空，使用默认路径
         default_path
@@ -233,13 +230,12 @@ impl Settings {
     pub fn load() -> Self {
         let path = Self::get_settings_path();
 
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(mut settings) = serde_json::from_str::<Settings>(&content) {
+        if let Ok(content) = fs::read_to_string(&path)
+            && let Ok(mut settings) = serde_json::from_str::<Settings>(&content) {
                 // 数据迁移：如果新字段使用默认值，但旧字段有自定义值，则迁移
                 settings.migrate_from_legacy();
                 return settings;
             }
-        }
 
         // 如果加载失败，返回默认设置并保存
         let default_settings = Self::default();
@@ -322,9 +318,11 @@ impl Settings {
                 "alt" => modifiers |= MOD_ALT.0,
                 "shift" => modifiers |= MOD_SHIFT.0,
                 key_str if key_str.len() == 1 => {
-                    let ch = key_str.chars().next().unwrap().to_ascii_uppercase();
-                    if ch.is_ascii_alphanumeric() {
-                        key = ch as u32;
+                    if let Some(ch) = key_str.chars().next() {
+                        let ch = ch.to_ascii_uppercase();
+                        if ch.is_ascii_alphanumeric() {
+                            key = ch as u32;
+                        }
                     }
                 }
                 _ => return false,
@@ -566,7 +564,7 @@ impl SettingsWindow {
                 }
             }
             // 初始化Common Controls 6.0以启用现代样式
-            let mut icc = INITCOMMONCONTROLSEX {
+            let icc = INITCOMMONCONTROLSEX {
                 dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
                 dwICC: ICC_STANDARD_CLASSES
                     | ICC_WIN95_CLASSES
@@ -574,7 +572,7 @@ impl SettingsWindow {
                     | ICC_PROGRESS_CLASS
                     | ICC_LISTVIEW_CLASSES,
             };
-            let _ = InitCommonControlsEx(&mut icc);
+            let _ = InitCommonControlsEx(&icc);
 
             let instance = GetModuleHandleW(None)?;
             let class_name = to_wide_chars("ModernSettingsWindow");
@@ -1164,7 +1162,7 @@ impl SettingsWindow {
     /// 创建控件 - 专业Windows标准布局
     fn create_controls(&mut self) {
         unsafe {
-            let instance = GetModuleHandleW(None).unwrap().into();
+            let instance = GetModuleHandleW(None).unwrap_or_default().into();
 
             // 创建标准Windows字体
             self.font = CreateFontW(
@@ -1783,13 +1781,12 @@ impl SettingsWindow {
                     if let Ok(main_hwnd) = FindWindowW(
                         PCWSTR(to_wide_chars(crate::WINDOW_CLASS_NAME).as_ptr()),
                         PCWSTR::null(),
-                    ) {
-                        if !main_hwnd.0.is_null() {
+                    )
+                        && !main_hwnd.0.is_null() {
                             // 发送自定义消息通知设置已更改 (WM_USER + 3)
                             let _ =
                                 PostMessageW(Some(main_hwnd), WM_USER + 3, WPARAM(0), LPARAM(0));
                         }
-                    }
 
                     let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
@@ -2002,9 +1999,9 @@ impl SettingsWindow {
                 let _ = folder_dialog.SetTitle(PCWSTR(title.as_ptr()));
 
                 // 显示对话框
-                if folder_dialog.Show(Some(self.hwnd)).is_ok() {
-                    if let Ok(result) = folder_dialog.GetResult() {
-                        if let Ok(path) = result.GetDisplayName(SIGDN_FILESYSPATH) {
+                if folder_dialog.Show(Some(self.hwnd)).is_ok()
+                    && let Ok(result) = folder_dialog.GetResult()
+                        && let Ok(path) = result.GetDisplayName(SIGDN_FILESYSPATH) {
                             let path_str = path.to_string().unwrap_or_default();
 
                             // 更新输入框
@@ -2012,8 +2009,6 @@ impl SettingsWindow {
                             let _ =
                                 SetWindowTextW(self.config_path_edit, PCWSTR(path_wide.as_ptr()));
                         }
-                    }
-                }
             } else {
                 // 如果创建失败，使用简单的输入框
                 self.show_simple_path_input();

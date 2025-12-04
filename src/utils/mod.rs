@@ -1,8 +1,22 @@
+//! 工具函数模块
+//!
+//! 提供通用的工具函数和辅助功能。
+//!
+//! # 主要内容
+//! - 字符串转换（`to_wide_chars`）
+//! - Windows 消息处理（`extract_mouse_coords`）
+//! - 坐标和边界处理（`clamp_to_rect`, `clamp_rect_to_screen`）
+//! - 几何计算（`point_to_line_distance`）
+//! - [`profiler`]: 性能分析工具
+//! - [`win_api`]: Windows API 安全封装
+//! - [`d2d_helpers`]: Direct2D 辅助函数
+
 use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 
 pub mod command_helpers;
 pub mod d2d_helpers;
 pub mod interaction;
+pub mod profiler;
 pub mod win_api;
 
 // 重新导出常用函数

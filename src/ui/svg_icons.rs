@@ -100,7 +100,8 @@ impl SvgIconManager {
         let opt = usvg::Options::default();
         let tree = usvg::Tree::from_str(&svg_str, &opt)?;
 
-        let mut pixmap = tiny_skia::Pixmap::new(size, size).unwrap();
+        let mut pixmap = tiny_skia::Pixmap::new(size, size)
+            .ok_or("Failed to create pixmap")?;
 
         let transform = tiny_skia::Transform::from_scale(
             size as f32 / tree.size().width(),

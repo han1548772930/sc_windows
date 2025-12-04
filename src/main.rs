@@ -2,6 +2,7 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+use sc_windows::constants::*;
 use sc_windows::platform::windows::Direct2DRenderer;
 use sc_windows::settings::Settings;
 use sc_windows::utils::{to_wide_chars, win_api};
@@ -32,7 +33,9 @@ unsafe fn perform_capture_and_show(hwnd: HWND, app: &mut App) {
     sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
     app.start_async_ocr_check(hwnd);
     app.reset_to_initial_state();
-    let (screen_width, screen_height) = win_api::get_screen_size();
+    
+    // 使用 App 中缓存的屏幕尺寸，避免重复调用系统API
+    let (screen_width, screen_height) = app.get_screen_size();
 
     if app.capture_screen_direct().is_ok() {
         let _ = app.create_d2d_bitmap_from_gdi();
@@ -118,10 +121,9 @@ unsafe extern "system" fn window_proc(
 
                                 app.start_async_ocr_check(hwnd);
                                 let settings = Settings::load();
-                                let hotkey_id = 1001;
                                 let _ = RegisterHotKey(
                                     Some(hwnd),
-                                    hotkey_id,
+                                    HOTKEY_SCREENSHOT_ID,
                                     HOT_KEY_MODIFIERS(settings.hotkey_modifiers),
                                     settings.hotkey_key,
                                 );
@@ -156,7 +158,7 @@ unsafe extern "system" fn window_proc(
             }
 
             WM_DESTROY => {
-                let _ = UnregisterHotKey(Some(hwnd), 1001);
+                let _ = UnregisterHotKey(Some(hwnd), HOTKEY_SCREENSHOT_ID);
                 sc_windows::ocr::PaddleOcrEngine::cleanup_global_engine();
 
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
@@ -170,9 +172,10 @@ unsafe extern "system" fn window_proc(
             }
 
             WM_PAINT => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let _ = app.paint(hwnd);
-                }
+                if let Some(app) = get_app_state(hwnd)
+                    && let Err(e) = app.paint(hwnd) {
+                        eprintln!("Paint failed: {e}");
+                    }
                 LRESULT(0)
             }
 
@@ -213,20 +216,18 @@ unsafe extern "system" fn window_proc(
             }
 
             WM_CHAR => {
-                if let Some(app) = get_app_state(hwnd) {
-                    if let Some(character) = char::from_u32(wparam.0 as u32) {
-                        if !character.is_control() || character == ' ' || character == '\t' {
+                if let Some(app) = get_app_state(hwnd)
+                    && let Some(character) = char::from_u32(wparam.0 as u32)
+                        && (!character.is_control() || character == ' ' || character == '\t') {
                             let commands = app.handle_text_input(character);
                             handle_commands(app, commands, hwnd);
                         }
-                    }
-                }
                 LRESULT(0)
             }
 
             WM_SETCURSOR => LRESULT(1),
 
-            val if val == WM_USER + 1 => {
+            val if val == WM_TRAY_MESSAGE => {
                 if let Some(app) = get_app_state(hwnd) {
                     let commands = app.handle_tray_message(wparam.0 as u32, lparam.0 as u32);
                     handle_commands(app, commands, hwnd);
@@ -234,7 +235,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
-            val if val == WM_USER + 2 => {
+            val if val == WM_HIDE_WINDOW_CUSTOM => {
                 if let Some(app) = get_app_state(hwnd) {
                     app.stop_ocr_engine_async();
                     let _ = win_api::hide_window(hwnd);
@@ -242,7 +243,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
-            val if val == WM_USER + 3 => {
+            val if val == WM_RELOAD_SETTINGS => {
                 if let Some(app) = get_app_state(hwnd) {
                     let commands = app.reload_settings();
                     handle_commands(app, commands, hwnd);
@@ -251,7 +252,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
-            val if val == WM_USER + 10 => {
+            val if val == WM_OCR_STATUS_UPDATE => {
                 if let Some(app) = get_app_state(hwnd) {
                     let available = wparam.0 != 0;
                     app.update_ocr_engine_status(available, hwnd);
@@ -263,53 +264,31 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
-            val if val == WM_USER + 11 => {
+            val if val == WM_OCR_COMPLETED => {
                 if let Some(app) = get_app_state(hwnd) {
                     let data_ptr = lparam.0 as *mut sc_windows::system::ocr::OcrCompletionData;
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
-
-                        let has_results = !data.ocr_results.is_empty();
-                        let is_ocr_failed = data.ocr_results.len() == 1
-                            && data.ocr_results[0].text == "OCR识别失败";
-
-                        if let Err(e) = sc_windows::preview_window::PreviewWindow::show(
+                        
+                        // 使用 App 方法处理 OCR 结果
+                        let (has_results, is_ocr_failed, text) = app.handle_ocr_completed(
+                            data.ocr_results,
                             data.image_data,
-                            data.ocr_results.clone(),
                             data.selection_rect,
-                            false,
-                        ) {
-                            eprintln!("Failed to show OCR result window: {:?}", e);
-                        }
+                        );
 
-                        if has_results {
-                            let text: String = data
-                                .ocr_results
-                                .iter()
-                                .map(|r| r.text.clone())
-                                .collect::<Vec<_>>()
-                                .join("\n");
-
-                            if let Err(e) =
-                                sc_windows::screenshot::save::copy_text_to_clipboard(&text)
-                            {
+                        // 复制文本到剪贴板
+                        if has_results
+                            && let Err(e) = sc_windows::screenshot::save::copy_text_to_clipboard(&text) {
                                 eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
                             }
-                        }
 
+                        // 显示提示消息
                         if !has_results || is_ocr_failed {
                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
-                            let message_w: Vec<u16> =
-                                message.encode_utf16().chain(std::iter::once(0)).collect();
-                            let title_w: Vec<u16> =
-                                "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
-
-                            let _ = MessageBoxW(
-                                Some(hwnd),
-                                PCWSTR(message_w.as_ptr()),
-                                PCWSTR(title_w.as_ptr()),
-                                MB_OK | MB_ICONINFORMATION,
-                            );
+                            let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+                            let title_w: Vec<u16> = "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
+                            let _ = MessageBoxW(Some(hwnd), PCWSTR(message_w.as_ptr()), PCWSTR(title_w.as_ptr()), MB_OK | MB_ICONINFORMATION);
                         }
 
                         app.stop_ocr_engine_async();
@@ -319,16 +298,15 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_HOTKEY => {
-                if wparam.0 == 1001 {
-                    if let Some(app) = get_app_state(hwnd) {
+                if wparam.0 == HOTKEY_SCREENSHOT_ID as usize
+                    && let Some(app) = get_app_state(hwnd) {
                         if win_api::is_window_visible(hwnd) {
                             let _ = win_api::hide_window(hwnd);
-                            let _ = SetTimer(Some(hwnd), 2001, 50, None);
+                            let _ = SetTimer(Some(hwnd), TIMER_CAPTURE_DELAY_ID, TIMER_CAPTURE_DELAY_MS, None);
                         } else {
                             perform_capture_and_show(hwnd, app);
                         }
                     }
-                }
                 LRESULT(0)
             }
 
@@ -341,8 +319,8 @@ unsafe extern "system" fn window_proc(
             }
 
             WM_TIMER => {
-                if wparam.0 == 2001 {
-                    let _ = KillTimer(Some(hwnd), 2001);
+                if wparam.0 == TIMER_CAPTURE_DELAY_ID {
+                    let _ = KillTimer(Some(hwnd), TIMER_CAPTURE_DELAY_ID);
                     if let Some(app) = get_app_state(hwnd) {
                         perform_capture_and_show(hwnd, app);
                     }

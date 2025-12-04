@@ -116,12 +116,15 @@ impl DrawingElement {
     /// 设置字体大小（兼容性方法）
     /// 确保正确更新font_size字段
     pub fn set_font_size(&mut self, size: f32) {
-        if self.tool == DrawingTool::Text {
-            if (self.font_size - size).abs() > 0.001 {
-                self.font_size = size.max(8.0);
+        if self.tool == DrawingTool::Text
+            && (self.font_size - size).abs() > 0.001 {
+                // 使用 clamp 确保字体大小在有效范围内
+                self.font_size = size.clamp(
+                    crate::constants::MIN_FONT_SIZE,
+                    crate::constants::MAX_FONT_SIZE,
+                );
                 self.text_layout.replace(None);
             }
-        }
     }
 
     pub fn update_bounding_rect(&mut self) {
@@ -201,7 +204,7 @@ impl DrawingElement {
                     let end = &self.points[1];
 
                     // 考虑箭头头部的额外尺寸
-                    let margin = 20; // 箭头头部可能超出的范围
+                    let margin = crate::constants::ARROW_HEAD_MARGIN;
 
                     self.rect = RECT {
                         left: (start.x.min(end.x) - margin),
@@ -218,8 +221,8 @@ impl DrawingElement {
                     self.rect = RECT {
                         left: self.points[0].x,
                         top: self.points[0].y,
-                        right: self.points[0].x + 50,
-                        bottom: self.points[0].y + 30,
+                        right: self.points[0].x + crate::constants::DEFAULT_ELEMENT_WIDTH,
+                        bottom: self.points[0].y + crate::constants::DEFAULT_ELEMENT_HEIGHT,
                     };
                 }
             }
@@ -238,7 +241,7 @@ impl DrawingElement {
                     let p2 = &self.points[i + 1];
 
                     let distance = point_to_line_distance(x, y, p1.x, p1.y, p2.x, p2.y);
-                    if distance <= (self.thickness + 5.0) as f64 {
+                    if distance <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64 {
                         return true;
                     }
                 }
@@ -264,7 +267,7 @@ impl DrawingElement {
                     let end = &self.points[1];
 
                     let distance = point_to_line_distance(x, y, start.x, start.y, end.x, end.y);
-                    if distance <= (self.thickness + 5.0) as f64 {
+                    if distance <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64 {
                         return true;
                     }
 
@@ -272,9 +275,9 @@ impl DrawingElement {
                     let dy = end.y - start.y;
                     let length = ((dx * dx + dy * dy) as f64).sqrt();
 
-                    if length > 20.0 {
-                        let arrow_length = 15.0_f64;
-                        let arrow_angle = 0.5_f64;
+                    if length > crate::constants::ARROW_MIN_LENGTH {
+                        let arrow_length = crate::constants::ARROW_HEAD_LENGTH;
+                        let arrow_angle = crate::constants::ARROW_HEAD_ANGLE;
                         let unit_x = dx as f64 / length;
                         let unit_y = dy as f64 / length;
 
@@ -301,8 +304,8 @@ impl DrawingElement {
                         let distance2 =
                             point_to_line_distance(x, y, end.x, end.y, wing2_x, wing2_y);
 
-                        if distance1 <= (self.thickness + 5.0) as f64
-                            || distance2 <= (self.thickness + 5.0) as f64
+                        if distance1 <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64
+                            || distance2 <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64
                         {
                             return true;
                         }
@@ -325,95 +328,76 @@ impl DrawingElement {
     }
 
     pub fn resize(&mut self, new_rect: RECT) {
-        // Invalidate geometry cache when resizing
-        self.path_geometry.replace(None);
-        self.text_layout.replace(None);
+        self.invalidate_geometry_cache();
         match self.tool {
-            DrawingTool::Rectangle | DrawingTool::Circle => {
-                if self.points.len() >= 2 {
-                    self.points[0] = POINT {
-                        x: new_rect.left,
-                        y: new_rect.top,
-                    };
-                    self.points[1] = POINT {
-                        x: new_rect.right,
-                        y: new_rect.bottom,
-                    };
-                }
-            }
-            DrawingTool::Arrow => {
-                if self.points.len() >= 2 {
-                    let old_width = self.rect.right - self.rect.left;
-                    let old_height = self.rect.bottom - self.rect.top;
-                    let new_width = new_rect.right - new_rect.left;
-                    let new_height = new_rect.bottom - new_rect.top;
-
-                    if old_width == 0 || old_height == 0 {
-                        self.points[0] = POINT {
-                            x: new_rect.left,
-                            y: new_rect.top,
-                        };
-                        self.points[1] = POINT {
-                            x: new_rect.right,
-                            y: new_rect.bottom,
-                        };
-                    } else {
-                        let old_start = &self.points[0];
-                        let old_end = &self.points[1];
-
-                        let start_rel_x = (old_start.x - self.rect.left) as f64 / old_width as f64;
-                        let start_rel_y = (old_start.y - self.rect.top) as f64 / old_height as f64;
-                        let end_rel_x = (old_end.x - self.rect.left) as f64 / old_width as f64;
-                        let end_rel_y = (old_end.y - self.rect.top) as f64 / old_height as f64;
-
-                        self.points[0] = POINT {
-                            x: new_rect.left + (start_rel_x * new_width as f64) as i32,
-                            y: new_rect.top + (start_rel_y * new_height as f64) as i32,
-                        };
-                        self.points[1] = POINT {
-                            x: new_rect.left + (end_rel_x * new_width as f64) as i32,
-                            y: new_rect.top + (end_rel_y * new_height as f64) as i32,
-                        };
-                    }
-                }
-            }
-            DrawingTool::Pen => {
-                let old_rect = self.rect;
-                let scale_x = (new_rect.right - new_rect.left) as f64
-                    / (old_rect.right - old_rect.left) as f64;
-                let scale_y = (new_rect.bottom - new_rect.top) as f64
-                    / (old_rect.bottom - old_rect.top) as f64;
-
-                for point in &mut self.points {
-                    let rel_x = (point.x - old_rect.left) as f64;
-                    let rel_y = (point.y - old_rect.top) as f64;
-                    point.x = new_rect.left + (rel_x * scale_x) as i32;
-                    point.y = new_rect.top + (rel_y * scale_y) as i32;
-                }
-            }
-            DrawingTool::Text => {
-                if !self.points.is_empty() {
-                    self.points[0] = POINT {
-                        x: new_rect.left,
-                        y: new_rect.top,
-                    };
-                    // 确保有第二个点来定义文本框的右下角
-                    if self.points.len() >= 2 {
-                        self.points[1] = POINT {
-                            x: new_rect.right,
-                            y: new_rect.bottom,
-                        };
-                    } else {
-                        self.points.push(POINT {
-                            x: new_rect.right,
-                            y: new_rect.bottom,
-                        });
-                    }
-                }
-            }
+            DrawingTool::Rectangle | DrawingTool::Circle => self.resize_two_point_shape(new_rect),
+            DrawingTool::Arrow => self.resize_arrow(new_rect),
+            DrawingTool::Pen => self.resize_freeform(new_rect),
+            DrawingTool::Text => self.resize_text(new_rect),
             _ => {}
         }
         self.rect = new_rect;
+    }
+
+    fn invalidate_geometry_cache(&mut self) {
+        self.path_geometry.replace(None);
+        self.text_layout.replace(None);
+    }
+
+    fn resize_two_point_shape(&mut self, new_rect: RECT) {
+        if self.points.len() >= 2 {
+            self.points[0] = POINT { x: new_rect.left, y: new_rect.top };
+            self.points[1] = POINT { x: new_rect.right, y: new_rect.bottom };
+        }
+    }
+
+    fn resize_arrow(&mut self, new_rect: RECT) {
+        if self.points.len() < 2 { return; }
+        let old_width = (self.rect.right - self.rect.left).max(1);
+        let old_height = (self.rect.bottom - self.rect.top).max(1);
+        let new_width = new_rect.right - new_rect.left;
+        let new_height = new_rect.bottom - new_rect.top;
+
+        let old_start = self.points[0];
+        let old_end = self.points[1];
+
+        let start_rel_x = (old_start.x - self.rect.left) as f64 / old_width as f64;
+        let start_rel_y = (old_start.y - self.rect.top) as f64 / old_height as f64;
+        let end_rel_x = (old_end.x - self.rect.left) as f64 / old_width as f64;
+        let end_rel_y = (old_end.y - self.rect.top) as f64 / old_height as f64;
+
+        self.points[0] = POINT {
+            x: new_rect.left + (start_rel_x * new_width as f64) as i32,
+            y: new_rect.top + (start_rel_y * new_height as f64) as i32,
+        };
+        self.points[1] = POINT {
+            x: new_rect.left + (end_rel_x * new_width as f64) as i32,
+            y: new_rect.top + (end_rel_y * new_height as f64) as i32,
+        };
+    }
+
+    fn resize_freeform(&mut self, new_rect: RECT) {
+        let old_rect = self.rect;
+        let old_w = (old_rect.right - old_rect.left).max(1) as f64;
+        let old_h = (old_rect.bottom - old_rect.top).max(1) as f64;
+        let scale_x = (new_rect.right - new_rect.left) as f64 / old_w;
+        let scale_y = (new_rect.bottom - new_rect.top) as f64 / old_h;
+        for point in &mut self.points {
+            let rel_x = (point.x - old_rect.left) as f64;
+            let rel_y = (point.y - old_rect.top) as f64;
+            point.x = new_rect.left + (rel_x * scale_x) as i32;
+            point.y = new_rect.top + (rel_y * scale_y) as i32;
+        }
+    }
+
+    fn resize_text(&mut self, new_rect: RECT) {
+        if self.points.is_empty() { return; }
+        self.points[0] = POINT { x: new_rect.left, y: new_rect.top };
+        if self.points.len() >= 2 {
+            self.points[1] = POINT { x: new_rect.right, y: new_rect.bottom };
+        } else {
+            self.points.push(POINT { x: new_rect.right, y: new_rect.bottom });
+        }
     }
 
     pub fn move_by(&mut self, dx: i32, dy: i32) {
@@ -470,6 +454,187 @@ impl DrawingElement {
                 bottom: 0,
             },
         }
+    }
+}
+
+// ==================== 单元测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_drawing_element_new() {
+        let element = DrawingElement::new(DrawingTool::Rectangle);
+        assert_eq!(element.tool, DrawingTool::Rectangle);
+        assert!(element.points.is_empty());
+        assert_eq!(element.thickness, 3.0);
+        assert!(!element.selected);
+    }
+
+    #[test]
+    fn test_drawing_element_contains_point_rectangle() {
+        let mut element = DrawingElement::new(DrawingTool::Rectangle);
+        element.points = vec![
+            POINT { x: 10, y: 10 },
+            POINT { x: 100, y: 100 },
+        ];
+        element.update_bounding_rect();
+
+        // 点在矩形内
+        assert!(element.contains_point(50, 50));
+        assert!(element.contains_point(10, 10));
+        assert!(element.contains_point(100, 100));
+        
+        // 点在矩形外
+        assert!(!element.contains_point(5, 5));
+        assert!(!element.contains_point(150, 150));
+    }
+
+    #[test]
+    fn test_drawing_element_contains_point_circle() {
+        let mut element = DrawingElement::new(DrawingTool::Circle);
+        element.points = vec![
+            POINT { x: 0, y: 0 },
+            POINT { x: 100, y: 100 },
+        ];
+        element.update_bounding_rect();
+
+        // 圆形使用边界矩形检测
+        assert!(element.contains_point(50, 50));
+        assert!(!element.contains_point(150, 150));
+    }
+
+    #[test]
+    fn test_drawing_element_contains_point_text() {
+        let mut element = DrawingElement::new(DrawingTool::Text);
+        element.points = vec![POINT { x: 20, y: 20 }];
+        element.text = "Hello".to_string();
+        element.update_bounding_rect();
+
+        // 文本元素使用rect字段检测
+        assert!(element.contains_point(25, 25));
+    }
+
+    #[test]
+    fn test_drawing_element_move_by() {
+        let mut element = DrawingElement::new(DrawingTool::Rectangle);
+        element.points = vec![
+            POINT { x: 10, y: 10 },
+            POINT { x: 100, y: 100 },
+        ];
+        element.rect = RECT {
+            left: 10,
+            top: 10,
+            right: 100,
+            bottom: 100,
+        };
+
+        element.move_by(50, 30);
+
+        assert_eq!(element.points[0].x, 60);
+        assert_eq!(element.points[0].y, 40);
+        assert_eq!(element.points[1].x, 150);
+        assert_eq!(element.points[1].y, 130);
+        assert_eq!(element.rect.left, 60);
+        assert_eq!(element.rect.top, 40);
+    }
+
+    #[test]
+    fn test_drawing_element_resize() {
+        let mut element = DrawingElement::new(DrawingTool::Rectangle);
+        element.points = vec![
+            POINT { x: 0, y: 0 },
+            POINT { x: 100, y: 100 },
+        ];
+        element.rect = RECT {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 100,
+        };
+
+        let new_rect = RECT {
+            left: 50,
+            top: 50,
+            right: 200,
+            bottom: 200,
+        };
+        element.resize(new_rect);
+
+        assert_eq!(element.rect, new_rect);
+        assert_eq!(element.points[0].x, 50);
+        assert_eq!(element.points[0].y, 50);
+        assert_eq!(element.points[1].x, 200);
+        assert_eq!(element.points[1].y, 200);
+    }
+
+    #[test]
+    fn test_drawing_element_update_bounding_rect_pen() {
+        let mut element = DrawingElement::new(DrawingTool::Pen);
+        element.points = vec![
+            POINT { x: 10, y: 20 },
+            POINT { x: 50, y: 10 },
+            POINT { x: 30, y: 60 },
+        ];
+        element.thickness = 2.0;
+
+        element.update_bounding_rect();
+
+        // 边界应该包含所有点，加上线条粗细边距
+        let margin = (element.thickness / 2.0) as i32 + 1;
+        assert_eq!(element.rect.left, 10 - margin);
+        assert_eq!(element.rect.top, 10 - margin);
+        assert_eq!(element.rect.right, 50 + margin);
+        assert_eq!(element.rect.bottom, 60 + margin);
+    }
+
+    #[test]
+    fn test_drawing_element_get_effective_font_size() {
+        let mut element = DrawingElement::new(DrawingTool::Text);
+        
+        element.font_size = 24.0;
+        assert_eq!(element.get_effective_font_size(), 24.0);
+
+        // 小于最小值时返回最小值
+        element.font_size = 4.0;
+        assert_eq!(element.get_effective_font_size(), 8.0);
+    }
+
+    #[test]
+    fn test_drawing_element_set_font_size() {
+        let mut element = DrawingElement::new(DrawingTool::Text);
+        
+        element.set_font_size(32.0);
+        assert_eq!(element.font_size, 32.0);
+
+        // 超过最大值时限制为最大值
+        element.set_font_size(300.0);
+        assert_eq!(element.font_size, crate::constants::MAX_FONT_SIZE);
+
+        // 低于最小值时限制为最小值
+        element.set_font_size(2.0);
+        assert_eq!(element.font_size, crate::constants::MIN_FONT_SIZE);
+    }
+
+    #[test]
+    fn test_drag_mode_equality() {
+        assert_eq!(DragMode::None, DragMode::None);
+        assert_ne!(DragMode::Drawing, DragMode::Moving);
+        assert_eq!(DragMode::ResizingTopLeft, DragMode::ResizingTopLeft);
+    }
+
+    #[test]
+    fn test_toolbar_button_hash() {
+        use std::collections::HashSet;
+        
+        let mut set = HashSet::new();
+        set.insert(ToolbarButton::Save);
+        set.insert(ToolbarButton::Rectangle);
+        
+        assert!(set.contains(&ToolbarButton::Save));
+        assert!(set.contains(&ToolbarButton::Rectangle));
+        assert!(!set.contains(&ToolbarButton::Circle));
     }
 }
 

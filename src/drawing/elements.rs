@@ -3,9 +3,14 @@ use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::DrawingElement;
 
 /// 元素管理器
+///
+/// 负责管理所有绘图元素的添加、删除、查询和渲染。
+/// 包含资源限制功能，防止内存无限增长。
 pub struct ElementManager {
     /// 所有绘图元素
     elements: Vec<DrawingElement>,
+    /// 最大元素数量限制（防止内存无限增长）
+    max_elements: usize,
 }
 
 impl Default for ElementManager {
@@ -15,15 +20,53 @@ impl Default for ElementManager {
 }
 
 impl ElementManager {
+    /// 默认最大元素数量
+    pub const DEFAULT_MAX_ELEMENTS: usize = 1000;
+
     /// 创建新的元素管理器
     pub fn new() -> Self {
         Self {
             elements: Vec::new(),
+            max_elements: Self::DEFAULT_MAX_ELEMENTS,
         }
     }
 
+    /// 创建带自定义限制的元素管理器
+    pub fn with_max_elements(max_elements: usize) -> Self {
+        Self {
+            elements: Vec::new(),
+            max_elements,
+        }
+    }
+
+    /// 设置最大元素数量
+    pub fn set_max_elements(&mut self, max: usize) {
+        self.max_elements = max;
+    }
+
+    /// 获取当前元素数量
+    pub fn element_count(&self) -> usize {
+        self.elements.len()
+    }
+
     /// 添加元素
+    ///
+    /// 如果达到最大数量限制，将移除最早的元素（非文本元素优先）
     pub fn add_element(&mut self, element: DrawingElement) {
+        // 如果达到限制，移除最早的非文本元素
+        if self.elements.len() >= self.max_elements {
+            // 优先移除最早的非文本元素
+            if let Some(pos) = self.elements.iter().position(|e| {
+                e.tool != crate::types::DrawingTool::Text
+            }) {
+                self.elements.remove(pos);
+            } else {
+                // 如果全是文本元素，移除最早的
+                self.elements.remove(0);
+            }
+            #[cfg(debug_assertions)]
+            eprintln!("ElementManager: 达到最大元素限制 {}，已移除最早的元素", self.max_elements);
+        }
         self.elements.push(element);
     }
 
@@ -98,11 +141,10 @@ impl ElementManager {
         }
 
         // 设置新的选中状态
-        if let Some(idx) = index {
-            if idx < self.elements.len() {
+        if let Some(idx) = index
+            && idx < self.elements.len() {
                 self.elements[idx].selected = true;
             }
-        }
     }
 
     /// 渲染所有元素

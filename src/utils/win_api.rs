@@ -108,3 +108,77 @@ pub fn is_window_visible(hwnd: HWND) -> bool {
 pub fn get_screen_size() -> (i32, i32) {
     crate::platform::windows::system::get_screen_size()
 }
+
+/// 发送自定义消息到窗口
+#[inline]
+pub fn post_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> windows::core::Result<()> {
+    unsafe {
+        PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam))?;
+    }
+    Ok(())
+}
+
+/// 发送同步消息到窗口
+#[inline]
+pub fn send_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESULT {
+    unsafe {
+        SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam)))
+    }
+}
+
+/// 获取窗口矩形
+#[inline]
+pub fn get_window_rect(hwnd: HWND) -> windows::core::Result<RECT> {
+    let mut rect = RECT::default();
+    unsafe {
+        GetWindowRect(hwnd, &mut rect)?;
+    }
+    Ok(rect)
+}
+
+/// 获取客户区矩形
+#[inline]
+pub fn get_client_rect(hwnd: HWND) -> windows::core::Result<RECT> {
+    let mut rect = RECT::default();
+    unsafe {
+        GetClientRect(hwnd, &mut rect)?;
+    }
+    Ok(rect)
+}
+
+/// 设置窗口位置和尺寸
+#[inline]
+pub fn set_window_pos(
+    hwnd: HWND,
+    hwnd_insert_after: Option<HWND>,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    flags: SET_WINDOW_POS_FLAGS,
+) -> windows::core::Result<()> {
+    unsafe {
+        SetWindowPos(hwnd, hwnd_insert_after, x, y, cx, cy, flags)?;
+    }
+    Ok(())
+}
+
+/// 将窗口设置为前台
+#[inline]
+pub fn set_foreground_window(hwnd: HWND) -> bool {
+    unsafe { SetForegroundWindow(hwnd).as_bool() }
+}
+
+// ==================== 单元测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_screen_size() {
+        let (width, height) = get_screen_size();
+        assert!(width > 0, "屏幕宽度应该大于0");
+        assert!(height > 0, "屏幕高度应该大于0");
+    }
+}

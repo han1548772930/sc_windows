@@ -1,3 +1,16 @@
+//! DXGI Desktop Duplication 屏幕捕获模块
+//!
+//! 本模块使用 DXGI Desktop Duplication API 进行高性能屏幕捕获。
+//! 相比传统的 GDI 方式，DXGI 捕获具有更高的性能，特别适合游戏和视频内容。
+//!
+//! # 主要功能
+//! - `capture_screen_region_to_hbitmap_dxgi`: 使用 DXGI 捕获屏幕区域并返回 HBITMAP
+//!
+//! # 注意事项
+//! - 需要 Windows 8 或更高版本
+//! - Desktop Duplication 在某些情况下可能失败（如 UAC 提示、安全桌面）
+//! - 返回的 HBITMAP 需要调用者负责释放（使用 DeleteObject）
+
 use windows::core::{Interface, Result};
 use windows::Win32::Foundation::{RECT, E_FAIL, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -13,11 +26,32 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, CreateDIBSection, HBITMAP, RGBQUAD,
 };
 
-/// Captures the primary screen using DXGI Desktop Duplication and returns an HBITMAP.
+/// 使用 DXGI Desktop Duplication 捕获屏幕区域并返回 HBITMAP。
 ///
-/// This function creates a new D3D11 device and duplication session for each call.
-/// For higher performance in a loop, the device and duplication interface should be reused.
-/// However, for a single screenshot, this is acceptable.
+/// 此函数每次调用都会创建新的 D3D11 设备和复制会话。
+/// 如果需要循环捕获，应该复用设备和复制接口以获得更好的性能。
+/// 对于单次截图，当前实现是可以接受的。
+///
+/// # Safety
+///
+/// 此函数是 unsafe 的，因为：
+/// - 调用多个 Windows COM/D3D11 API，这些 API 可能返回无效指针
+/// - 直接操作原始内存指针进行像素数据复制
+/// - `selection_rect` 必须包含有效的屏幕坐标
+/// - 返回的 HBITMAP 必须由调用者使用 `DeleteObject` 释放
+///
+/// # 参数
+/// - `selection_rect`: 要捕获的屏幕区域（屏幕坐标）
+///
+/// # 返回值
+/// - `Ok(HBITMAP)`: 成功时返回包含截图的位图句柄
+/// - `Err`: 捕获失败时返回错误
+///
+/// # 错误
+/// - 创建 D3D11 设备失败
+/// - 创建桌面复制接口失败
+/// - 获取帧数据失败（可能是超时或桌面切换）
+/// - 无效的捕获区域
 pub unsafe fn capture_screen_region_to_hbitmap_dxgi(
     selection_rect: RECT,
 ) -> Result<HBITMAP> {
@@ -60,7 +94,7 @@ pub unsafe fn capture_screen_region_to_hbitmap_dxgi(
     
     // Validate dimensions
     if width <= 0 || height <= 0 || width as u32 > texture_desc.Width || height as u32 > texture_desc.Height {
-         unsafe { let _ = context.Unmap(&staging_texture, 0); };
+         unsafe { context.Unmap(&staging_texture, 0); };
          return Err(windows::core::Error::new(E_FAIL, "Invalid capture region or region exceeds screen bounds"));
     }
 
@@ -102,7 +136,7 @@ pub unsafe fn capture_screen_region_to_hbitmap_dxgi(
     // Let's check generated bindings. Usually CreateDIBSection returns Result<HBITMAP>.
     
     if hbitmap.is_invalid() || p_bits.is_null() {
-         unsafe { let _ = context.Unmap(&staging_texture, 0); };
+         unsafe { context.Unmap(&staging_texture, 0); };
          return Err(windows::core::Error::new(E_FAIL, "Failed to create DIB Section"));
     }
 
@@ -143,7 +177,7 @@ pub unsafe fn capture_screen_region_to_hbitmap_dxgi(
     }
 
     // Unmap the texture
-    unsafe { let _ = context.Unmap(&staging_texture, 0); };
+    unsafe { context.Unmap(&staging_texture, 0); };
     
     Ok(hbitmap)
 }

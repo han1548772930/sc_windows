@@ -49,7 +49,7 @@ impl TrayManager {
             tooltip_array[..copy_len].copy_from_slice(&tooltip_wide[..copy_len]);
 
             let hwnd = self.hwnd.get().unwrap_or(HWND(std::ptr::null_mut()));
-            let mut nid = NOTIFYICONDATAW {
+            let nid = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                 hWnd: hwnd,
                 uID: self.icon_id,
@@ -60,7 +60,7 @@ impl TrayManager {
                 ..Default::default()
             };
 
-            let result = Shell_NotifyIconW(NIM_ADD, &mut nid);
+            let result = Shell_NotifyIconW(NIM_ADD, &nid);
             if result.as_bool() {
                 self.is_added = true;
                 Ok(())
@@ -161,7 +161,7 @@ impl TrayManager {
         if self.is_added {
             unsafe {
                 let hwnd = self.hwnd.get().unwrap_or(HWND(std::ptr::null_mut()));
-                let mut nid = NOTIFYICONDATAW {
+                let nid = NOTIFYICONDATAW {
                     cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                     hWnd: hwnd,
                     uID: self.icon_id,
@@ -169,7 +169,7 @@ impl TrayManager {
                     ..Default::default()
                 };
 
-                let _ = Shell_NotifyIconW(NIM_DELETE, &mut nid);
+                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
                 self.is_added = false;
             }
         }

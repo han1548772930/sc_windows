@@ -53,9 +53,9 @@ impl PaddleOcrEngine {
     pub fn start_ocr_engine_async() {
         // 在后台线程中异步启动OCR引擎
         std::thread::spawn(|| {
-            if let Err(e) = Self::start_ocr_engine_sync() {
+            if let Err(_e) = Self::start_ocr_engine_sync() {
                 #[cfg(debug_assertions)]
-                eprintln!("异步启动OCR引擎失败: {e}");
+                eprintln!("异步启动OCR引擎失败: {_e}");
             }
         });
     }
@@ -63,12 +63,15 @@ impl PaddleOcrEngine {
     /// 同步启动OCR引擎（内部使用）
     fn start_ocr_engine_sync() -> Result<()> {
         let engine_mutex = CURRENT_OCR_ENGINE.get_or_init(|| Mutex::new(None));
-        let mut engine_guard = engine_mutex.lock().unwrap();
+        let mut engine_guard = engine_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("OCR 引擎互斥锁已中毒"))?;
 
         if engine_guard.is_none() {
             #[cfg(debug_assertions)]
             println!("正在后台启动OCR引擎...");
 
+            #[cfg(debug_assertions)]
             let start_time = std::time::Instant::now();
 
             // 获取 PaddleOCR-json.exe 的路径
@@ -83,9 +86,8 @@ impl PaddleOcrEngine {
 
             *engine_guard = Some(engine);
 
-            let elapsed = start_time.elapsed();
             #[cfg(debug_assertions)]
-            println!("OCR引擎启动成功，耗时: {elapsed:?}");
+            println!("OCR引擎启动成功，耗时: {:?}", start_time.elapsed());
         }
 
         Ok(())
@@ -112,13 +114,13 @@ impl PaddleOcrEngine {
 
     /// 同步停止OCR引擎（内部使用）
     fn stop_ocr_engine_sync() {
-        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
-            if let Ok(mut engine_guard) = engine_mutex.lock() {
-                if let Some(engine) = engine_guard.take() {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
+            && let Ok(mut engine_guard) = engine_mutex.lock()
+                && let Some(engine) = engine_guard.take() {
+                    #[cfg(debug_assertions)]
+                    let start_time = std::time::Instant::now();
                     #[cfg(debug_assertions)]
                     println!("正在后台停止OCR引擎...");
-
-                    let start_time = std::time::Instant::now();
 
                     // 正常关闭引擎
                     drop(engine);
@@ -129,12 +131,9 @@ impl PaddleOcrEngine {
                     // 强制清理残留进程
                     Self::force_kill_paddle_processes();
 
-                    let elapsed = start_time.elapsed();
                     #[cfg(debug_assertions)]
-                    println!("OCR引擎已停止，耗时: {elapsed:?}");
+                    println!("OCR引擎已停止，耗时: {:?}", start_time.elapsed());
                 }
-            }
-        }
     }
 
     /// 立即停止OCR引擎（程序退出时使用，同步）
@@ -146,9 +145,9 @@ impl PaddleOcrEngine {
     /// 使用当前OCR引擎进行识别（不等待，立即检查状态）
     fn call_global_ocr(image_data: ImageData) -> Result<String> {
         // 立即检查OCR引擎是否就绪
-        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
-            if let Ok(mut engine_guard) = engine_mutex.lock() {
-                if let Some(engine) = engine_guard.as_mut() {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
+            && let Ok(mut engine_guard) = engine_mutex.lock()
+                && let Some(engine) = engine_guard.as_mut() {
                     // 引擎已就绪，执行OCR
                     #[cfg(debug_assertions)]
                     println!("OCR引擎就绪，开始识别...");
@@ -157,8 +156,6 @@ impl PaddleOcrEngine {
                         .ocr(image_data)
                         .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
                 }
-            }
-        }
 
         // 引擎未就绪，直接返回错误
         Err(anyhow::anyhow!("OCR引擎未就绪，请等待引擎启动完成"))
@@ -172,11 +169,10 @@ impl PaddleOcrEngine {
 
     /// 检查OCR引擎是否已经准备就绪
     pub fn is_engine_ready() -> bool {
-        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get() {
-            if let Ok(engine_guard) = engine_mutex.lock() {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
+            && let Ok(engine_guard) = engine_mutex.lock() {
                 return engine_guard.is_some();
             }
-        }
         false
     }
 
@@ -235,9 +231,9 @@ impl PaddleOcrEngine {
                 println!("检测到PaddleOCR可执行文件，正在启动OCR引擎...");
 
                 // 尝试启动引擎
-                if let Err(e) = Self::start_ocr_engine_sync() {
+                if let Err(_e) = Self::start_ocr_engine_sync() {
                     #[cfg(debug_assertions)]
-                    eprintln!("启动OCR引擎失败: {e}");
+                    eprintln!("启动OCR引擎失败: {_e}");
                 } else {
                     // 启动成功，重新检查状态
                     engine_ready = Self::is_engine_ready();
@@ -262,13 +258,13 @@ impl PaddleOcrEngine {
         #[cfg(target_os = "windows")]
         {
             // 使用taskkill命令强制终止PaddleOCR进程
-            let result = Command::new("taskkill")
+            let _result = Command::new("taskkill")
                 .args(["/F", "/IM", "PaddleOCR-json.exe"])
                 .creation_flags(0x08000000) // CREATE_NO_WINDOW
                 .output();
 
             #[cfg(debug_assertions)]
-            match result {
+            match _result {
                 Ok(output) => {
                     if output.status.success() {
                         println!("已强制终止所有PaddleOCR进程");
@@ -436,11 +432,10 @@ impl PaddleOcrEngine {
             serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("JSON解析失败: {}", e))?;
 
         // 检查返回码
-        if let Some(code) = json_value.get("code").and_then(|v| v.as_i64()) {
-            if code != 100 {
+        if let Some(code) = json_value.get("code").and_then(|v| v.as_i64())
+            && code != 100 {
                 return Err(anyhow::anyhow!("PaddleOCR返回错误码: {}", code));
             }
-        }
 
         // 获取data数组
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {

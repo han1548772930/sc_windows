@@ -35,8 +35,8 @@ pub fn detect_handle_at_position_unified(
     match config {
         HandleConfig::Endpoints(points_opt) => {
             // 箭头元素特殊处理：只检查起点和终点
-            if let Some(points) = points_opt {
-                if points.len() >= 2 {
+            if let Some(points) = points_opt
+                && points.len() >= 2 {
                     let start = points[0];
                     let end = points[1];
                     let dx = x - start.x;
@@ -50,7 +50,6 @@ pub fn detect_handle_at_position_unified(
                         return DragMode::ResizingBottomRight;
                     }
                 }
-            }
             return DragMode::None;
         }
         HandleConfig::Corners => {

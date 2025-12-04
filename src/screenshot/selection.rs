@@ -341,6 +341,132 @@ impl SelectionState {
     }
 }
 
+// ==================== 单元测试 ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_selection_state_new() {
+        let state = SelectionState::new();
+        assert!(!state.is_selecting());
+        assert!(state.get_selection().is_none());
+        assert!(!state.has_selection());
+        assert!(!state.is_mouse_pressed());
+    }
+
+    #[test]
+    fn test_selection_state_start_and_end() {
+        let mut state = SelectionState::new();
+        
+        // 开始选择
+        state.start_selection(10, 10);
+        assert!(state.is_selecting());
+        assert!(state.is_mouse_pressed());
+        
+        // 更新终点
+        state.update_end_point(100, 100);
+        
+        // 结束选择
+        state.end_selection(100, 100);
+        assert!(!state.is_selecting());
+        assert!(!state.is_mouse_pressed());
+        
+        // 检查选择矩形
+        let rect = state.get_selection().expect("应该有选择矩形");
+        assert_eq!(rect.left, 10);
+        assert_eq!(rect.top, 10);
+        assert_eq!(rect.right, 100);
+        assert_eq!(rect.bottom, 100);
+    }
+
+    #[test]
+    fn test_selection_state_min_size_check() {
+        let mut state = SelectionState::new();
+        
+        // 创建一个太小的选择框
+        state.start_selection(10, 10);
+        state.end_selection(20, 20); // 10x10，小于 MIN_BOX_SIZE(50)
+        
+        // 选择框应该被清除
+        assert!(state.get_selection().is_none());
+    }
+
+    #[test]
+    fn test_selection_state_reset() {
+        let mut state = SelectionState::new();
+        
+        // 创建选择
+        state.start_selection(10, 10);
+        state.end_selection(200, 200);
+        assert!(state.has_selection());
+        
+        // 重置
+        state.reset();
+        assert!(!state.is_selecting());
+        assert!(state.get_selection().is_none());
+        assert!(!state.has_selection());
+        assert!(!state.is_mouse_pressed());
+    }
+
+    #[test]
+    fn test_selection_state_clear() {
+        let mut state = SelectionState::new();
+        
+        state.start_selection(10, 10);
+        state.end_selection(200, 200);
+        
+        state.clear();
+        assert!(state.get_selection().is_none());
+    }
+
+    #[test]
+    fn test_selection_state_auto_highlight() {
+        let mut state = SelectionState::new();
+        
+        let rect = RECT {
+            left: 100,
+            top: 100,
+            right: 300,
+            bottom: 300,
+        };
+        
+        state.set_auto_highlight_selection(rect);
+        assert!(state.has_auto_highlight());
+        assert!(state.has_selection());
+        
+        let effective = state.get_effective_selection().unwrap();
+        assert_eq!(effective.left, 100);
+        assert_eq!(effective.right, 300);
+        
+        state.clear_auto_highlight();
+        assert!(!state.has_auto_highlight());
+    }
+
+    #[test]
+    fn test_selection_interaction_mode() {
+        // 测试从 DragMode 转换
+        assert_eq!(
+            SelectionInteractionMode::from_drag_mode(DragMode::None),
+            SelectionInteractionMode::None
+        );
+        assert_eq!(
+            SelectionInteractionMode::from_drag_mode(DragMode::Drawing),
+            SelectionInteractionMode::Creating
+        );
+        assert_eq!(
+            SelectionInteractionMode::from_drag_mode(DragMode::Moving),
+            SelectionInteractionMode::Moving
+        );
+        
+        // 测试调整大小模式
+        let resize_mode = SelectionInteractionMode::from_drag_mode(DragMode::ResizingTopLeft);
+        assert!(matches!(resize_mode, SelectionInteractionMode::Resizing(_)));
+        assert_eq!(resize_mode.get_resize_mode(), Some(DragMode::ResizingTopLeft));
+    }
+}
+
 // --- InteractionTarget 适配实现（阶段1 PoC）---
 impl crate::interaction::InteractionTarget for SelectionState {
     fn hit_test(&self, x: i32, y: i32) -> DragMode {

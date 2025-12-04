@@ -140,6 +140,31 @@ pub const TITLE_BAR_HEIGHT: i32 = 40;
 pub const BUTTON_WIDTH_OCR: i32 = 46;
 pub const BUTTON_HEIGHT_OCR: i32 = TITLE_BAR_HEIGHT;
 
+// 窗口消息常量
+pub const WM_TRAY_MESSAGE: u32 = 0x0400 + 1; // WM_USER + 1
+pub const WM_HIDE_WINDOW_CUSTOM: u32 = 0x0400 + 2; // WM_USER + 2
+pub const WM_RELOAD_SETTINGS: u32 = 0x0400 + 3; // WM_USER + 3
+pub const WM_OCR_STATUS_UPDATE: u32 = 0x0400 + 10; // WM_USER + 10
+pub const WM_OCR_COMPLETED: u32 = 0x0400 + 11; // WM_USER + 11
+
+// 热键和定时器常量
+pub const HOTKEY_SCREENSHOT_ID: i32 = 1001;
+pub const TIMER_CAPTURE_DELAY_ID: usize = 2001;
+pub const TIMER_CAPTURE_DELAY_MS: u32 = 50;
+
+// 箭头绘制常量
+pub const ARROW_HEAD_MARGIN: i32 = 20;
+pub const ARROW_MIN_LENGTH: f64 = 20.0;
+pub const ARROW_HEAD_LENGTH: f64 = 15.0;
+pub const ARROW_HEAD_ANGLE: f64 = 0.5;
+
+// 元素检测和默认尺寸常量
+pub const ELEMENT_CLICK_TOLERANCE: f32 = 5.0;
+pub const DEFAULT_ELEMENT_WIDTH: i32 = 50;
+pub const DEFAULT_ELEMENT_HEIGHT: i32 = 30;
+pub const MIN_FONT_SIZE: f32 = 8.0;
+pub const MAX_FONT_SIZE: f32 = 200.0;
+
 pub const ICON_SIZE: i32 = 24;
 pub const ICON_SPACING: i32 = 20;
 pub const ICON_START_X: i32 = 12;

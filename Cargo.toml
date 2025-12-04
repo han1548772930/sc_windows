@@ -62,6 +62,17 @@ windows = { version = "0.62", features = [
 [build-dependencies]
 embed-resource = "3"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "rendering_bench"
+harness = false
+
+[[bench]]
+name = "capture_bench"
+harness = false
+
 [profile.release]
 codegen-units = 1
 lto = true

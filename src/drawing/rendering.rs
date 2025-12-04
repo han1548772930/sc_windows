@@ -7,8 +7,76 @@ use windows::Win32::Graphics::Direct2D::*;
 use super::{DrawingError, DrawingManager, ElementInteractionMode};
 
 impl DrawingManager {
+    /// 批量绘制元素数量阈值，超过此数量时启用批量绘制优化
+    const BATCH_RENDER_THRESHOLD: usize = 10;
+
+    /// 批量渲染元素（按类型分组优化）
+    ///
+    /// 将元素按类型分组后批量渲染，减少状态切换次数。
+    /// 当元素数量超过 BATCH_RENDER_THRESHOLD 时自动启用。
+    pub fn render_elements_batched(
+        &self,
+        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+        d2d_renderer: &mut crate::platform::windows::d2d::Direct2DRenderer,
+        skip_indices: &std::collections::HashSet<usize>,
+    ) -> Result<(), DrawingError> {
+        use crate::types::DrawingTool;
+
+        // 按类型分组元素索引
+        let mut rectangles = Vec::new();
+        let mut circles = Vec::new();
+        let mut arrows = Vec::new();
+        let mut pens = Vec::new();
+        let mut texts = Vec::new();
+
+        for (i, element) in self.elements.get_elements().iter().enumerate() {
+            if skip_indices.contains(&i) {
+                continue;
+            }
+            match element.tool {
+                DrawingTool::Rectangle => rectangles.push(i),
+                DrawingTool::Circle => circles.push(i),
+                DrawingTool::Arrow => arrows.push(i),
+                DrawingTool::Pen => pens.push(i),
+                DrawingTool::Text => texts.push(i),
+                DrawingTool::None => {}
+            }
+        }
+
+        // 按类型批量绘制，减少工具类型判断开销
+        // 注意：保持绘制顺序对于重叠元素很重要，这里按原始顺序绘制同类型元素
+        let elements = self.elements.get_elements();
+
+        // 批量绘制矩形
+        for &i in &rectangles {
+            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
+        }
+
+        // 批量绘制圆形
+        for &i in &circles {
+            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
+        }
+
+        // 批量绘制箭头
+        for &i in &arrows {
+            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
+        }
+
+        // 批量绘制画笔路径
+        for &i in &pens {
+            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
+        }
+
+        // 批量绘制文本（最后绘制，确保文本在最上层）
+        for &i in &texts {
+            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
+        }
+
+        Ok(())
+    }
+
     /// 渲染绘图元素到指定的渲染目标（用于离屏合成）
-    /// 
+    ///
     /// 该方法将所有元素渲染到指定的渲染目标，并应用坐标偏移
     /// 用于将绘图元素合成到截图上导出
     pub fn render_elements_to_target(
@@ -23,12 +91,24 @@ impl DrawingManager {
 
         // 渲染所有已提交的元素
         for element in self.elements.get_elements() {
-            self.draw_element_d2d_with_offset(element, render_target, d2d_renderer, offset_x, offset_y)?;
+            self.draw_element_d2d_with_offset(
+                element,
+                render_target,
+                d2d_renderer,
+                offset_x,
+                offset_y,
+            )?;
         }
 
         // 渲染当前正在绘制的元素
         if let Some(ref element) = self.current_element {
-            self.draw_element_d2d_with_offset(element, render_target, d2d_renderer, offset_x, offset_y)?;
+            self.draw_element_d2d_with_offset(
+                element,
+                render_target,
+                d2d_renderer,
+                offset_x,
+                offset_y,
+            )?;
         }
 
         Ok(())
@@ -56,8 +136,8 @@ impl DrawingManager {
         // 尝试使用Direct2D直接渲染（更高效）
         if let Some(d2d_renderer) = renderer
             .as_any_mut()
-            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
-        {
+            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
+        ) {
             // Fallback flag
             let mut layer_success = false;
 
@@ -66,21 +146,23 @@ impl DrawingManager {
             // Check cache_dirty using interior mutability
             let _is_dirty = *self.cache_dirty.borrow();
             // TEMPORARY: Disable layer update to fallback to direct rendering
-            if false { // was: if is_dirty
+            if false {
+                // was: if is_dirty
                 if let Some(layer_target) = d2d_renderer.get_or_create_layer_target() {
                     // Clone target to use it while also borrowing d2d_renderer
                     let layer_target = layer_target.clone();
-                    
+
                     let mut success = true;
                     unsafe {
                         layer_target.BeginDraw();
                         // Clear with transparent black
-                        let clear_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        };
+                        let clear_color =
+                            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            };
                         layer_target.Clear(Some(&clear_color));
 
                         // Render all non-active elements to the layer
@@ -89,7 +171,9 @@ impl DrawingManager {
                             if Some(i) != self.selected_element {
                                 // We pass the layer_target explicitly
                                 let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &layer_target;
-                                if let Err(e) = self.draw_element_d2d(element, target_interface, d2d_renderer) {
+                                if let Err(e) =
+                                    self.draw_element_d2d(element, target_interface, d2d_renderer)
+                                {
                                     eprintln!("Failed to draw element to layer: {}", e);
                                     success = false;
                                 }
@@ -100,7 +184,7 @@ impl DrawingManager {
                             success = false;
                         }
                     }
-                    
+
                     if success {
                         *self.cache_dirty.borrow_mut() = false;
                     }
@@ -111,30 +195,45 @@ impl DrawingManager {
 
             // 2. Draw the committed layer to the main render target
             // TEMPORARY: Disable layer drawing
-            if false { // was: if let Some(layer_target) = d2d_renderer.get_or_create_layer_target()
+            if false {
+                // was: if let Some(layer_target) = d2d_renderer.get_or_create_layer_target()
                 unsafe {
-                    if let Ok(bitmap) = d2d_renderer.get_or_create_layer_target().unwrap().GetBitmap() {
-                        if let Some(render_target) = &d2d_renderer.render_target {
-                            render_target.DrawBitmap(
-                                &bitmap,
-                                None,
-                                1.0,
-                                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                                None,
-                            );
-                            layer_success = true;
-                        }
+                    if let Ok(bitmap) = d2d_renderer
+                        .get_or_create_layer_target()
+                        .unwrap()
+                        .GetBitmap()
+                        && let Some(render_target) = &d2d_renderer.render_target
+                    {
+                        render_target.DrawBitmap(
+                            &bitmap,
+                            None,
+                            1.0,
+                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                            None,
+                        );
+                        layer_success = true;
                     }
                 }
             }
 
             // Fallback: If layer rendering failed or target unavailable, draw elements directly
-            if !layer_success {
-                if let Some(render_target) = &d2d_renderer.render_target {
-                     // We have to clone to avoid borrow checker issues with d2d_renderer
-                     let target_clone = render_target.clone();
-                     let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &target_clone;
-                     for (i, element) in self.elements.get_elements().iter().enumerate() {
+            if !layer_success && let Some(render_target) = &d2d_renderer.render_target {
+                let target_clone = render_target.clone();
+                let element_count = self.elements.get_elements().len();
+
+                // 当元素数量超过阈值时，使用批量绘制优化
+                if element_count >= Self::BATCH_RENDER_THRESHOLD {
+                    let mut skip_indices = std::collections::HashSet::new();
+                    if let Some(idx) = self.selected_element {
+                        skip_indices.insert(idx);
+                    }
+                    let _ =
+                        self.render_elements_batched(&target_clone, d2d_renderer, &skip_indices);
+                } else {
+                    // 小量元素时保持原始顺序绘制
+                    let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget =
+                        &target_clone;
+                    for (i, element) in self.elements.get_elements().iter().enumerate() {
                         if Some(i) != self.selected_element {
                             let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
                         }
@@ -143,21 +242,22 @@ impl DrawingManager {
             }
 
             // 3. Render the selected element (dynamic) on top
-            if let Some(index) = self.selected_element {
-                if let Some(element) = self.elements.get_elements().get(index) {
-                    if let Some(render_target) = d2d_renderer.render_target.clone() {
-                         let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &render_target;
-                         let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
-                    }
-                }
+            if let Some(index) = self.selected_element
+                && let Some(element) = self.elements.get_elements().get(index)
+                && let Some(render_target) = d2d_renderer.render_target.clone()
+            {
+                let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget =
+                    &render_target;
+                let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
             }
 
             // 4. Render current element (being drawn)
-            if let Some(ref element) = self.current_element {
-                if let Some(render_target) = d2d_renderer.render_target.clone() {
-                     let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &render_target;
-                     let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
-                }
+            if let Some(ref element) = self.current_element
+                && let Some(render_target) = d2d_renderer.render_target.clone()
+            {
+                let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget =
+                    &render_target;
+                let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
             }
 
             // 渲染元素选择（平台无关路径）
@@ -209,9 +309,24 @@ impl DrawingManager {
 
         // Common styles
         let handle_radius = 3.0_f32;
-        let handle_fill_color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-        let handle_border_color = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-        let selection_border_color = Color { r: 0.0, g: 0.5, b: 1.0, a: 1.0 };
+        let handle_fill_color = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        let handle_border_color = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 1.0,
+        };
+        let selection_border_color = Color {
+            r: 0.0,
+            g: 0.5,
+            b: 1.0,
+            a: 1.0,
+        };
         let dash_pattern: [f32; 2] = [4.0, 2.0];
 
         // 箭头特殊：只绘制端点手柄（圆形），不绘制虚线边框（保持原行为）
@@ -233,9 +348,11 @@ impl DrawingManager {
                     },
                 ];
                 for p in pts.iter() {
-                    renderer.draw_circle(*p, handle_radius, &style).map_err(|e| {
-                        DrawingError::RenderError(format!("draw circle handle failed: {e}"))
-                    })?;
+                    renderer
+                        .draw_circle(*p, handle_radius, &style)
+                        .map_err(|e| {
+                            DrawingError::RenderError(format!("draw circle handle failed: {e}"))
+                        })?;
                 }
             }
             return Ok(());
@@ -289,7 +406,13 @@ impl DrawingManager {
 
             // 手柄绘制 - 非文本元素显示8个手柄
             renderer
-                .draw_element_handles(rect, handle_radius, handle_fill_color, handle_border_color, 1.0)
+                .draw_element_handles(
+                    rect,
+                    handle_radius,
+                    handle_fill_color,
+                    handle_border_color,
+                    1.0,
+                )
                 .map_err(|e| {
                     DrawingError::RenderError(format!("draw element handles failed: {e}"))
                 })?;
@@ -360,199 +483,157 @@ impl DrawingManager {
             b: element.color.b,
             a: element.color.a,
         };
-        
+
         // Use get_or_create_brush from d2d_renderer
         // Note: This uses d2d_renderer.render_target to create brush.
         // If 'render_target' passed to this function is different (e.g. layer target),
         // brushes are usually compatible if created from same factory/device context chain.
         // In Direct2D, resources created by a render target are generally only usable by that render target.
         // However, ID2D1BitmapRenderTarget is created from ID2D1HwndRenderTarget, so they share resources.
-        
-        let brush = d2d_renderer.get_or_create_brush(color)
+
+        let brush = d2d_renderer
+            .get_or_create_brush(color)
             .map_err(|e| DrawingError::RenderError(format!("Failed to get brush: {e:?}")))?;
 
         unsafe {
             match element.tool {
-                    DrawingTool::Text => {
-                        if !element.points.is_empty() {
-                            // Delegate to text rendering module
-                            // Passing d2d_renderer mutably
-                            self.draw_text_element_d2d(element, render_target, d2d_renderer)?;
+                DrawingTool::Text => {
+                    if !element.points.is_empty() {
+                        // Delegate to text rendering module
+                        // Passing d2d_renderer mutably
+                        self.draw_text_element_d2d(element, render_target, d2d_renderer)?;
+                    }
+                }
+                DrawingTool::Rectangle => {
+                    if element.points.len() >= 2 {
+                        let rect = crate::utils::d2d_rect_normalized(
+                            element.points[0].x,
+                            element.points[0].y,
+                            element.points[1].x,
+                            element.points[1].y,
+                        );
+                        render_target.DrawRectangle(&rect, &brush, element.thickness, None);
+                    }
+                }
+                DrawingTool::Circle => {
+                    if element.points.len() >= 2 {
+                        let center_x = (element.points[0].x + element.points[1].x) as f32 / 2.0;
+                        let center_y = (element.points[0].y + element.points[1].y) as f32 / 2.0;
+                        let radius_x =
+                            (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
+                        let radius_y =
+                            (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
+
+                        // 使用新的辅助函数创建椭圆
+                        let ellipse = ellipse(center_x, center_y, radius_x, radius_y);
+
+                        render_target.DrawEllipse(&ellipse, &brush, element.thickness, None);
+                    }
+                }
+                DrawingTool::Arrow => {
+                    if element.points.len() >= 2 {
+                        let start =
+                            crate::utils::d2d_point(element.points[0].x, element.points[0].y);
+                        let end = crate::utils::d2d_point(element.points[1].x, element.points[1].y);
+
+                        // 绘制主线
+                        render_target.DrawLine(start, end, &brush, element.thickness, None);
+
+                        // 绘制箭头头部
+                        let dx = element.points[1].x - element.points[0].x;
+                        let dy = element.points[1].y - element.points[0].y;
+                        let length = ((dx * dx + dy * dy) as f64).sqrt();
+
+                        if length > 20.0 {
+                            let arrow_length = 15.0f64;
+                            let arrow_angle = 0.5f64;
+                            let unit_x = dx as f64 / length;
+                            let unit_y = dy as f64 / length;
+
+                            let wing1 = crate::utils::d2d_point(
+                                element.points[1].x
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() + unit_y * arrow_angle.sin()))
+                                        as i32,
+                                element.points[1].y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() - unit_x * arrow_angle.sin()))
+                                        as i32,
+                            );
+
+                            let wing2 = crate::utils::d2d_point(
+                                element.points[1].x
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() - unit_y * arrow_angle.sin()))
+                                        as i32,
+                                element.points[1].y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() + unit_x * arrow_angle.sin()))
+                                        as i32,
+                            );
+
+                            render_target.DrawLine(end, wing1, &brush, element.thickness, None);
+                            render_target.DrawLine(end, wing2, &brush, element.thickness, None);
                         }
                     }
-                    DrawingTool::Rectangle => {
-                        if element.points.len() >= 2 {
-                            let rect = crate::utils::d2d_rect_normalized(
-                                element.points[0].x,
-                                element.points[0].y,
-                                element.points[1].x,
-                                element.points[1].y,
-                            );
-                            render_target.DrawRectangle(&rect, &brush, element.thickness, None);
-                        }
-                    }
-                    DrawingTool::Circle => {
-                        if element.points.len() >= 2 {
-                            let center_x =
-                                (element.points[0].x + element.points[1].x) as f32 / 2.0;
-                            let center_y =
-                                (element.points[0].y + element.points[1].y) as f32 / 2.0;
-                            let radius_x =
-                                (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
-                            let radius_y =
-                                (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
+                }
+                DrawingTool::Pen => {
+                    if element.points.len() > 1 {
+                        // Try to use cached geometry
+                        let mut cached_geometry = element.path_geometry.borrow_mut();
 
-                            // 使用新的辅助函数创建椭圆
-                            let ellipse = ellipse(center_x, center_y, radius_x, radius_y);
-
-                            render_target.DrawEllipse(
-                                &ellipse,
-                                &brush,
-                                element.thickness,
-                                None,
-                            );
-                        }
-                    }
-                    DrawingTool::Arrow => {
-                        if element.points.len() >= 2 {
-                            let start = crate::utils::d2d_point(
-                                element.points[0].x,
-                                element.points[0].y,
-                            );
-                            let end = crate::utils::d2d_point(
-                                element.points[1].x,
-                                element.points[1].y,
-                            );
-
-                            // 绘制主线
-                            render_target.DrawLine(start, end, &brush, element.thickness, None);
-
-                            // 绘制箭头头部
-                            let dx = element.points[1].x - element.points[0].x;
-                            let dy = element.points[1].y - element.points[0].y;
-                            let length = ((dx * dx + dy * dy) as f64).sqrt();
-
-                            if length > 20.0 {
-                                let arrow_length = 15.0f64;
-                                let arrow_angle = 0.5f64;
-                                let unit_x = dx as f64 / length;
-                                let unit_y = dy as f64 / length;
-
-                                let wing1 = crate::utils::d2d_point(
-                                    element.points[1].x
-                                        - (arrow_length
-                                            * (unit_x * arrow_angle.cos()
-                                                + unit_y * arrow_angle.sin()))
-                                            as i32,
-                                    element.points[1].y
-                                        - (arrow_length
-                                            * (unit_y * arrow_angle.cos()
-                                                - unit_x * arrow_angle.sin()))
-                                            as i32,
+                        if cached_geometry.is_none() {
+                            // Create new geometry
+                            if let Some(factory) = &d2d_renderer.d2d_factory
+                                && let Ok(geometry) = factory.CreatePathGeometry()
+                                && let Ok(sink) = geometry.Open()
+                            {
+                                let start = crate::utils::d2d_point(
+                                    element.points[0].x,
+                                    element.points[0].y,
                                 );
 
-                                let wing2 = crate::utils::d2d_point(
-                                    element.points[1].x
-                                        - (arrow_length
-                                            * (unit_x * arrow_angle.cos()
-                                                - unit_y * arrow_angle.sin()))
-                                            as i32,
-                                    element.points[1].y
-                                        - (arrow_length
-                                            * (unit_y * arrow_angle.cos()
-                                                + unit_x * arrow_angle.sin()))
-                                            as i32,
-                                );
+                                sink.BeginFigure(start, D2D1_FIGURE_BEGIN_HOLLOW);
 
-                                render_target.DrawLine(
-                                    end,
-                                    wing1,
-                                    &brush,
-                                    element.thickness,
-                                    None,
-                                );
-                                render_target.DrawLine(
-                                    end,
-                                    wing2,
-                                    &brush,
-                                    element.thickness,
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                    DrawingTool::Pen => {
-                        if element.points.len() > 1 {
-                            // Try to use cached geometry
-                            let mut cached_geometry = element.path_geometry.borrow_mut();
-                            
-                            if cached_geometry.is_none() {
-                                // Create new geometry
-                                if let Some(factory) = &d2d_renderer.d2d_factory {
-                                    if let Ok(geometry) = factory.CreatePathGeometry() {
-                                        if let Ok(sink) = geometry.Open() {
-                                            let start = crate::utils::d2d_point(
-                                                element.points[0].x,
-                                                element.points[0].y,
-                                            );
-                                            
-                                            sink.BeginFigure(
-                                                start,
-                                                D2D1_FIGURE_BEGIN_HOLLOW,
-                                            );
-
-                                            // Convert points to D2D1_POINT_2F
-                                            // Skip the first point as it is the start point
-                                            for i in 1..element.points.len() {
-                                                let p = crate::utils::d2d_point(
-                                                    element.points[i].x,
-                                                    element.points[i].y,
-                                                );
-                                                sink.AddLine(p);
-                                            }
-
-                                            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-                                            
-                                            if sink.Close().is_ok() {
-                                                *cached_geometry = Some(geometry);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Draw geometry if available
-                            if let Some(geometry) = cached_geometry.as_ref() {
-                                render_target.DrawGeometry(
-                                    geometry,
-                                    &brush,
-                                    element.thickness,
-                                    None,
-                                );
-                            } else {
-                                // Fallback to simple line drawing if geometry creation failed
-                                for i in 0..element.points.len() - 1 {
-                                    let start = crate::utils::d2d_point(
+                                // Convert points to D2D1_POINT_2F
+                                // Skip the first point as it is the start point
+                                for i in 1..element.points.len() {
+                                    let p = crate::utils::d2d_point(
                                         element.points[i].x,
                                         element.points[i].y,
                                     );
-                                    let end = crate::utils::d2d_point(
-                                        element.points[i + 1].x,
-                                        element.points[i + 1].y,
-                                    );
-                                    render_target.DrawLine(
-                                        start,
-                                        end,
-                                        &brush,
-                                        element.thickness,
-                                        None,
-                                    );
+                                    sink.AddLine(p);
+                                }
+
+                                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+
+                                if sink.Close().is_ok() {
+                                    *cached_geometry = Some(geometry);
                                 }
                             }
                         }
+
+                        // Draw geometry if available
+                        if let Some(geometry) = cached_geometry.as_ref() {
+                            render_target.DrawGeometry(geometry, &brush, element.thickness, None);
+                        } else {
+                            // Fallback to simple line drawing if geometry creation failed
+                            for i in 0..element.points.len() - 1 {
+                                let start = crate::utils::d2d_point(
+                                    element.points[i].x,
+                                    element.points[i].y,
+                                );
+                                let end = crate::utils::d2d_point(
+                                    element.points[i + 1].x,
+                                    element.points[i + 1].y,
+                                );
+                                render_target.DrawLine(start, end, &brush, element.thickness, None);
+                            }
+                        }
                     }
-                    _ => {}
                 }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -587,8 +668,9 @@ impl DrawingManager {
                 b: color.b,
                 a: color.a,
             };
-            render_target.CreateSolidColorBrush(&d2d_color, None)
-                .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?    
+            render_target
+                .CreateSolidColorBrush(&d2d_color, None)
+                .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?
         };
 
         unsafe {
@@ -597,27 +679,39 @@ impl DrawingManager {
                     if !element.points.is_empty() {
                         // 文本元素需要特殊处理：使用偏移坐标绘制
                         self.draw_text_element_d2d_with_offset(
-                            element, render_target, d2d_renderer, offset_x, offset_y
+                            element,
+                            render_target,
+                            d2d_renderer,
+                            offset_x,
+                            offset_y,
                         )?;
                     }
                 }
                 DrawingTool::Rectangle => {
                     if element.points.len() >= 2 {
                         let rect = D2D_RECT_F {
-                            left: (element.points[0].x as f32 - offset_x).min(element.points[1].x as f32 - offset_x),
-                            top: (element.points[0].y as f32 - offset_y).min(element.points[1].y as f32 - offset_y),
-                            right: (element.points[0].x as f32 - offset_x).max(element.points[1].x as f32 - offset_x),
-                            bottom: (element.points[0].y as f32 - offset_y).max(element.points[1].y as f32 - offset_y),
+                            left: (element.points[0].x as f32 - offset_x)
+                                .min(element.points[1].x as f32 - offset_x),
+                            top: (element.points[0].y as f32 - offset_y)
+                                .min(element.points[1].y as f32 - offset_y),
+                            right: (element.points[0].x as f32 - offset_x)
+                                .max(element.points[1].x as f32 - offset_x),
+                            bottom: (element.points[0].y as f32 - offset_y)
+                                .max(element.points[1].y as f32 - offset_y),
                         };
                         render_target.DrawRectangle(&rect, &brush, element.thickness, None);
                     }
                 }
                 DrawingTool::Circle => {
                     if element.points.len() >= 2 {
-                        let center_x = (element.points[0].x + element.points[1].x) as f32 / 2.0 - offset_x;
-                        let center_y = (element.points[0].y + element.points[1].y) as f32 / 2.0 - offset_y;
-                        let radius_x = (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
-                        let radius_y = (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
+                        let center_x =
+                            (element.points[0].x + element.points[1].x) as f32 / 2.0 - offset_x;
+                        let center_y =
+                            (element.points[0].y + element.points[1].y) as f32 / 2.0 - offset_y;
+                        let radius_x =
+                            (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
+                        let radius_y =
+                            (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
 
                         let ellipse = ellipse(center_x, center_y, radius_x, radius_y);
                         render_target.DrawEllipse(&ellipse, &brush, element.thickness, None);
@@ -649,13 +743,25 @@ impl DrawingManager {
                             let unit_y = dy as f64 / length;
 
                             let wing1 = crate::utils::d2d_helpers::d2d_point_f(
-                                end.X - (arrow_length * (unit_x * arrow_angle.cos() + unit_y * arrow_angle.sin())) as f32,
-                                end.Y - (arrow_length * (unit_y * arrow_angle.cos() - unit_x * arrow_angle.sin())) as f32,
+                                end.X
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() + unit_y * arrow_angle.sin()))
+                                        as f32,
+                                end.Y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() - unit_x * arrow_angle.sin()))
+                                        as f32,
                             );
 
                             let wing2 = crate::utils::d2d_helpers::d2d_point_f(
-                                end.X - (arrow_length * (unit_x * arrow_angle.cos() - unit_y * arrow_angle.sin())) as f32,
-                                end.Y - (arrow_length * (unit_y * arrow_angle.cos() + unit_x * arrow_angle.sin())) as f32,
+                                end.X
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() - unit_y * arrow_angle.sin()))
+                                        as f32,
+                                end.Y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() + unit_x * arrow_angle.sin()))
+                                        as f32,
                             );
 
                             render_target.DrawLine(end, wing1, &brush, element.thickness, None);

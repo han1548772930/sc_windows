@@ -142,10 +142,10 @@ impl DrawingManager {
                         windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE
                     );
 
-                    if self.text_editing && self.text_cursor_visible {
-                         if let Some(edit_idx) = self.editing_element_index {
-                            if let Some(current_idx) = self.elements.get_elements().iter().position(|e| std::ptr::eq(e, element)) {
-                                if current_idx == edit_idx {
+                    if self.text_editing && self.text_cursor_visible
+                         && let Some(edit_idx) = self.editing_element_index
+                            && let Some(current_idx) = self.elements.get_elements().iter().position(|e| std::ptr::eq(e, element))
+                                && current_idx == edit_idx {
                                      self.draw_text_cursor_optimized(
                                          element,
                                          render_target,
@@ -154,9 +154,6 @@ impl DrawingManager {
                                          cursor_brush.as_ref()
                                      )?;
                                 }
-                            }
-                         }
-                    }
                 }
             }
         }
@@ -513,8 +510,8 @@ impl DrawingManager {
         self.current_tool = DrawingTool::Text;
 
         // 检查当前编辑的文本元素是否为空，如果为空则删除
-        if let Some(element_index) = editing_index {
-            if let Some(element) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = editing_index
+            && let Some(element) = self.elements.get_elements().get(element_index) {
                 let should_delete = element.text.trim().is_empty();
 
                 if should_delete {
@@ -531,7 +528,6 @@ impl DrawingManager {
                     }
                 }
             }
-        }
 
         // 强制确保工具状态保持为文本工具，防止被其他逻辑重置（与原始代码一致）
         self.current_tool = DrawingTool::Text;
@@ -556,8 +552,8 @@ impl DrawingManager {
             return vec![];
         }
 
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(element) = self.elements.get_element_mut(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(element) = self.elements.get_element_mut(element_index) {
                 // 在光标位置插入字符
                 let char_count = element.text.chars().count();
                 if self.text_cursor_pos <= char_count {
@@ -577,7 +573,6 @@ impl DrawingManager {
                     return vec![Command::RequestRedraw];
                 }
             }
-        }
         vec![]
     }
 
@@ -598,9 +593,9 @@ impl DrawingManager {
             return vec![];
         }
 
-        if let Some(element_index) = self.editing_element_index {
-            if self.text_cursor_pos > 0 {
-                if let Some(element) = self.elements.get_element_mut(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && self.text_cursor_pos > 0
+                && let Some(element) = self.elements.get_element_mut(element_index) {
                     // 删除光标前的字符
                     let char_count = element.text.chars().count();
                     if self.text_cursor_pos <= char_count {
@@ -621,8 +616,6 @@ impl DrawingManager {
 
                     return vec![Command::RequestRedraw];
                 }
-            }
-        }
         vec![]
     }
 
@@ -638,22 +631,21 @@ impl DrawingManager {
 
     /// 光标向右移动
     pub(super) fn move_cursor_right(&mut self) -> Vec<Command> {
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(el) = self.elements.get_elements().get(element_index) {
                 let char_count = el.text.chars().count();
                 if self.text_cursor_pos < char_count {
                     self.text_cursor_pos += 1;
                     return vec![Command::RequestRedraw];
                 }
             }
-        }
         vec![]
     }
 
     /// 光标移动到行首（准确到当前行）
     pub(super) fn move_cursor_to_line_start(&mut self) -> Vec<Command> {
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(el) = self.elements.get_elements().get(element_index) {
                 let before = el
                     .text
                     .chars()
@@ -666,14 +658,13 @@ impl DrawingManager {
                 }
                 return vec![Command::RequestRedraw];
             }
-        }
         vec![]
     }
 
     /// 光标移动到行尾（准确到当前行）
     pub(super) fn move_cursor_to_line_end(&mut self) -> Vec<Command> {
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(el) = self.elements.get_elements().get(element_index) {
                 let after = el
                     .text
                     .chars()
@@ -686,14 +677,13 @@ impl DrawingManager {
                 }
                 return vec![Command::RequestRedraw];
             }
-        }
         vec![]
     }
 
     /// 光标向上移动一行（基于字符计算）
     pub(super) fn move_cursor_up(&mut self) -> Vec<Command> {
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(el) = self.elements.get_elements().get(element_index) {
                 let before = el
                     .text
                     .chars()
@@ -725,14 +715,13 @@ impl DrawingManager {
                     }
                 }
             }
-        }
         vec![]
     }
 
     /// 光标向下移动一行（基于字符计算）
     pub(super) fn move_cursor_down(&mut self) -> Vec<Command> {
-        if let Some(element_index) = self.editing_element_index {
-            if let Some(el) = self.elements.get_elements().get(element_index) {
+        if let Some(element_index) = self.editing_element_index
+            && let Some(el) = self.elements.get_elements().get(element_index) {
                 let before = el
                     .text
                     .chars()
@@ -763,7 +752,6 @@ impl DrawingManager {
                     return vec![Command::RequestRedraw];
                 }
             }
-        }
         vec![]
     }
 

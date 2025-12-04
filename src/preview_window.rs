@@ -14,9 +14,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D,
-    ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING,
-    ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X, TITLE_BAR_BG_COLOR_D2D,
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR_D2D,
+    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X, TITLE_BAR_BG_COLOR_D2D,
     TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
 };
 
@@ -441,7 +440,7 @@ impl PreviewRenderer {
         if let Some(bitmap) = &self.image_bitmap {
             let original_width = image_width as f32;
             let original_height = image_height as f32;
-            
+
             // Pin 模式：图片紧贴标题栏下方，原始大小显示
             // OCR 模式：图片在左侧区域居中显示
             let (image_x, image_y, display_width, display_height) = if !show_text_area {
@@ -472,7 +471,7 @@ impl PreviewRenderer {
                 let left_area_center_x = 20.0 + available_width / 2.0;
                 let x = left_area_center_x - display_w / 2.0;
                 let y = start_y + (effective_available_height - display_h) / 2.0;
-                
+
                 (x, y, display_w, display_h)
             };
 
@@ -500,12 +499,12 @@ impl PreviewRenderer {
             }; // 浅灰色边框
             // TODO: 实现边框绘制逻辑
         }
-        
+
         // 修正：边框绘制逻辑。原代码确实有点奇怪。
         // 让我们忽略原代码的怪异之处，只在 show_text_area 为 true 时绘制文本
-        
+
         if show_text_area {
-             // 3. 绘制文本和UI元素
+            // 3. 绘制文本和UI元素
             // 使用平台抽象的颜色和文本样式
             let text_color = crate::platform::traits::Color {
                 r: 0.0,
@@ -654,21 +653,21 @@ pub struct PreviewWindow {
     text_lines: Vec<String>, // 分行后的文本
 
     // 文本选择相关
-    is_selecting: bool,                        // 是否正在选择文本
-    selection_start: Option<(usize, usize)>,   // 选择开始位置 (行号, 字符位置)
-    selection_end: Option<(usize, usize)>,     // 选择结束位置 (行号, 字符位置)
+    is_selecting: bool,                      // 是否正在选择文本
+    selection_start: Option<(usize, usize)>, // 选择开始位置 (行号, 字符位置)
+    selection_end: Option<(usize, usize)>,   // 选择结束位置 (行号, 字符位置)
     // 注意：以下字段预留用于双击选词等功能，暂未实现
     #[allow(dead_code)]
     selection_start_pixel: Option<(i32, i32)>, // 选择开始的像素位置
     #[allow(dead_code)]
-    selection_end_pixel: Option<(i32, i32)>,   // 选择结束的像素位置
+    selection_end_pixel: Option<(i32, i32)>, // 选择结束的像素位置
     #[allow(dead_code)]
-    last_click_time: std::time::Instant,       // 上次点击时间，用于双击检测
+    last_click_time: std::time::Instant, // 上次点击时间，用于双击检测
     #[allow(dead_code)]
-    last_click_pos: Option<(i32, i32)>,        // 上次点击位置
+    last_click_pos: Option<(i32, i32)>, // 上次点击位置
 
     // 置顶/Pin 状态
-    is_pinned: bool, // 是否置顶
+    is_pinned: bool,      // 是否置顶
     show_text_area: bool, // 是否显示文本区域
 
     // Direct2D 渲染器
@@ -872,8 +871,8 @@ impl PreviewWindow {
             let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
 
             // 使用新的类名注册
-             let bg_brush = CreateSolidBrush(COLORREF(0));
-             let cursor = LoadCursorW(None, IDC_ARROW)?;
+            let bg_brush = CreateSolidBrush(COLORREF(0));
+            let cursor = LoadCursorW(None, IDC_ARROW)?;
 
             let window_class = WNDCLASSW {
                 lpfnWndProc: Some(Self::window_proc),
@@ -888,7 +887,7 @@ impl PreviewWindow {
             };
 
             let atom = RegisterClassW(&window_class);
-             if atom == 0 {
+            if atom == 0 {
                 let err_code = GetLastError();
                 // ERROR_CLASS_ALREADY_EXISTS = 1410
                 if err_code.0 != 1410 {
@@ -933,7 +932,7 @@ impl PreviewWindow {
             // 或者是混合逻辑：
             // 如果 is_pin_mode，我们可能希望它就像原来的 PinWindow 一样（原地）。
             // 原 PinWindow 逻辑：window_x = selection_rect.left, window_y = selection_rect.top
-            
+
             if is_pin_mode {
                 window_x = selection_rect.left;
                 window_y = selection_rect.top;
@@ -944,7 +943,7 @@ impl PreviewWindow {
                 // 让我们保持 padding，这样比较美观，或者看用户喜好。
                 // 用户说 "跟 src\ocr_result_window.rs 一样的窗口"，所以保留 padding 比较好。
             } else {
-                 if window_x + window_width > screen_width {
+                if window_x + window_width > screen_width {
                     window_x = selection_rect.left - window_width - 20;
                     if window_x < 0 {
                         window_x = 50;
@@ -957,7 +956,7 @@ impl PreviewWindow {
                     }
                 }
             }
-            
+
             // 边界检查
             if window_x + window_width > screen_width {
                 window_x = screen_width - window_width;
@@ -968,7 +967,6 @@ impl PreviewWindow {
             window_x = window_x.max(0);
             window_y = window_y.max(0);
 
-
             // 5. 创建窗口 [Zed 风格核心样式]
             let dw_style = WS_THICKFRAME
                 | WS_SYSMENU
@@ -976,8 +974,8 @@ impl PreviewWindow {
                 | WS_MINIMIZEBOX
                 | WS_VISIBLE
                 | WS_CLIPCHILDREN;
-            
-            let mut dw_ex_style = WS_EX_APPWINDOW; 
+
+            let mut dw_ex_style = WS_EX_APPWINDOW;
             if is_pin_mode {
                 dw_ex_style |= WS_EX_TOPMOST;
             }
@@ -998,7 +996,7 @@ impl PreviewWindow {
             )?;
 
             // 6. DWM 设置
-            let dark_mode = 1 as i32;
+            let dark_mode = 1_i32;
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWINDOWATTRIBUTE(20),
@@ -1006,7 +1004,7 @@ impl PreviewWindow {
                 std::mem::size_of::<i32>() as u32,
             );
 
-            let round_preference = 2 as i32;
+            let round_preference = 2_i32;
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWINDOWATTRIBUTE(33),
@@ -1090,7 +1088,7 @@ impl PreviewWindow {
                 );
                 // 初始化文本分行
                 if window.show_text_area {
-                     let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
+                    let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
                     window.text_lines = renderer.split_text_into_lines(&window.text_content, width);
                 }
             }
@@ -1201,29 +1199,33 @@ impl PreviewWindow {
                                     window.image_width,
                                     window.image_height,
                                 ) {
-                                    eprintln!("PreviewWindow: set_image_from_pixels failed: {:?}", e);
+                                    eprintln!(
+                                        "PreviewWindow: set_image_from_pixels failed: {:?}",
+                                        e
+                                    );
                                 }
 
                                 // 传递 show_text_area 参数
-                                if let Err(e) = renderer
-                                    .render(
-                                        &window.text_lines,
-                                        window.text_area_rect,
-                                        width,
-                                        &window.svg_icons,
-                                        window.is_pinned,
-                                        window.is_maximized,
-                                        window.scroll_offset,
-                                        window.line_height,
-                                        window.image_width,
-                                        window.image_height,
-                                        window.selection_start.and_then(|s| window.selection_end.map(|e| (s, e))),
-                                        window.show_text_area,
-                                    ) {
-                                        eprintln!("PreviewWindow: render failed: {:?}", e);
-                                    } else {
-                                        let _ = ValidateRect(Some(hwnd), None);
-                                    }
+                                if let Err(e) = renderer.render(
+                                    &window.text_lines,
+                                    window.text_area_rect,
+                                    width,
+                                    &window.svg_icons,
+                                    window.is_pinned,
+                                    window.is_maximized,
+                                    window.scroll_offset,
+                                    window.line_height,
+                                    window.image_width,
+                                    window.image_height,
+                                    window
+                                        .selection_start
+                                        .and_then(|s| window.selection_end.map(|e| (s, e))),
+                                    window.show_text_area,
+                                ) {
+                                    eprintln!("PreviewWindow: render failed: {:?}", e);
+                                } else {
+                                    let _ = ValidateRect(Some(hwnd), None);
+                                }
                             }
                         }
                     }
@@ -1460,12 +1462,12 @@ impl PreviewWindow {
                         // 文本选择逻辑 (仅当显示文本区域时)
                         if window.show_text_area {
                             let text_rect = window.text_area_rect;
-                            if x >= text_rect.left && x <= text_rect.right 
+                            if x >= text_rect.left && x <= text_rect.right
                                && y >= text_rect.top && y <= text_rect.bottom {
                                 // 计算点击位置对应的行和字符
                                 let relative_y = y - text_rect.top + window.scroll_offset;
                                 let line_index = (relative_y / window.line_height) as usize;
-                                
+
                                 if line_index < window.text_lines.len() {
                                     let relative_x = (x - text_rect.left) as f32;
                                     let line = &window.text_lines[line_index];
@@ -1474,7 +1476,7 @@ impl PreviewWindow {
                                     } else {
                                         0
                                     };
-                                    
+
                                     window.is_selecting = true;
                                     window.selection_start = Some((line_index, char_index));
                                     window.selection_end = Some((line_index, char_index));
@@ -1548,11 +1550,11 @@ impl PreviewWindow {
                             let text_rect = window.text_area_rect;
                             let clamped_x = x.max(text_rect.left).min(text_rect.right);
                             let clamped_y = y.max(text_rect.top).min(text_rect.bottom);
-                            
+
                             let relative_y = clamped_y - text_rect.top + window.scroll_offset;
                             let line_index = ((relative_y / window.line_height) as usize)
                                 .min(window.text_lines.len().saturating_sub(1));
-                            
+
                             let relative_x = (clamped_x - text_rect.left) as f32;
                             let line = &window.text_lines[line_index];
                             let char_index = if let Some(renderer) = &window.renderer {
@@ -1560,7 +1562,7 @@ impl PreviewWindow {
                             } else {
                                 0
                             };
-                            
+
                             window.selection_end = Some((line_index, char_index));
                             needs_repaint = true;
                         }
@@ -1580,12 +1582,12 @@ impl PreviewWindow {
                              // 滚动...
                              let scroll_amount = (delta / 120) * window.line_height * 3;
                              window.scroll_offset -= scroll_amount;
-                             
+
                              // Clamping
                              let max_scroll = (window.text_lines.len() as i32 * window.line_height)
                                 - (window.text_area_rect.bottom - window.text_area_rect.top);
                              window.scroll_offset = window.scroll_offset.clamp(0, max_scroll.max(0));
-                             
+
                              let _ = InvalidateRect(Some(hwnd), Some(&window.text_area_rect), false);
                          }
                     }
@@ -1614,7 +1616,7 @@ impl PreviewWindow {
                         let window = &mut *window_ptr;
                         let vk = wparam.0 as u16;
                         let ctrl_pressed = (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
-                        
+
                         if ctrl_pressed && window.show_text_area {
                             match vk {
                                 0x41 /* VK_A */ => {
@@ -1633,15 +1635,15 @@ impl PreviewWindow {
                                     if let (Some(start), Some(end)) = (window.selection_start, window.selection_end) {
                                         let (start, end) = if start <= end { (start, end) } else { (end, start) };
                                         let mut selected_text = String::new();
-                                        
+
                                         for i in start.0..=end.0 {
                                             if i >= window.text_lines.len() { break; }
                                             let line = &window.text_lines[i];
                                             let chars: Vec<char> = line.chars().collect();
-                                            
+
                                             let start_char = if i == start.0 { start.1 } else { 0 };
                                             let end_char = if i == end.0 { end.1 } else { chars.len() };
-                                            
+
                                             if start_char < chars.len() {
                                                 let slice: String = chars[start_char..end_char.min(chars.len())].iter().collect();
                                                 selected_text.push_str(&slice);
@@ -1650,7 +1652,7 @@ impl PreviewWindow {
                                                 selected_text.push('\n');
                                             }
                                         }
-                                        
+
                                         if !selected_text.is_empty() {
                                             let _ = crate::screenshot::save::copy_text_to_clipboard(&selected_text);
                                         }

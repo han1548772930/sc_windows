@@ -1,10 +1,23 @@
+//! 截图模块
+//!
+//! 提供屏幕捕获和选区管理功能。
+//!
+//! # 主要组件
+//! - [`ScreenshotManager`]: 截图管理器，统一管理截图流程
+//! - [`SelectionState`](selection::SelectionState): 选区状态管理
+//! - [`save`]: 截图保存功能
+//!
+//! # 功能特点
+//! - 支持全屏捕获和区域选择
+//! - 支持窗口自动检测和高亮
+//! - 支持 GDI 和 DXGI 两种捕获方式
+
 use crate::interaction::InteractionController;
 use crate::message::{Command, ScreenshotMessage};
 use crate::platform::windows::SafeHwnd;
 use crate::platform::{PlatformError, PlatformRenderer};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Gdi::HBITMAP;
-// use windows::core::Result; // 不需要，会与std::result::Result冲突
 
 pub mod save;
 pub mod selection;
@@ -235,7 +248,7 @@ impl ScreenshotManager {
         self.current_window.set(Some(hwnd));
     }
 
-    /// 绘图工具管理已移至Drawing模块
+    // 注意: 绘图工具管理已移至Drawing模块
 
     /// 重新截取当前屏幕（从WindowState迁移）
     pub fn capture_screen(&mut self) -> std::result::Result<(), ScreenshotError> {
@@ -288,45 +301,45 @@ impl ScreenshotManager {
             .as_any_mut()
             .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
         ) {
-            // 创建临时DC来使用GDI位图
+            // 创建临时DC来使用GDI位图，使用 RAII 封装自动管理资源
+            use crate::platform::windows::resources::{ManagedBitmap, ManagedDC};
             use windows::Win32::Foundation::HWND;
             use windows::Win32::Graphics::Gdi::{
-                CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+                CreateCompatibleDC, GetDC, ReleaseDC, SelectObject,
             };
+
+            // 使用 RAII 封装管理 GDI 位图
+            let managed_bitmap = ManagedBitmap::new(gdi_bitmap);
 
             unsafe {
                 let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                let temp_dc = CreateCompatibleDC(Some(screen_dc));
-                SelectObject(temp_dc, gdi_bitmap.into());
+                let temp_dc = ManagedDC::new(CreateCompatibleDC(Some(screen_dc)));
+                SelectObject(temp_dc.handle(), managed_bitmap.handle().into());
 
                 // 创建D2D位图并存储
                 let d2d_bitmap = d2d_renderer
-                    .create_d2d_bitmap_from_gdi(temp_dc, self.screen_width, self.screen_height)
+                    .create_d2d_bitmap_from_gdi(temp_dc.handle(), self.screen_width, self.screen_height)
                     .map_err(|e| {
                         ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {e:?}"))
                     })?;
 
                 // 提取位图数据供OCR使用（避免重复截图）
-                if let Ok(bmp_data) = crate::ocr::bitmap_to_bmp_data(temp_dc, gdi_bitmap, self.screen_width, self.screen_height) {
-                     if let Some(ref mut screenshot) = self.current_screenshot {
+                if let Ok(bmp_data) = crate::ocr::bitmap_to_bmp_data(temp_dc.handle(), managed_bitmap.handle(), self.screen_width, self.screen_height)
+                     && let Some(ref mut screenshot) = self.current_screenshot {
                         screenshot.data = bmp_data;
                     }
-                }
 
-                // 清理临时资源
-                let _ = DeleteDC(temp_dc);
+                // 释放 screen_dc（通过 GetDC 获取的需要用 ReleaseDC）
                 ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-                let _ = DeleteObject(gdi_bitmap.into());
+                // temp_dc 和 managed_bitmap 会在离开作用域时自动释放
 
                 // 存储D2D位图（关键：与旧代码保持一致）
                 self.screenshot_bitmap = Some(d2d_bitmap);
                 Ok(())
             }
         } else {
-            // 清理GDI位图
-            unsafe {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(gdi_bitmap.into());
-            }
+            // gdi_bitmap 使用 RAII 封装自动释放
+            let _managed = crate::platform::windows::resources::ManagedBitmap::new(gdi_bitmap);
             Err(ScreenshotError::RenderError(
                 "Cannot access D2D renderer".to_string(),
             ))
@@ -502,11 +515,10 @@ impl ScreenshotManager {
             commands.push(Command::RequestRedraw);
 
             // 如果选择框创建成功且有效，显示工具栏（仅对手动拖拽创建的选择框）
-            if !is_click {
-                if let Some(rect) = self.selection.get_selection() {
+            if !is_click
+                && let Some(rect) = self.selection.get_selection() {
                     commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
                 }
-            }
         } else if self.selection.is_dragging() {
             // 结束拖拽操作（统一交互控制器）
             let _ = self
