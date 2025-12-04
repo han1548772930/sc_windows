@@ -49,26 +49,6 @@ impl CursorContext {
 pub struct CursorManager;
 
 impl CursorManager {
-    /// 根据上下文确定合适的光标（简化版本）
-    pub fn determine_cursor_from_context(
-        context: &CursorContext,
-        drawing_manager: &crate::drawing::DrawingManager,
-    ) -> PCWSTR {
-        Self::determine_cursor(
-            context.mouse_x,
-            context.mouse_y,
-            context.hovered_button,
-            context.is_button_disabled,
-            context.is_text_editing,
-            context.editing_element_info.clone(),
-            context.current_tool,
-            context.selection_rect,
-            context.selected_element_info.clone(),
-            context.selection_handle_mode,
-            drawing_manager,
-        )
-    }
-
     /// 根据应用状态确定合适的光标
     pub fn determine_cursor(
         x: i32,

@@ -22,29 +22,36 @@ impl DrawingManager {
             b: element.color.b,
             a: element.color.a,
         };
-        
+
         let brush = unsafe {
-            render_target.CreateSolidColorBrush(&d2d_color, None)
+            render_target
+                .CreateSolidColorBrush(&d2d_color, None)
                 .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?
         };
-        
+
         let cursor_brush = if self.text_editing && self.text_cursor_visible {
-             let cursor_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+            let cursor_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
                 r: crate::constants::COLOR_TEXT_CURSOR.r,
                 g: crate::constants::COLOR_TEXT_CURSOR.g,
                 b: crate::constants::COLOR_TEXT_CURSOR.b,
                 a: crate::constants::COLOR_TEXT_CURSOR.a,
             };
-             unsafe {
-                 Some(render_target.CreateSolidColorBrush(&cursor_color, None)
-                    .map_err(|e| DrawingError::RenderError(format!("Failed to create cursor brush: {e:?}")))?)
-             }
+            unsafe {
+                Some(
+                    render_target
+                        .CreateSolidColorBrush(&cursor_color, None)
+                        .map_err(|e| {
+                            DrawingError::RenderError(format!(
+                                "Failed to create cursor brush: {e:?}"
+                            ))
+                        })?,
+                )
+            }
         } else {
-             None
+            None
         };
 
-        if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory
-        {
+        if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory {
             unsafe {
                 // 计算文本区域
                 let text_rect = if element.points.len() >= 2 {
@@ -73,19 +80,21 @@ impl DrawingManager {
                     right: text_rect.right - crate::constants::TEXT_PADDING,
                     bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
                 };
-                
+
                 // Use cached layout or create new one
                 let mut cached_layout = element.text_layout.borrow_mut();
-                
+
                 if cached_layout.is_none() {
                     // 使用辅助函数创建文本格式
-                    if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
-                        dwrite_factory,
-                        &element.font_name,
-                        element.font_size,
-                        element.font_weight,
-                        element.font_italic,
-                    ) {
+                    if let Ok(text_format) =
+                        crate::utils::d2d_helpers::create_text_format_from_element(
+                            dwrite_factory,
+                            &element.font_name,
+                            element.font_size,
+                            element.font_weight,
+                            element.font_italic,
+                        )
+                    {
                         // 使用辅助函数创建带样式的文本布局
                         if let Ok(layout) = crate::utils::d2d_helpers::create_text_layout_with_style(
                             dwrite_factory,
@@ -100,27 +109,36 @@ impl DrawingManager {
                         }
                     }
                 }
-                
+
                 if let Some(layout) = cached_layout.as_ref() {
                     render_target.DrawTextLayout(
-                        crate::utils::d2d_point(text_content_rect.left as i32, text_content_rect.top as i32),
+                        crate::utils::d2d_point(
+                            text_content_rect.left as i32,
+                            text_content_rect.top as i32,
+                        ),
                         layout,
                         &brush,
-                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE
+                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
 
-                    if self.text_editing && self.text_cursor_visible
-                         && let Some(edit_idx) = self.editing_element_index
-                            && let Some(current_idx) = self.elements.get_elements().iter().position(|e| std::ptr::eq(e, element))
-                                && current_idx == edit_idx {
-                                     self.draw_text_cursor_optimized(
-                                         element,
-                                         render_target,
-                                         layout,
-                                         &text_content_rect,
-                                         cursor_brush.as_ref()
-                                     )?;
-                                }
+                    if self.text_editing
+                        && self.text_cursor_visible
+                        && let Some(edit_idx) = self.editing_element_index
+                        && let Some(current_idx) = self
+                            .elements
+                            .get_elements()
+                            .iter()
+                            .position(|e| std::ptr::eq(e, element))
+                        && current_idx == edit_idx
+                    {
+                        self.draw_text_cursor_optimized(
+                            element,
+                            render_target,
+                            layout,
+                            &text_content_rect,
+                            cursor_brush.as_ref(),
+                        )?;
+                    }
                 }
             }
         }
@@ -139,23 +157,29 @@ impl DrawingManager {
         let mut point_x = 0.0f32;
         let mut point_y = 0.0f32;
         let mut metrics = windows::Win32::Graphics::DirectWrite::DWRITE_HIT_TEST_METRICS::default();
-        
+
         unsafe {
             let font_size = _element.get_effective_font_size();
             // 与 update_text_element_size 中的行高系数保持一致
             let line_height = font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE;
-            
+
             // Convert text_cursor_pos (char index) to UTF-16 index for DirectWrite
             let text_utf16: Vec<u16> = _element.text.encode_utf16().collect();
             let utf16_len = text_utf16.len();
-            
+
             // Calculate UTF-16 offset corresponding to text_cursor_pos
-            let utf16_pos = _element.text.chars().take(self.text_cursor_pos).map(|c| c.len_utf16()).sum::<usize>();
-            
+            let utf16_pos = _element
+                .text
+                .chars()
+                .take(self.text_cursor_pos)
+                .map(|c| c.len_utf16())
+                .sum::<usize>();
+
             // 检查光标是否在换行符之后（需要特殊处理）
-            let text_before_cursor: String = _element.text.chars().take(self.text_cursor_pos).collect();
+            let text_before_cursor: String =
+                _element.text.chars().take(self.text_cursor_pos).collect();
             let cursor_after_newline = text_before_cursor.ends_with('\n');
-            
+
             if utf16_len == 0 {
                 // 空文本：光标在起始位置
                 point_x = 0.0;
@@ -170,7 +194,7 @@ impl DrawingManager {
                 } else {
                     lines_before.len().saturating_sub(1)
                 };
-                
+
                 point_x = 0.0; // 新行从行首开始
                 point_y = line_count as f32 * line_height;
                 metrics.height = line_height;
@@ -181,7 +205,7 @@ impl DrawingManager {
                     true,
                     &mut point_x,
                     &mut point_y,
-                    &mut metrics
+                    &mut metrics,
                 );
             } else {
                 // 光标在文本中间
@@ -190,25 +214,25 @@ impl DrawingManager {
                     false,
                     &mut point_x,
                     &mut point_y,
-                    &mut metrics
+                    &mut metrics,
                 );
             }
-            
+
             // 确保 metrics.height 有效
             if metrics.height <= 0.0 {
                 metrics.height = line_height;
             }
-            
+
             let abs_x = text_content_rect.left + point_x;
             let abs_y = text_content_rect.top + point_y;
-            
+
             let cursor_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
                 left: abs_x,
                 top: abs_y,
                 right: abs_x + crate::constants::TEXT_CURSOR_WIDTH,
                 bottom: abs_y + metrics.height,
             };
-             
+
             if let Some(brush) = cursor_brush {
                 render_target.FillRectangle(&cursor_rect, brush);
             }
@@ -258,6 +282,10 @@ impl DrawingManager {
 
     /// 创建新文本元素并开始编辑
     pub(super) fn create_and_edit_text_element(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
+        if self.selected_element.is_some() {
+            self.layer_cache
+                .invalidate(crate::rendering::LayerType::StaticElements);
+        }
         // 清除所有元素的选择状态
         self.elements.set_selected(None);
         self.selected_element = None;
@@ -348,34 +376,34 @@ impl DrawingManager {
 
         // 检查当前编辑的文本元素是否为空，如果为空则删除
         if let Some(element_index) = editing_index
-            && let Some(element) = self.elements.get_elements().get(element_index).cloned() {
-                let should_delete = element.text.trim().is_empty();
+            && let Some(element) = self.elements.get_elements().get(element_index).cloned()
+        {
+            let should_delete = element.text.trim().is_empty();
 
-                if should_delete {
-                    // 删除空元素（不记录到历史，因为这是取消创建操作）
-                    let _ = self.elements.remove_element(element_index);
+            if should_delete {
+                // 删除空元素（不记录到历史，因为这是取消创建操作）
+                let _ = self.elements.remove_element(element_index);
 
-                    // 更新选中元素索引
-                    if let Some(selected) = self.selected_element {
-                        if selected == element_index {
-                            self.selected_element = None;
-                        } else if selected > element_index {
-                            self.selected_element = Some(selected - 1);
-                        }
+                // 更新选中元素索引
+                if let Some(selected) = self.selected_element {
+                    if selected == element_index {
+                        self.selected_element = None;
+                    } else if selected > element_index {
+                        self.selected_element = Some(selected - 1);
                     }
-                } else {
-                    // 文本非空，记录 AddElement 操作到历史
-                    let action = super::history::DrawingAction::AddElement {
-                        element,
-                        index: element_index,
-                    };
-                    self.history.record_action(
-                        action,
-                        None, // 创建前无选中
-                        None, // 创建后清除选中
-                    );
                 }
+            } else {
+                // 文本非空，记录 AddElement 操作到历史
+                let action = super::history::DrawingAction::AddElement {
+                    element,
+                    index: element_index,
+                };
+                self.history.record_action(
+                    action, None, // 创建前无选中
+                    None, // 创建后清除选中
+                );
             }
+        }
 
         // 强制确保工具状态保持为文本工具，防止被其他逻辑重置
         self.current_tool = DrawingTool::Text;
@@ -386,10 +414,12 @@ impl DrawingManager {
         // 清除选中状态，这样保存文本后就不会进入手柄检查逻辑
         self.selected_element = None;
         self.elements.set_selected(None);
+        self.layer_cache
+            .invalidate(crate::rendering::LayerType::StaticElements);
 
         vec![
             Command::StopTimer(self.cursor_timer_id as u32), // 停止光标闪烁定时器
-            Command::UpdateToolbar, // 更新工具栏状态（启用撤回按钮）
+            Command::UpdateToolbar,                          // 更新工具栏状态（启用撤回按钮）
             Command::RequestRedraw,
         ]
     }
@@ -401,26 +431,27 @@ impl DrawingManager {
         }
 
         if let Some(element_index) = self.editing_element_index
-            && let Some(element) = self.elements.get_element_mut(element_index) {
-                // 在光标位置插入字符
-                let char_count = element.text.chars().count();
-                if self.text_cursor_pos <= char_count {
-                    // 将字符索引转换为字节索引
-                    let byte_pos = element
-                        .text
-                        .char_indices()
-                        .nth(self.text_cursor_pos)
-                        .map(|(i, _)| i)
-                        .unwrap_or(element.text.len());
-                    element.text.insert(byte_pos, character);
-                    self.text_cursor_pos += 1;
+            && let Some(element) = self.elements.get_element_mut(element_index)
+        {
+            // 在光标位置插入字符
+            let char_count = element.text.chars().count();
+            if self.text_cursor_pos <= char_count {
+                // 将字符索引转换为字节索引
+                let byte_pos = element
+                    .text
+                    .char_indices()
+                    .nth(self.text_cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(element.text.len());
+                element.text.insert(byte_pos, character);
+                self.text_cursor_pos += 1;
 
-                    // 动态调整文字框大小
-                    self.update_text_element_size(element_index);
+                // 动态调整文字框大小
+                self.update_text_element_size(element_index);
 
-                    return vec![Command::RequestRedraw];
-                }
+                return vec![Command::RequestRedraw];
             }
+        }
         vec![]
     }
 
@@ -429,21 +460,22 @@ impl DrawingManager {
         if self.text_editing && timer_id == self.cursor_timer_id as u32 {
             // 切换光标可见性
             self.text_cursor_visible = !self.text_cursor_visible;
-            
+
             // 脏矩形优化：只重绘光标所在的文本元素区域
             if let Some(element_index) = self.editing_element_index
-                && let Some(element) = self.elements.get_elements().get(element_index) {
-                    // 计算光标区域（稍微扩大以确保完整重绘）
-                    let cursor_margin = 5;
-                    let dirty_rect = windows::Win32::Foundation::RECT {
-                        left: element.rect.left - cursor_margin,
-                        top: element.rect.top - cursor_margin,
-                        right: element.rect.right + cursor_margin,
-                        bottom: element.rect.bottom + cursor_margin,
-                    };
-                    return vec![Command::RequestRedrawRect(dirty_rect)];
-                }
-            
+                && let Some(element) = self.elements.get_elements().get(element_index)
+            {
+                // 计算光标区域（稍微扩大以确保完整重绘）
+                let cursor_margin = 5;
+                let dirty_rect = windows::Win32::Foundation::RECT {
+                    left: element.rect.left - cursor_margin,
+                    top: element.rect.top - cursor_margin,
+                    right: element.rect.right + cursor_margin,
+                    bottom: element.rect.bottom + cursor_margin,
+                };
+                return vec![Command::RequestRedrawRect(dirty_rect)];
+            }
+
             // 回退到全屏重绘
             vec![Command::RequestRedraw]
         } else {
@@ -459,27 +491,28 @@ impl DrawingManager {
 
         if let Some(element_index) = self.editing_element_index
             && self.text_cursor_pos > 0
-                && let Some(element) = self.elements.get_element_mut(element_index) {
-                    // 删除光标前的字符
-                    let char_count = element.text.chars().count();
-                    if self.text_cursor_pos <= char_count {
-                        let chars: Vec<char> = element.text.chars().collect();
-                        if self.text_cursor_pos > 0 {
-                            chars
-                                .iter()
-                                .take(self.text_cursor_pos - 1)
-                                .chain(chars.iter().skip(self.text_cursor_pos))
-                                .collect::<String>()
-                                .clone_into(&mut element.text);
-                            self.text_cursor_pos -= 1;
-                        }
-                    }
-
-                    // 动态调整文字框大小
-                    self.update_text_element_size(element_index);
-
-                    return vec![Command::RequestRedraw];
+            && let Some(element) = self.elements.get_element_mut(element_index)
+        {
+            // 删除光标前的字符
+            let char_count = element.text.chars().count();
+            if self.text_cursor_pos <= char_count {
+                let chars: Vec<char> = element.text.chars().collect();
+                if self.text_cursor_pos > 0 {
+                    chars
+                        .iter()
+                        .take(self.text_cursor_pos - 1)
+                        .chain(chars.iter().skip(self.text_cursor_pos))
+                        .collect::<String>()
+                        .clone_into(&mut element.text);
+                    self.text_cursor_pos -= 1;
                 }
+            }
+
+            // 动态调整文字框大小
+            self.update_text_element_size(element_index);
+
+            return vec![Command::RequestRedraw];
+        }
         vec![]
     }
 
@@ -496,126 +529,131 @@ impl DrawingManager {
     /// 光标向右移动
     pub(super) fn move_cursor_right(&mut self) -> Vec<Command> {
         if let Some(element_index) = self.editing_element_index
-            && let Some(el) = self.elements.get_elements().get(element_index) {
-                let char_count = el.text.chars().count();
-                if self.text_cursor_pos < char_count {
-                    self.text_cursor_pos += 1;
-                    return vec![Command::RequestRedraw];
-                }
+            && let Some(el) = self.elements.get_elements().get(element_index)
+        {
+            let char_count = el.text.chars().count();
+            if self.text_cursor_pos < char_count {
+                self.text_cursor_pos += 1;
+                return vec![Command::RequestRedraw];
             }
+        }
         vec![]
     }
 
     /// 光标移动到行首（准确到当前行）
     pub(super) fn move_cursor_to_line_start(&mut self) -> Vec<Command> {
         if let Some(element_index) = self.editing_element_index
-            && let Some(el) = self.elements.get_elements().get(element_index) {
-                let before = el
-                    .text
-                    .chars()
-                    .take(self.text_cursor_pos)
-                    .collect::<String>();
-                if let Some(last_nl) = before.rfind('\n') {
-                    self.text_cursor_pos = last_nl + 1;
-                } else {
-                    self.text_cursor_pos = 0;
-                }
-                return vec![Command::RequestRedraw];
+            && let Some(el) = self.elements.get_elements().get(element_index)
+        {
+            let before = el
+                .text
+                .chars()
+                .take(self.text_cursor_pos)
+                .collect::<String>();
+            if let Some(last_nl) = before.rfind('\n') {
+                self.text_cursor_pos = last_nl + 1;
+            } else {
+                self.text_cursor_pos = 0;
             }
+            return vec![Command::RequestRedraw];
+        }
         vec![]
     }
 
     /// 光标移动到行尾（准确到当前行）
     pub(super) fn move_cursor_to_line_end(&mut self) -> Vec<Command> {
         if let Some(element_index) = self.editing_element_index
-            && let Some(el) = self.elements.get_elements().get(element_index) {
-                let after = el
-                    .text
-                    .chars()
-                    .skip(self.text_cursor_pos)
-                    .collect::<String>();
-                if let Some(next_nl) = after.find('\n') {
-                    self.text_cursor_pos += next_nl;
-                } else {
-                    self.text_cursor_pos = el.text.chars().count();
-                }
-                return vec![Command::RequestRedraw];
+            && let Some(el) = self.elements.get_elements().get(element_index)
+        {
+            let after = el
+                .text
+                .chars()
+                .skip(self.text_cursor_pos)
+                .collect::<String>();
+            if let Some(next_nl) = after.find('\n') {
+                self.text_cursor_pos += next_nl;
+            } else {
+                self.text_cursor_pos = el.text.chars().count();
             }
+            return vec![Command::RequestRedraw];
+        }
         vec![]
     }
 
     /// 光标向上移动一行（基于字符计算）
     pub(super) fn move_cursor_up(&mut self) -> Vec<Command> {
         if let Some(element_index) = self.editing_element_index
-            && let Some(el) = self.elements.get_elements().get(element_index) {
-                let before = el
-                    .text
-                    .chars()
-                    .take(self.text_cursor_pos)
-                    .collect::<String>();
-                let lines_before: Vec<&str> = before.lines().collect();
-                if lines_before.len() > 1 {
-                    let current_line_text = if before.ends_with('\n') {
-                        ""
-                    } else {
-                        lines_before.last().copied().unwrap_or("")
-                    };
-                    let current_col = current_line_text.chars().count();
-                    let current_line_start = if before.ends_with('\n') {
-                        lines_before.len()
-                    } else {
-                        lines_before.len() - 1
-                    };
-                    if current_line_start > 0 {
-                        let prev_line_text = lines_before[current_line_start - 1];
-                        let prev_len = prev_line_text.chars().count();
-                        let target_col = current_col.min(prev_len);
-                        let chars_before_prev: usize = lines_before[..current_line_start - 1]
-                            .iter()
-                            .map(|line| line.chars().count() + 1)
-                            .sum();
-                        self.text_cursor_pos = chars_before_prev + target_col;
-                        return vec![Command::RequestRedraw];
-                    }
+            && let Some(el) = self.elements.get_elements().get(element_index)
+        {
+            let before = el
+                .text
+                .chars()
+                .take(self.text_cursor_pos)
+                .collect::<String>();
+            let lines_before: Vec<&str> = before.lines().collect();
+            if lines_before.len() > 1 {
+                let current_line_text = if before.ends_with('\n') {
+                    ""
+                } else {
+                    lines_before.last().copied().unwrap_or("")
+                };
+                let current_col = current_line_text.chars().count();
+                let current_line_start = if before.ends_with('\n') {
+                    lines_before.len()
+                } else {
+                    lines_before.len() - 1
+                };
+                if current_line_start > 0 {
+                    let prev_line_text = lines_before[current_line_start - 1];
+                    let prev_len = prev_line_text.chars().count();
+                    let target_col = current_col.min(prev_len);
+                    let chars_before_prev: usize = lines_before[..current_line_start - 1]
+                        .iter()
+                        .map(|line| line.chars().count() + 1)
+                        .sum();
+                    self.text_cursor_pos = chars_before_prev + target_col;
+                    return vec![Command::RequestRedraw];
                 }
             }
+        }
         vec![]
     }
 
     /// 光标向下移动一行（基于字符计算）
     pub(super) fn move_cursor_down(&mut self) -> Vec<Command> {
         if let Some(element_index) = self.editing_element_index
-            && let Some(el) = self.elements.get_elements().get(element_index) {
-                let before = el
-                    .text
-                    .chars()
-                    .take(self.text_cursor_pos)
-                    .collect::<String>();
-                let after = el
-                    .text
-                    .chars()
-                    .skip(self.text_cursor_pos)
-                    .collect::<String>();
-                if let Some(next_nl) = after.find('\n') {
-                    let lines_before: Vec<&str> = before.lines().collect();
-                    let current_line_text = if before.ends_with('\n') {
-                        ""
-                    } else {
-                        lines_before.last().copied().unwrap_or("")
-                    };
-                    let current_col = current_line_text.chars().count();
-                    let from_next = &after[next_nl + 1..];
-                    let next_line_text = if let Some(end_pos) = from_next.find('\n') {
-                        &from_next[..end_pos]
-                    } else {
-                        from_next
-                    };
-                    let next_len = next_line_text.chars().count();
-                    let target_col = current_col.min(next_len);
-                    self.text_cursor_pos = self.text_cursor_pos + next_nl + 1 + target_col;
-                    return vec![Command::RequestRedraw];
-                }
+            && let Some(el) = self.elements.get_elements().get(element_index)
+        {
+            let before = el
+                .text
+                .chars()
+                .take(self.text_cursor_pos)
+                .collect::<String>();
+            let after = el
+                .text
+                .chars()
+                .skip(self.text_cursor_pos)
+                .collect::<String>();
+            if let Some(next_nl) = after.find('\n') {
+                let lines_before: Vec<&str> = before.lines().collect();
+                let current_line_text = if before.ends_with('\n') {
+                    ""
+                } else {
+                    lines_before.last().copied().unwrap_or("")
+                };
+                let current_col = current_line_text.chars().count();
+                let from_next = &after[next_nl + 1..];
+                let next_line_text = if let Some(end_pos) = from_next.find('\n') {
+                    &from_next[..end_pos]
+                } else {
+                    from_next
+                };
+                let next_len = next_line_text.chars().count();
+                let target_col = current_col.min(next_len);
+                self.text_cursor_pos = self.text_cursor_pos + next_nl + 1 + target_col;
+                return vec![Command::RequestRedraw];
             }
+        }
         vec![]
     }
 
@@ -629,7 +667,8 @@ impl DrawingManager {
             element.text_layout.replace(None);
 
             let font_size = element.get_effective_font_size();
-            let dynamic_line_height = (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
+            let dynamic_line_height =
+                (font_size * crate::constants::TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
 
             let text_content = element.text.clone();
             let lines: Vec<&str> = if text_content.is_empty() {
@@ -651,13 +690,15 @@ impl DrawingManager {
                 if let Ok(factory) =
                     DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED)
                 {
-                    if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
-                        &factory,
-                        &element.font_name,
-                        font_size,
-                        element.font_weight,
-                        element.font_italic,
-                    ) {
+                    if let Ok(text_format) =
+                        crate::utils::d2d_helpers::create_text_format_from_element(
+                            &factory,
+                            &element.font_name,
+                            font_size,
+                            element.font_weight,
+                            element.font_italic,
+                        )
+                    {
                         for line in &lines {
                             let wide: Vec<u16> = line.encode_utf16().collect();
                             if let Ok(layout) =

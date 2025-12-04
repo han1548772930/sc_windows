@@ -1375,70 +1375,6 @@ impl PlatformRenderer for Direct2DRenderer {
 }
 
 impl Direct2DRenderer {
-    /// 绘制多行文本（支持滚动和裁剪）
-    pub fn draw_multiline_text(
-        &mut self,
-        text: &str,
-        rect: Rectangle,
-        style: &TextStyle,
-        scroll_offset: f32,
-    ) -> std::result::Result<(), PlatformError> {
-        if self.render_target.is_none() || self.dwrite_factory.is_none() {
-            return Ok(());
-        }
-
-        // 使用缓存获取文本格式
-        let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
-
-        // 获取画刷（避免借用冲突，提前获取）
-        let brush = self.get_or_create_brush(style.color)?;
-
-        // 必须使用 dwrite_factory 的引用
-        // Safety: 前面已经检查过 is_none() 会提前返回
-        let (dwrite_factory, render_target) = match (&self.dwrite_factory, &self.render_target) {
-            (Some(dw), Some(rt)) => (dw, rt),
-            _ => return Ok(()), // 前面已经检查过，这里不应该到达
-        };
-
-        unsafe {
-            // 创建文本布局
-            let text_utf16: Vec<u16> = text.encode_utf16().collect();
-            let text_layout = dwrite_factory
-                .CreateTextLayout(
-                    &text_utf16,
-                    &text_format,
-                    rect.width,
-                    f32::MAX, // 高度不限制，允许完全布局
-                )
-                .map_err(|e| {
-                    PlatformError::RenderError(format!("Failed to create text layout: {:?}", e))
-                })?;
-
-            // 设置裁剪区域（限制在rect内显示）
-            let clip_rect = D2D_RECT_F {
-                left: rect.x,
-                top: rect.y,
-                right: rect.x + rect.width,
-                bottom: rect.y + rect.height,
-            };
-
-            render_target.PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-            // 绘制文本布局
-            // 文本起点为 rect.x, rect.y，由于滚动，y 需要减去 offset
-            let origin = windows_numerics::Vector2 {
-                X: rect.x,
-                Y: rect.y - scroll_offset,
-            };
-
-            render_target.DrawTextLayout(origin, &text_layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
-
-            render_target.PopAxisAlignedClip();
-        }
-
-        Ok(())
-    }
-
     /// 测量多行文本尺寸（用于计算滚动高度）
     pub fn measure_text_layout_size(
         &self,
@@ -1638,5 +1574,108 @@ impl Direct2DRenderer {
                 "No render target available".to_string(),
             ))
         }
+    }
+
+    // =====================================================================
+    // 静态层缓存相关方法
+    // =====================================================================
+
+    /// 检查 layer_target 是否有效
+    pub fn is_layer_target_valid(&self) -> bool {
+        self.layer_target.is_some()
+    }
+
+    /// 更新静态缓存层
+    ///
+    /// 调用者提供的闭包将被用于绘制静态元素到 layer_target。
+    /// 该方法会：
+    /// 1. 获取/创建 layer_target
+    /// 2. BeginDraw
+    /// 3. 清空背景（透明）
+    /// 4. 执行闭包绘制静态元素
+    /// 5. EndDraw
+    pub fn update_static_layer<F>(&mut self, draw_fn: F) -> std::result::Result<(), PlatformError>
+    where
+        F: FnOnce(&ID2D1RenderTarget, &mut Self) -> std::result::Result<(), PlatformError>,
+    {
+        // 确保 layer_target 存在
+        if self.layer_target.is_none() {
+            self.get_or_create_layer_target();
+        }
+
+        let layer_target = self.layer_target.as_ref().ok_or_else(|| {
+            PlatformError::ResourceError("Failed to get or create layer target".to_string())
+        })?;
+
+        // 为了避免借用冲突，先 clone layer_target
+        let layer_target_clone = layer_target.clone();
+
+        unsafe {
+            // BeginDraw
+            layer_target_clone.BeginDraw();
+
+            // 清空背景（完全透明）
+            let clear_color = D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            };
+            layer_target_clone.Clear(Some(&clear_color));
+        }
+
+        // 执行绘制闭包
+        // 注意：这里传递 layer_target 作为渲染目标
+        let layer_target_interface: &ID2D1RenderTarget = &layer_target_clone;
+        let result = draw_fn(layer_target_interface, self);
+
+        // 无论绘制成功与否，都要 EndDraw
+        unsafe {
+            let end_result = layer_target_clone.EndDraw(None, None);
+            if let Err(e) = end_result {
+                return Err(PlatformError::RenderError(format!(
+                    "Layer target EndDraw failed: {:?}",
+                    e
+                )));
+            }
+        }
+
+        result
+    }
+
+    /// 绘制静态缓存层到屏幕
+    ///
+    /// 将 layer_target 的内容作为位图绘制到主 render_target
+    pub fn draw_static_layer(&self) -> std::result::Result<(), PlatformError> {
+        let render_target = self.render_target.as_ref().ok_or_else(|| {
+            PlatformError::ResourceError("No render target available".to_string())
+        })?;
+
+        let layer_target = self.layer_target.as_ref().ok_or_else(|| {
+            PlatformError::ResourceError("No layer target available".to_string())
+        })?;
+
+        unsafe {
+            // 从 layer_target 获取位图
+            let bitmap = layer_target.GetBitmap().map_err(|e| {
+                PlatformError::ResourceError(format!("Failed to get bitmap from layer target: {:?}", e))
+            })?;
+
+            // 绘制到主 render_target 的 (0,0) 位置
+            render_target.DrawBitmap(
+                &bitmap,
+                None, // dest_rect: 全屏
+                1.0,  // opacity
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None, // source_rect: 全图
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 获取 layer_target 的引用（用于外部直接绘制）
+    pub fn get_layer_target(&self) -> Option<&ID2D1BitmapRenderTarget> {
+        self.layer_target.as_ref()
     }
 }

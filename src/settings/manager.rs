@@ -16,9 +16,6 @@
 use super::Settings;
 use std::sync::{Arc, RwLock};
 
-/// 配置变更回调类型
-pub type ConfigWatcher = Box<dyn Fn(&Settings) + Send + Sync>;
-
 /// 统一配置管理器
 ///
 /// 提供以下功能:
@@ -28,8 +25,6 @@ pub type ConfigWatcher = Box<dyn Fn(&Settings) + Send + Sync>;
 pub struct ConfigManager {
     /// 缓存的设置
     settings: Arc<RwLock<Settings>>,
-    /// 设置变更监听器
-    watchers: Vec<ConfigWatcher>,
 }
 
 impl ConfigManager {
@@ -39,7 +34,6 @@ impl ConfigManager {
     pub fn new() -> Self {
         Self {
             settings: Arc::new(RwLock::new(Settings::load())),
-            watchers: Vec::new(),
         }
     }
 
@@ -59,53 +53,16 @@ impl ConfigManager {
         Arc::clone(&self.settings)
     }
 
-    /// 注册配置变更监听器
-    ///
-    /// 当配置重新加载时，所有注册的监听器都会被调用
-    pub fn watch<F>(&mut self, callback: F)
-    where
-        F: Fn(&Settings) + Send + Sync + 'static,
-    {
-        self.watchers.push(Box::new(callback));
-    }
-
     /// 重新加载配置
     ///
-    /// 从文件重新加载设置，并通知所有监听器
+    /// 从文件重新加载设置
     pub fn reload(&mut self) {
         let new_settings = Settings::load();
 
         // 更新缓存
         if let Ok(mut guard) = self.settings.write() {
-            *guard = new_settings.clone();
+            *guard = new_settings;
         }
-
-        // 通知所有监听器
-        for watcher in &self.watchers {
-            watcher(&new_settings);
-        }
-    }
-
-    /// 更新并保存设置
-    ///
-    /// 更新内存中的设置并持久化到文件，然后通知监听器
-    pub fn update(&mut self, updater: impl FnOnce(&mut Settings)) -> windows::core::Result<()> {
-        let new_settings = {
-            let mut guard = self
-                .settings
-                .write()
-                .map_err(|_| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
-            updater(&mut guard);
-            guard.save()?;
-            guard.clone()
-        };
-
-        // 通知所有监听器
-        for watcher in &self.watchers {
-            watcher(&new_settings);
-        }
-
-        Ok(())
     }
 
     // ========== 便捷访问方法 ==========

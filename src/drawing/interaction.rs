@@ -3,10 +3,10 @@
 //! 将 DrawingManager 的鼠标/键盘交互逻辑剥离到此文件，
 //! 保持 mod.rs 专注于组装和核心状态管理。
 
-use crate::message::{Command, DrawingMessage};
+use super::DrawingManager;
 use super::history;
 use super::types::{DrawingElement, DrawingTool, ElementInteractionMode};
-use super::DrawingManager;
+use crate::message::{Command, DrawingMessage};
 
 impl DrawingManager {
     /// 处理鼠标移动事件
@@ -100,16 +100,17 @@ impl DrawingManager {
             ElementInteractionMode::MovingElement => {
                 if let Some(index) = self.selected_element
                     && let Some(element) = self.elements.get_elements().get(index)
-                        && element.tool != DrawingTool::Pen {
-                            let dx = x - self.interaction_start_pos.x;
-                            let dy = y - self.interaction_start_pos.y;
-                            if let Some(el) = self.elements.get_element_mut(index) {
-                                let current_dx = el.rect.left - self.interaction_start_rect.left;
-                                let current_dy = el.rect.top - self.interaction_start_rect.top;
-                                el.move_by(-current_dx, -current_dy);
-                                el.move_by(dx, dy);
-                            }
-                        }
+                    && element.tool != DrawingTool::Pen
+                {
+                    let dx = x - self.interaction_start_pos.x;
+                    let dy = y - self.interaction_start_pos.y;
+                    if let Some(el) = self.elements.get_element_mut(index) {
+                        let current_dx = el.rect.left - self.interaction_start_rect.left;
+                        let current_dy = el.rect.top - self.interaction_start_rect.top;
+                        el.move_by(-current_dx, -current_dy);
+                        el.move_by(dx, dy);
+                    }
+                }
             }
             ElementInteractionMode::ResizingElement(resize_mode) => {
                 self.handle_resize_drag(x, y, *resize_mode);
@@ -121,74 +122,83 @@ impl DrawingManager {
     /// 处理调整大小拖拽
     fn handle_resize_drag(&mut self, x: i32, y: i32, resize_mode: crate::types::DragMode) {
         if let Some(index) = self.selected_element
-            && let Some(el) = self.elements.get_element_mut(index) {
-                if el.tool == DrawingTool::Pen {
-                    return;
-                }
-                let start_rect = self.interaction_start_rect;
-                let start_font_size = self.interaction_start_font_size;
-                let mut new_rect = start_rect;
-                let dx = x - self.interaction_start_pos.x;
-                let dy = y - self.interaction_start_pos.y;
-                
-                match resize_mode {
-                    crate::types::DragMode::ResizingTopLeft => {
-                        new_rect.left += dx;
-                        new_rect.top += dy;
-                    }
-                    crate::types::DragMode::ResizingTopCenter => {
-                        new_rect.top += dy;
-                    }
-                    crate::types::DragMode::ResizingTopRight => {
-                        new_rect.right += dx;
-                        new_rect.top += dy;
-                    }
-                    crate::types::DragMode::ResizingMiddleRight => {
-                        new_rect.right += dx;
-                    }
-                    crate::types::DragMode::ResizingBottomRight => {
-                        new_rect.right += dx;
-                        new_rect.bottom += dy;
-                    }
-                    crate::types::DragMode::ResizingBottomCenter => {
-                        new_rect.bottom += dy;
-                    }
-                    crate::types::DragMode::ResizingBottomLeft => {
-                        new_rect.left += dx;
-                        new_rect.bottom += dy;
-                    }
-                    crate::types::DragMode::ResizingMiddleLeft => {
-                        new_rect.left += dx;
-                    }
-                    _ => {}
-                }
+            && let Some(el) = self.elements.get_element_mut(index)
+        {
+            if el.tool == DrawingTool::Pen {
+                return;
+            }
+            let start_rect = self.interaction_start_rect;
+            let start_font_size = self.interaction_start_font_size;
+            let mut new_rect = start_rect;
+            let dx = x - self.interaction_start_pos.x;
+            let dy = y - self.interaction_start_pos.y;
 
-                match el.tool {
-                    DrawingTool::Arrow => {
-                        // 仅支持通过左上角/右下角手柄调整起点/终点
-                        if el.points.len() >= 2 {
-                            match resize_mode {
-                                crate::types::DragMode::ResizingTopLeft => {
-                                    el.points[0] = windows::Win32::Foundation::POINT { x, y };
-                                    el.update_bounding_rect();
-                                }
-                                crate::types::DragMode::ResizingBottomRight => {
-                                    el.points[1] = windows::Win32::Foundation::POINT { x, y };
-                                    el.update_bounding_rect();
-                                }
-                                _ => {}
+            match resize_mode {
+                crate::types::DragMode::ResizingTopLeft => {
+                    new_rect.left += dx;
+                    new_rect.top += dy;
+                }
+                crate::types::DragMode::ResizingTopCenter => {
+                    new_rect.top += dy;
+                }
+                crate::types::DragMode::ResizingTopRight => {
+                    new_rect.right += dx;
+                    new_rect.top += dy;
+                }
+                crate::types::DragMode::ResizingMiddleRight => {
+                    new_rect.right += dx;
+                }
+                crate::types::DragMode::ResizingBottomRight => {
+                    new_rect.right += dx;
+                    new_rect.bottom += dy;
+                }
+                crate::types::DragMode::ResizingBottomCenter => {
+                    new_rect.bottom += dy;
+                }
+                crate::types::DragMode::ResizingBottomLeft => {
+                    new_rect.left += dx;
+                    new_rect.bottom += dy;
+                }
+                crate::types::DragMode::ResizingMiddleLeft => {
+                    new_rect.left += dx;
+                }
+                _ => {}
+            }
+
+            match el.tool {
+                DrawingTool::Arrow => {
+                    // 仅支持通过左上角/右下角手柄调整起点/终点
+                    if el.points.len() >= 2 {
+                        match resize_mode {
+                            crate::types::DragMode::ResizingTopLeft => {
+                                el.points[0] = windows::Win32::Foundation::POINT { x, y };
+                                el.update_bounding_rect();
                             }
+                            crate::types::DragMode::ResizingBottomRight => {
+                                el.points[1] = windows::Win32::Foundation::POINT { x, y };
+                                el.update_bounding_rect();
+                            }
+                            _ => {}
                         }
                     }
-                    DrawingTool::Text => {
-                        Self::apply_text_resize(el, resize_mode, dx, dy, new_rect, start_rect, start_font_size);
-                    }
-                    _ => {
-                        // 其他元素按矩形调整
-                        el.resize(new_rect);
-                    }
+                }
+                DrawingTool::Text => {
+                    Self::apply_text_resize(
+                        el,
+                        resize_mode,
+                        dx,
+                        dy,
+                        new_rect,
+                        start_rect,
+                        start_font_size,
+                    );
+                }
+                _ => {
+                    // 其他元素按矩形调整
+                    el.resize(new_rect);
                 }
             }
+        }
     }
 
     /// 应用文本元素调整大小（静态方法，避免借用冲突）
@@ -248,38 +258,30 @@ impl DrawingManager {
 
             // 根据拖拽的角确定新矩形的位置
             let proportional_rect = match resize_mode {
-                crate::types::DragMode::ResizingTopLeft => {
-                    windows::Win32::Foundation::RECT {
-                        left: start_rect.right - new_width,
-                        top: start_rect.bottom - new_height,
-                        right: start_rect.right,
-                        bottom: start_rect.bottom,
-                    }
-                }
-                crate::types::DragMode::ResizingTopRight => {
-                    windows::Win32::Foundation::RECT {
-                        left: start_rect.left,
-                        top: start_rect.bottom - new_height,
-                        right: start_rect.left + new_width,
-                        bottom: start_rect.bottom,
-                    }
-                }
-                crate::types::DragMode::ResizingBottomRight => {
-                    windows::Win32::Foundation::RECT {
-                        left: start_rect.left,
-                        top: start_rect.top,
-                        right: start_rect.left + new_width,
-                        bottom: start_rect.top + new_height,
-                    }
-                }
-                crate::types::DragMode::ResizingBottomLeft => {
-                    windows::Win32::Foundation::RECT {
-                        left: start_rect.right - new_width,
-                        top: start_rect.top,
-                        right: start_rect.right,
-                        bottom: start_rect.top + new_height,
-                    }
-                }
+                crate::types::DragMode::ResizingTopLeft => windows::Win32::Foundation::RECT {
+                    left: start_rect.right - new_width,
+                    top: start_rect.bottom - new_height,
+                    right: start_rect.right,
+                    bottom: start_rect.bottom,
+                },
+                crate::types::DragMode::ResizingTopRight => windows::Win32::Foundation::RECT {
+                    left: start_rect.left,
+                    top: start_rect.bottom - new_height,
+                    right: start_rect.left + new_width,
+                    bottom: start_rect.bottom,
+                },
+                crate::types::DragMode::ResizingBottomRight => windows::Win32::Foundation::RECT {
+                    left: start_rect.left,
+                    top: start_rect.top,
+                    right: start_rect.left + new_width,
+                    bottom: start_rect.top + new_height,
+                },
+                crate::types::DragMode::ResizingBottomLeft => windows::Win32::Foundation::RECT {
+                    left: start_rect.right - new_width,
+                    top: start_rect.top,
+                    right: start_rect.right,
+                    bottom: start_rect.top + new_height,
+                },
                 _ => new_rect,
             };
 
@@ -310,20 +312,21 @@ impl DrawingManager {
                 // 箭头元素的特殊处理
                 let detection_radius = crate::constants::HANDLE_DETECTION_RADIUS as i32;
                 if let Some(points) = element_points
-                    && points.len() >= 2 {
-                        let start = points[0];
-                        let end = points[1];
-                        let dx = x - start.x;
-                        let dy = y - start.y;
-                        if dx * dx + dy * dy <= detection_radius * detection_radius {
-                            return crate::types::DragMode::ResizingTopLeft;
-                        }
-                        let dx2 = x - end.x;
-                        let dy2 = y - end.y;
-                        if dx2 * dx2 + dy2 * dy2 <= detection_radius * detection_radius {
-                            return crate::types::DragMode::ResizingBottomRight;
-                        }
+                    && points.len() >= 2
+                {
+                    let start = points[0];
+                    let end = points[1];
+                    let dx = x - start.x;
+                    let dy = y - start.y;
+                    if dx * dx + dy * dy <= detection_radius * detection_radius {
+                        return crate::types::DragMode::ResizingTopLeft;
                     }
+                    let dx2 = x - end.x;
+                    let dy2 = y - end.y;
+                    if dx2 * dx2 + dy2 * dy2 <= detection_radius * detection_radius {
+                        return crate::types::DragMode::ResizingBottomRight;
+                    }
+                }
                 return crate::types::DragMode::None;
             }
             crate::types::DrawingTool::Text => crate::utils::HandleConfig::Corners,
@@ -352,27 +355,33 @@ impl DrawingManager {
 
         // 文本编辑状态下的特殊处理
         if self.text_editing
-            && let Some(editing_index) = self.editing_element_index {
-                if let Some(element) = self.elements.get_elements().get(editing_index)
-                    && element.contains_point(x, y) {
-                        // 点击正在编辑的文本元素，检查是否点击了手柄
-                        let handle_mode = self.get_element_handle_at_position(
-                            x, y, &element.rect, element.tool, editing_index,
-                        );
-                        if handle_mode != crate::types::DragMode::None {
-                            self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
-                            self.mouse_pressed = true;
-                            self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
-                            self.interaction_start_rect = element.rect;
-                            self.interaction_start_font_size = element.font_size;
-                            self.interaction_start_points = element.points.clone();
-                            return (vec![Command::RequestRedraw], true);
-                        }
-                        return (vec![Command::RequestRedraw], true);
-                    }
-                let stop_commands = self.stop_text_editing();
-                return (stop_commands, true);
+            && let Some(editing_index) = self.editing_element_index
+        {
+            if let Some(element) = self.elements.get_elements().get(editing_index)
+                && element.contains_point(x, y)
+            {
+                // 点击正在编辑的文本元素，检查是否点击了手柄
+                let handle_mode = self.get_element_handle_at_position(
+                    x,
+                    y,
+                    &element.rect,
+                    element.tool,
+                    editing_index,
+                );
+                if handle_mode != crate::types::DragMode::None {
+                    self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
+                    self.mouse_pressed = true;
+                    self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                    self.interaction_start_rect = element.rect;
+                    self.interaction_start_font_size = element.font_size;
+                    self.interaction_start_points = element.points.clone();
+                    return (vec![Command::RequestRedraw], true);
+                }
+                return (vec![Command::RequestRedraw], true);
             }
+            let stop_commands = self.stop_text_editing();
+            return (stop_commands, true);
+        }
 
         // 文本工具特殊处理
         if inside_selection
@@ -382,22 +391,23 @@ impl DrawingManager {
         {
             if let Some(idx) = self.elements.get_element_at_position(x, y) {
                 if let Some(element) = self.elements.get_elements().get(idx)
-                    && element.tool == DrawingTool::Text {
-                        let element_rect = element.rect;
-                        let element_font_size = element.font_size;
-                        let element_points = element.points.clone();
+                    && element.tool == DrawingTool::Text
+                {
+                    let element_rect = element.rect;
+                    let element_font_size = element.font_size;
+                    let element_points = element.points.clone();
 
-                        self.handle_message(DrawingMessage::SelectElement(Some(idx)));
+                    self.handle_message(DrawingMessage::SelectElement(Some(idx)));
 
-                        self.interaction_mode = ElementInteractionMode::MovingElement;
-                        self.mouse_pressed = true;
-                        self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
-                        self.interaction_start_rect = element_rect;
-                        self.interaction_start_font_size = element_font_size;
-                        self.interaction_start_points = element_points;
+                    self.interaction_mode = ElementInteractionMode::MovingElement;
+                    self.mouse_pressed = true;
+                    self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                    self.interaction_start_rect = element_rect;
+                    self.interaction_start_font_size = element_font_size;
+                    self.interaction_start_points = element_points;
 
-                        return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
-                    }
+                    return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
+                }
             } else {
                 return self.create_and_edit_text_element(x, y);
             }
@@ -412,49 +422,57 @@ impl DrawingManager {
         // 1) 已选元素的手柄优先
         if inside_selection
             && let Some(sel_idx) = self.selected_element
-                && let Some(element) = self.elements.get_elements().get(sel_idx)
-                    && element.tool != DrawingTool::Pen {
-                        let handle_mode = self.get_element_handle_at_position(
-                            x, y, &element.rect, element.tool, sel_idx,
-                        );
-                        if handle_mode != crate::types::DragMode::None {
-                            self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
-                            self.mouse_pressed = true;
-                            self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
-                            self.interaction_start_rect = element.rect;
-                            self.interaction_start_font_size = element.font_size;
-                            self.interaction_start_points = element.points.clone();
-                            return (vec![Command::RequestRedraw], true);
-                        }
-                        // 2) 已选元素内部（移动）
-                        if element.contains_point(x, y) {
-                            let element_visible = if let Some(sel_rect) = selection_rect {
-                                self.elements.is_element_visible_in_selection(element, &sel_rect)
-                            } else {
-                                true
-                            };
+            && let Some(element) = self.elements.get_elements().get(sel_idx)
+            && element.tool != DrawingTool::Pen
+        {
+            let handle_mode =
+                self.get_element_handle_at_position(x, y, &element.rect, element.tool, sel_idx);
+            if handle_mode != crate::types::DragMode::None {
+                self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
+                self.mouse_pressed = true;
+                self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                self.interaction_start_rect = element.rect;
+                self.interaction_start_font_size = element.font_size;
+                self.interaction_start_points = element.points.clone();
+                return (vec![Command::RequestRedraw], true);
+            }
+            // 2) 已选元素内部（移动）
+            if element.contains_point(x, y) {
+                let element_visible = if let Some(sel_rect) = selection_rect {
+                    self.elements
+                        .is_element_visible_in_selection(element, &sel_rect)
+                } else {
+                    true
+                };
 
-                            if element_visible {
-                                self.interaction_mode = ElementInteractionMode::MovingElement;
-                                self.mouse_pressed = true;
-                                self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
-                                self.interaction_start_rect = element.rect;
-                                self.interaction_start_points = element.points.clone();
-                                return (vec![Command::RequestRedraw], true);
-                            }
-                        }
-                    }
+                if element_visible {
+                    self.interaction_mode = ElementInteractionMode::MovingElement;
+                    self.mouse_pressed = true;
+                    self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
+                    self.interaction_start_rect = element.rect;
+                    self.interaction_start_points = element.points.clone();
+                    return (vec![Command::RequestRedraw], true);
+                }
+            }
+        }
 
         // 3) 检查是否点击其他元素
         if inside_selection
-            && let Some(idx) = self.elements.get_element_at_position_with_selection(x, y, selection_rect)
+            && let Some(idx) =
+                self.elements
+                    .get_element_at_position_with_selection(x, y, selection_rect)
         {
             let (element_tool, element_rect, element_font_size, element_points) = {
                 if let Some(element) = self.elements.get_elements().get(idx) {
                     if element.tool == DrawingTool::Pen {
                         return (vec![], false);
                     }
-                    (element.tool, element.rect, element.font_size, element.points.clone())
+                    (
+                        element.tool,
+                        element.rect,
+                        element.font_size,
+                        element.points.clone(),
+                    )
                 } else {
                     return (vec![], false);
                 }
@@ -471,7 +489,8 @@ impl DrawingManager {
             self.interaction_start_font_size = element_font_size;
             self.interaction_start_points = element_points;
 
-            let handle_mode = self.get_element_handle_at_position(x, y, &element_rect, element_tool, idx);
+            let handle_mode =
+                self.get_element_handle_at_position(x, y, &element_rect, element_tool, idx);
 
             if handle_mode != crate::types::DragMode::None {
                 self.interaction_mode = ElementInteractionMode::from_drag_mode(handle_mode);
@@ -499,6 +518,8 @@ impl DrawingManager {
         if self.selected_element.is_some() {
             self.selected_element = None;
             self.elements.set_selected(None);
+            self.layer_cache
+                .invalidate(crate::rendering::LayerType::StaticElements);
             (vec![Command::UpdateToolbar, Command::RequestRedraw], true)
         } else {
             (vec![], false)
@@ -507,6 +528,10 @@ impl DrawingManager {
 
     /// 开始绘制形状
     pub(super) fn start_drawing_shape(&mut self, x: i32, y: i32) {
+        if self.selected_element.is_some() {
+            self.layer_cache
+                .invalidate(crate::rendering::LayerType::StaticElements);
+        }
         self.selected_element = None;
         self.elements.set_selected(None);
 
@@ -539,7 +564,9 @@ impl DrawingManager {
             | DrawingTool::Circle
             | DrawingTool::Arrow
             | DrawingTool::Text => {
-                new_element.points.push(windows::Win32::Foundation::POINT { x, y });
+                new_element
+                    .points
+                    .push(windows::Win32::Foundation::POINT { x, y });
             }
             _ => {}
         }
@@ -583,15 +610,18 @@ impl DrawingManager {
 
                     if should_save {
                         element.update_bounding_rect();
-                        
+
                         let index = self.elements.count();
                         let action = history::DrawingAction::AddElement {
                             element: element.clone(),
                             index,
                         };
-                        self.history.record_action(action, self.selected_element, None);
-                        
+                        self.history
+                            .record_action(action, self.selected_element, None);
+
                         self.elements.add_element(element);
+                        self.layer_cache
+                            .invalidate(crate::rendering::LayerType::StaticElements);
                     }
                 }
             }
@@ -600,7 +630,7 @@ impl DrawingManager {
                     if let Some(element) = self.elements.get_elements().get(index) {
                         let dx = element.rect.left - self.interaction_start_rect.left;
                         let dy = element.rect.top - self.interaction_start_rect.top;
-                        
+
                         if dx != 0 || dy != 0 {
                             let action = history::DrawingAction::MoveElement {
                                 index,
@@ -626,8 +656,9 @@ impl DrawingManager {
                             || element.rect.right != self.interaction_start_rect.right
                             || element.rect.bottom != self.interaction_start_rect.bottom;
                         let points_changed = element.points != self.interaction_start_points;
-                        let font_size_changed = (element.font_size - self.interaction_start_font_size).abs() > 0.01;
-                        
+                        let font_size_changed =
+                            (element.font_size - self.interaction_start_font_size).abs() > 0.01;
+
                         if rect_changed || points_changed || font_size_changed {
                             let action = history::DrawingAction::ResizeElement {
                                 index,
@@ -655,15 +686,15 @@ impl DrawingManager {
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
         if self.text_editing {
             match key {
-                0x1B => return self.stop_text_editing(),      // VK_ESCAPE
-                0x0D => return self.handle_text_input('\n'), // VK_RETURN
-                0x08 => return self.handle_backspace(),       // VK_BACK
-                0x25 => return self.move_cursor_left(),       // VK_LEFT
-                0x27 => return self.move_cursor_right(),      // VK_RIGHT
+                0x1B => return self.stop_text_editing(),         // VK_ESCAPE
+                0x0D => return self.handle_text_input('\n'),     // VK_RETURN
+                0x08 => return self.handle_backspace(),          // VK_BACK
+                0x25 => return self.move_cursor_left(),          // VK_LEFT
+                0x27 => return self.move_cursor_right(),         // VK_RIGHT
                 0x24 => return self.move_cursor_to_line_start(), // VK_HOME
                 0x23 => return self.move_cursor_to_line_end(),   // VK_END
-                0x26 => return self.move_cursor_up(),         // VK_UP
-                0x28 => return self.move_cursor_down(),       // VK_DOWN
+                0x26 => return self.move_cursor_up(),            // VK_UP
+                0x28 => return self.move_cursor_down(),          // VK_DOWN
                 _ => {}
             }
         }

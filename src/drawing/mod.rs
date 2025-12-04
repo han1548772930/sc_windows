@@ -15,6 +15,7 @@
 //! - 文本标注
 
 use crate::message::{Command, DrawingMessage};
+use crate::rendering::{LayerCache, LayerType};
 use crate::settings::Settings;
 use std::sync::{Arc, RwLock};
 
@@ -28,7 +29,7 @@ pub mod tools;
 pub mod types;
 
 // Re-export types for convenience
-pub use types::{DrawingElement, DrawingTool, DragMode, ElementInteractionMode};
+pub use types::{DragMode, DrawingElement, DrawingTool, ElementInteractionMode};
 
 use cache::GeometryCache;
 use elements::ElementManager;
@@ -58,7 +59,8 @@ pub struct DrawingManager {
     pub(super) text_cursor_visible: bool,
     pub(super) cursor_timer_id: usize,
     pub(super) just_saved_text: bool,
-    pub(super) cache_dirty: std::cell::RefCell<bool>,
+    /// 图层缓存管理器
+    pub(super) layer_cache: LayerCache,
 }
 
 impl DrawingManager {
@@ -101,7 +103,8 @@ impl DrawingManager {
             text_cursor_visible: false,
             cursor_timer_id: 1001,
             just_saved_text: false,
-            cache_dirty: std::cell::RefCell::new(true),
+            // 默认初始化，屏幕尺寸将在渲染器初始化时更新
+            layer_cache: LayerCache::new(1920, 1080),
         })
     }
 
@@ -120,7 +123,7 @@ impl DrawingManager {
         self.text_cursor_pos = 0;
         self.text_cursor_visible = false;
         self.just_saved_text = false;
-        self.cache_dirty.replace(true);
+        self.layer_cache.invalidate_all();
     }
 
     /// 处理绘图消息
@@ -132,7 +135,10 @@ impl DrawingManager {
                 if self.text_editing {
                     commands.extend(self.stop_text_editing());
                 }
-
+                if self.selected_element.is_some() {
+                    self.layer_cache
+                        .invalidate(crate::rendering::LayerType::StaticElements);
+                }
                 self.current_tool = tool;
                 self.tools.set_current_tool(tool);
                 self.selected_element = None;
@@ -183,7 +189,8 @@ impl DrawingManager {
             DrawingMessage::FinishDrawing => {
                 if let Some(element) = self.current_element.take() {
                     self.elements.add_element(element);
-                    self.cache_dirty.replace(true);
+                    // 新元素加入静态层，需要重建缓存
+                    self.layer_cache.invalidate(LayerType::StaticElements);
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![]
@@ -192,13 +199,14 @@ impl DrawingManager {
             DrawingMessage::Undo => {
                 if let Some((action, sel)) = self.history.undo_action() {
                     let changed = action.affected_indices();
-                    
+
                     // 应用撤销操作
                     self.elements.apply_undo(&action);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
-                    self.cache_dirty.replace(true);
-                    
+                    // 撤销操作可能改变元素集合，需要重建缓存
+                    self.layer_cache.invalidate(LayerType::StaticElements);
+
                     // 使用增量式缓存失效
                     if changed.is_empty() {
                         self.geometry_cache.invalidate_all();
@@ -213,13 +221,14 @@ impl DrawingManager {
             DrawingMessage::Redo => {
                 if let Some((action, sel)) = self.history.redo_action() {
                     let changed = action.affected_indices();
-                    
+
                     // 应用重做操作
                     self.elements.apply_redo(&action);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
-                    self.cache_dirty.replace(true);
-                    
+                    // 重做操作可能改变元素集合，需要重建缓存
+                    self.layer_cache.invalidate(LayerType::StaticElements);
+
                     if changed.is_empty() {
                         self.geometry_cache.invalidate_all();
                     } else {
@@ -233,20 +242,18 @@ impl DrawingManager {
             DrawingMessage::DeleteElement(index) => {
                 // 命令模式：记录删除操作
                 if let Some(element) = self.elements.get_elements().get(index).cloned() {
-                    let action = history::DrawingAction::RemoveElement {
-                        element,
-                        index,
-                    };
+                    let action = history::DrawingAction::RemoveElement { element, index };
                     self.history.record_action(
                         action,
                         self.selected_element,
                         None, // 删除后无选中
                     );
                 }
-                
+
                 if self.elements.remove_element(index) {
                     self.selected_element = None;
-                    self.cache_dirty.replace(true);
+                    // 删除元素后需要重建静态层缓存
+                    self.layer_cache.invalidate(LayerType::StaticElements);
                     self.geometry_cache.remove(index); // 删除对应元素的缓存
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
@@ -259,14 +266,15 @@ impl DrawingManager {
                 self.elements.set_selected(index);
 
                 if let Some(idx) = index
-                    && let Some(element) = self.elements.get_elements().get(idx) {
-                        self.current_tool = element.tool;
-                        self.tools.set_current_tool(element.tool);
-                    }
+                    && let Some(element) = self.elements.get_elements().get(idx)
+                {
+                    self.current_tool = element.tool;
+                    self.tools.set_current_tool(element.tool);
+                }
 
-                // Only invalidate cache if selection changed (an element moves from static layer to dynamic, or vice-versa)
+                // 当选中状态改变时，元素从静态层移到动态层（或反之），需要重建缓存
                 if old_selection != index {
-                    self.cache_dirty.replace(true);
+                    self.layer_cache.invalidate(LayerType::StaticElements);
                 }
 
                 vec![Command::UpdateToolbar, Command::RequestRedraw]
@@ -278,11 +286,8 @@ impl DrawingManager {
                     element: (*element).clone(),
                     index,
                 };
-                self.history.record_action(
-                    action,
-                    self.selected_element,
-                    None,
-                );
+                self.history
+                    .record_action(action, self.selected_element, None);
                 self.elements.add_element(*element);
                 vec![Command::RequestRedraw]
             }
@@ -293,7 +298,7 @@ impl DrawingManager {
                     self.elements.set_selected(self.selected_element);
 
                     if old_selection != self.selected_element {
-                        self.cache_dirty.replace(true);
+                        self.layer_cache.invalidate(LayerType::StaticElements);
                     }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
@@ -302,7 +307,7 @@ impl DrawingManager {
                     self.elements.set_selected(None);
 
                     if old_selection.is_some() {
-                        self.cache_dirty.replace(true);
+                        self.layer_cache.invalidate(LayerType::StaticElements);
                     }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 }
@@ -354,14 +359,33 @@ impl DrawingManager {
     /// 获取选中元素的工具类型（用于同步工具栏状态）
     pub fn get_selected_element_tool(&self) -> Option<DrawingTool> {
         if let Some(index) = self.selected_element
-            && let Some(element) = self.elements.get_elements().get(index) {
-                return Some(element.tool);
-            }
+            && let Some(element) = self.elements.get_elements().get(index)
+        {
+            return Some(element.tool);
+        }
         None
     }
 
     pub fn reload_drawing_properties(&mut self) {
         // ToolManager 直接从设置读取配置
+    }
+
+    /// 设置屏幕尺寸（窗口缩放时调用）
+    ///
+    /// 会自动使所有图层缓存失效
+    pub fn set_screen_size(&mut self, width: u32, height: u32) {
+        self.layer_cache.set_screen_size(width, height);
+    }
+
+    /// 检查静态元素层是否需要重建
+    pub fn needs_layer_rebuild(&self) -> bool {
+        self.layer_cache.needs_rebuild(LayerType::StaticElements)
+    }
+
+    /// 标记静态元素层已重建
+    pub fn mark_layer_rebuilt(&mut self) {
+        // 使用 0 作为占位符 bitmap_id，因为我们使用 layer_target 而不是 ID
+        self.layer_cache.mark_rebuilt(LayerType::StaticElements, 0);
     }
 }
 

@@ -6,74 +6,6 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use super::{DrawingError, DrawingManager, ElementInteractionMode};
 
 impl DrawingManager {
-    /// 批量绘制元素数量阈值，超过此数量时启用批量绘制优化
-    const BATCH_RENDER_THRESHOLD: usize = 50;
-
-    /// 批量渲染元素（按类型分组优化）
-    ///
-    /// 将元素按类型分组后批量渲染，减少状态切换次数。
-    /// 当元素数量超过 BATCH_RENDER_THRESHOLD 时自动启用。
-    pub fn render_elements_batched(
-        &self,
-        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
-        d2d_renderer: &mut crate::platform::windows::d2d::Direct2DRenderer,
-        skip_indices: &std::collections::HashSet<usize>,
-    ) -> Result<(), DrawingError> {
-        use crate::types::DrawingTool;
-
-        // 按类型分组元素索引
-        let mut rectangles = Vec::new();
-        let mut circles = Vec::new();
-        let mut arrows = Vec::new();
-        let mut pens = Vec::new();
-        let mut texts = Vec::new();
-
-        for (i, element) in self.elements.get_elements().iter().enumerate() {
-            if skip_indices.contains(&i) {
-                continue;
-            }
-            match element.tool {
-                DrawingTool::Rectangle => rectangles.push(i),
-                DrawingTool::Circle => circles.push(i),
-                DrawingTool::Arrow => arrows.push(i),
-                DrawingTool::Pen => pens.push(i),
-                DrawingTool::Text => texts.push(i),
-                DrawingTool::None => {}
-            }
-        }
-
-        // 按类型批量绘制，减少工具类型判断开销
-        // 注意：保持绘制顺序对于重叠元素很重要，这里按原始顺序绘制同类型元素
-        let elements = self.elements.get_elements();
-
-        // 批量绘制矩形
-        for &i in &rectangles {
-            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
-        }
-
-        // 批量绘制圆形
-        for &i in &circles {
-            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
-        }
-
-        // 批量绘制箭头
-        for &i in &arrows {
-            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
-        }
-
-        // 批量绘制画笔路径
-        for &i in &pens {
-            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
-        }
-
-        // 批量绘制文本（最后绘制，确保文本在最上层）
-        for &i in &texts {
-            let _ = self.draw_element_d2d(&elements[i], render_target, d2d_renderer);
-        }
-
-        Ok(())
-    }
-
     /// 渲染绘图元素到指定的渲染目标（用于离屏合成）
     ///
     /// 该方法将所有元素渲染到指定的渲染目标，并应用坐标偏移
@@ -113,8 +45,13 @@ impl DrawingManager {
     }
 
     /// 渲染绘图元素（支持裁剪区域）
+    ///
+    /// 使用三明治绘制法：
+    /// 1. 检查并更新静态层缓存（如果需要）
+    /// 2. 绘制缓存的静态层
+    /// 3. 绘制动态层（选中元素 + 当前绘制元素 + 选中指示器）
     pub fn render(
-        &self,
+        &mut self,
         renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
         selection_rect: Option<&windows::Win32::Foundation::RECT>,
     ) -> Result<(), DrawingError> {
@@ -136,21 +73,43 @@ impl DrawingManager {
             .as_any_mut()
             .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
         ) {
-            // 直接渲染所有元素
-            if let Some(render_target) = &d2d_renderer.render_target {
-                let target_clone = render_target.clone();
-                let element_count = self.elements.get_elements().len();
+            // 检查是否需要重建静态层缓存
+            let needs_rebuild = self
+                .layer_cache
+                .needs_rebuild(crate::rendering::LayerType::StaticElements);
 
-                // 当元素数量超过阈值时，使用批量绘制优化
-                if element_count >= Self::BATCH_RENDER_THRESHOLD {
-                    let mut skip_indices = std::collections::HashSet::new();
-                    if let Some(idx) = self.selected_element {
-                        skip_indices.insert(idx);
+            if needs_rebuild {
+                // 重建静态层缓存
+                let selected_idx = self.selected_element;
+                let elements_snapshot: Vec<_> = self.elements.get_elements().to_vec();
+
+                let rebuild_result = d2d_renderer.update_static_layer(|layer_target, renderer| {
+                    // 绘制所有非选中的静态元素到 layer_target
+                    for (i, element) in elements_snapshot.iter().enumerate() {
+                        // 跳过选中元素（它在动态层绘制）
+                        if Some(i) == selected_idx {
+                            continue;
+                        }
+                        // 绘制元素到 layer_target
+                        let _ = Self::draw_element_d2d_static(element, layer_target, renderer);
                     }
-                    let _ =
-                        self.render_elements_batched(&target_clone, d2d_renderer, &skip_indices);
-                } else {
-                    // 小量元素时保持原始顺序绘制
+                    Ok(())
+                });
+
+                if rebuild_result.is_ok() {
+                    // 标记缓存已重建
+                    self.layer_cache
+                        .mark_rebuilt(crate::rendering::LayerType::StaticElements, 0);
+                }
+            }
+
+            // 绘制静态层缓存到屏幕
+            if d2d_renderer.is_layer_target_valid() {
+                let _ = d2d_renderer.draw_static_layer();
+            } else {
+                // 回退：如果没有缓存，直接绘制所有静态元素
+                if let Some(render_target) = &d2d_renderer.render_target {
+                    let target_clone = render_target.clone();
                     let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget =
                         &target_clone;
                     for (i, element) in self.elements.get_elements().iter().enumerate() {
@@ -161,7 +120,7 @@ impl DrawingManager {
                 }
             }
 
-            // 渲染选中元素（动态）置于顶层
+            // 绘制动态层：选中元素
             if let Some(index) = self.selected_element
                 && let Some(element) = self.elements.get_elements().get(index)
                 && let Some(render_target) = d2d_renderer.render_target.clone()
@@ -171,7 +130,7 @@ impl DrawingManager {
                 let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
             }
 
-            // 渲染当前正在绘制的元素
+            // 绘制动态层：当前正在绘制的元素
             if let Some(ref element) = self.current_element
                 && let Some(render_target) = d2d_renderer.render_target.clone()
             {
@@ -180,7 +139,7 @@ impl DrawingManager {
                 let _ = self.draw_element_d2d(element, target_interface, d2d_renderer);
             }
 
-            // 渲染元素选择（平台无关路径）
+            // 绘制动态层：元素选中指示器
             self.draw_element_selection(renderer, selection_rect)?;
         } else {
             return Err(DrawingError::RenderError(
@@ -195,6 +154,171 @@ impl DrawingManager {
             })?;
         }
 
+        Ok(())
+    }
+
+    /// 静态方法：绘制元素到指定渲染目标（用于缓存层绘制）
+    ///
+    /// 这是 draw_element_d2d 的静态版本，不需要 &self 引用
+    fn draw_element_d2d_static(
+        element: &DrawingElement,
+        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+        d2d_renderer: &mut crate::platform::windows::d2d::Direct2DRenderer,
+    ) -> Result<(), DrawingError> {
+        use crate::utils::d2d_helpers::ellipse;
+
+        let color = crate::platform::traits::Color {
+            r: element.color.r,
+            g: element.color.g,
+            b: element.color.b,
+            a: element.color.a,
+        };
+
+        let brush = d2d_renderer
+            .get_or_create_brush(color)
+            .map_err(|e| DrawingError::RenderError(format!("Failed to get brush: {e:?}")))?;
+
+        unsafe {
+            match element.tool {
+                DrawingTool::Text => {
+                    if !element.points.is_empty() {
+                        if let Some(ref dwrite_factory) = d2d_renderer.dwrite_factory {
+                            // 1. 使用辅助函数创建 TextFormat (恢复 Bold/Italic 支持)
+                            // 之前这里写死了 DWRITE_FONT_WEIGHT_NORMAL，导致加粗丢失
+                            if let Ok(text_format) =
+                                crate::utils::d2d_helpers::create_text_format_from_element(
+                                    dwrite_factory,
+                                    &element.font_name,
+                                    element.font_size,
+                                    element.font_weight,
+                                    element.font_italic,
+                                )
+                            {
+                                // 2. 计算带 Padding 的文本区域 (保持位置一致)
+                                let padding = crate::constants::TEXT_PADDING;
+                                let width = (element.rect.right as f32
+                                    - element.rect.left as f32
+                                    - padding * 2.0)
+                                    .max(0.0);
+                                let height = (element.rect.bottom as f32
+                                    - element.rect.top as f32
+                                    - padding * 2.0)
+                                    .max(0.0);
+
+                                // 3. 使用辅助函数创建 TextLayout (恢复 Underline/Strikeout 支持)
+
+                                if let Ok(layout) =
+                                    crate::utils::d2d_helpers::create_text_layout_with_style(
+                                        dwrite_factory,
+                                        &text_format,
+                                        &element.text,
+                                        width,
+                                        height,
+                                        element.font_underline,
+                                        element.font_strikeout,
+                                    )
+                                {
+                                    // 4. 绘制 TextLayout
+                                    let origin = crate::utils::d2d_point(
+                                        element.rect.left as i32 + padding as i32,
+                                        element.rect.top as i32 + padding as i32,
+                                    );
+
+                                    render_target.DrawTextLayout(
+                                        origin,
+                                        &layout,
+                                        &brush,
+                                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                DrawingTool::Rectangle => {
+                    if element.points.len() >= 2 {
+                        let rect = crate::utils::d2d_rect_normalized(
+                            element.points[0].x,
+                            element.points[0].y,
+                            element.points[1].x,
+                            element.points[1].y,
+                        );
+                        render_target.DrawRectangle(&rect, &brush, element.thickness, None);
+                    }
+                }
+                DrawingTool::Circle => {
+                    if element.points.len() >= 2 {
+                        let center_x = (element.points[0].x + element.points[1].x) as f32 / 2.0;
+                        let center_y = (element.points[0].y + element.points[1].y) as f32 / 2.0;
+                        let radius_x =
+                            (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
+                        let radius_y =
+                            (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
+                        let ellipse = ellipse(center_x, center_y, radius_x, radius_y);
+                        render_target.DrawEllipse(&ellipse, &brush, element.thickness, None);
+                    }
+                }
+                DrawingTool::Arrow => {
+                    if element.points.len() >= 2 {
+                        let start =
+                            crate::utils::d2d_point(element.points[0].x, element.points[0].y);
+                        let end = crate::utils::d2d_point(element.points[1].x, element.points[1].y);
+                        render_target.DrawLine(start, end, &brush, element.thickness, None);
+
+                        // 箭头头部
+                        let dx = element.points[1].x - element.points[0].x;
+                        let dy = element.points[1].y - element.points[0].y;
+                        let length = ((dx * dx + dy * dy) as f64).sqrt();
+
+                        if length > 20.0 {
+                            let arrow_length = 15.0f64;
+                            let arrow_angle = 0.5f64;
+                            let unit_x = dx as f64 / length;
+                            let unit_y = dy as f64 / length;
+
+                            let wing1 = crate::utils::d2d_point(
+                                element.points[1].x
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() + unit_y * arrow_angle.sin()))
+                                        as i32,
+                                element.points[1].y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() - unit_x * arrow_angle.sin()))
+                                        as i32,
+                            );
+                            let wing2 = crate::utils::d2d_point(
+                                element.points[1].x
+                                    - (arrow_length
+                                        * (unit_x * arrow_angle.cos() - unit_y * arrow_angle.sin()))
+                                        as i32,
+                                element.points[1].y
+                                    - (arrow_length
+                                        * (unit_y * arrow_angle.cos() + unit_x * arrow_angle.sin()))
+                                        as i32,
+                            );
+
+                            render_target.DrawLine(end, wing1, &brush, element.thickness, None);
+                            render_target.DrawLine(end, wing2, &brush, element.thickness, None);
+                        }
+                    }
+                }
+                DrawingTool::Pen => {
+                    if element.points.len() > 1 {
+                        // 简化的铅笔绘制，不使用缓存的几何体
+                        for i in 0..element.points.len() - 1 {
+                            let start =
+                                crate::utils::d2d_point(element.points[i].x, element.points[i].y);
+                            let end_pt = crate::utils::d2d_point(
+                                element.points[i + 1].x,
+                                element.points[i + 1].y,
+                            );
+                            render_target.DrawLine(start, end_pt, &brush, element.thickness, None);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -556,5 +680,4 @@ impl DrawingManager {
         }
         Ok(())
     }
-
 }

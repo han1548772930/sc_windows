@@ -149,7 +149,7 @@ fn bench_utils(c: &mut Criterion) {
 /// 测试历史管理器性能
 fn bench_history_manager(c: &mut Criterion) {
     use sc_windows::drawing::elements::ElementManager;
-    use sc_windows::drawing::history::HistoryManager;
+    use sc_windows::drawing::history::{DrawingAction, HistoryManager};
     use sc_windows::types::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
@@ -173,12 +173,25 @@ fn bench_history_manager(c: &mut Criterion) {
         });
     });
 
-    // 测试撤销操作
-    group.bench_function("undo", |b| {
+    // 测试记录操作
+    group.bench_function("record_action", |b| {
         let mut history = HistoryManager::new();
-        let mut elements = ElementManager::new();
 
-        // 保存多个状态
+        b.iter(|| {
+            let el = DrawingElement::new(DrawingTool::Rectangle);
+            let action = DrawingAction::AddElement {
+                element: el,
+                index: 0,
+            };
+            history.record_action(black_box(action), None, None);
+        });
+    });
+
+    // 测试撤销操作
+    group.bench_function("undo_action", |b| {
+        let mut history = HistoryManager::new();
+
+        // 记录多个操作
         for i in 0..20 {
             let mut el = DrawingElement::new(DrawingTool::Rectangle);
             el.points.push(POINT {
@@ -189,18 +202,21 @@ fn bench_history_manager(c: &mut Criterion) {
                 x: i * 10 + 100,
                 y: i * 10 + 100,
             });
-            elements.add_element(el);
-            history.save_state(&elements, None);
+            let action = DrawingAction::AddElement {
+                element: el,
+                index: i as usize,
+            };
+            history.record_action(action, None, None);
         }
 
         b.iter(|| {
             // 撤销一次，然后重做恢复，保持基准测试可重复
-            if let Some((restored, sel)) = history.undo() {
-                elements.restore_state(restored);
+            if let Some((action, sel)) = history.undo_action() {
+                let _ = black_box(action);
                 let _ = black_box(sel);
                 // 重做恢复
-                if let Some((restored2, _)) = history.redo() {
-                    elements.restore_state(restored2);
+                if let Some((action2, _)) = history.redo_action() {
+                    let _ = black_box(action2);
                 }
             }
         });
