@@ -30,6 +30,20 @@ pub fn request_redraw(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
+/// 请求窗口局部重绘（脏矩形优化）
+/// 只重绘指定的矩形区域，减少不必要的渲染开销
+#[inline]
+pub fn request_redraw_rect(hwnd: HWND, rect: &RECT) -> windows::core::Result<()> {
+    // 验证矩形有效性
+    if rect.right <= rect.left || rect.bottom <= rect.top {
+        return Ok(()); // 无效矩形，不重绘
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), Some(rect), FALSE.into());
+    }
+    Ok(())
+}
+
 /// 更新窗口
 #[inline]
 pub fn update_window(hwnd: HWND) -> windows::core::Result<()> {

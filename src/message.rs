@@ -98,8 +98,10 @@ pub enum DialogType {
 /// 命令枚举，用于指示需要执行的操作
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// 请求重绘
+    /// 请求重绘（全屏）
     RequestRedraw,
+    /// 请求局部重绘（脏矩形优化）
+    RequestRedrawRect(RECT),
     /// 显示覆盖层
     ShowOverlay,
     /// 隐藏覆盖层

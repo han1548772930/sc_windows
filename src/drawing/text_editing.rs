@@ -355,9 +355,8 @@ impl DrawingManager {
         // 确保工具栏状态与当前工具保持一致（与原始代码一致）
         self.current_tool = DrawingTool::Text;
 
-        // 保存历史状态（在操作开始前保存，以便精确撤销）
-        self.history
-            .save_state(&self.elements, self.selected_element);
+        // 命令模式：不在此处保存历史，而是在 stop_text_editing 时
+        // 如果文本非空则记录 AddElement 操作
 
         // 创建新的文字元素
         let mut text_element = DrawingElement::new(DrawingTool::Text);
@@ -439,11 +438,11 @@ impl DrawingManager {
 
         // 检查当前编辑的文本元素是否为空，如果为空则删除
         if let Some(element_index) = editing_index
-            && let Some(element) = self.elements.get_elements().get(element_index) {
+            && let Some(element) = self.elements.get_elements().get(element_index).cloned() {
                 let should_delete = element.text.trim().is_empty();
 
                 if should_delete {
-                    // 删除空元素
+                    // 删除空元素（不记录到历史，因为这是取消创建操作）
                     let _ = self.elements.remove_element(element_index);
 
                     // 更新选中元素索引（与原始代码逻辑一致）
@@ -454,6 +453,17 @@ impl DrawingManager {
                             self.selected_element = Some(selected - 1);
                         }
                     }
+                } else {
+                    // 文本非空，记录 AddElement 操作到历史
+                    let action = super::history::DrawingAction::AddElement {
+                        element,
+                        index: element_index,
+                    };
+                    self.history.record_action(
+                        action,
+                        None, // 创建前无选中
+                        None, // 创建后清除选中
+                    );
                 }
             }
 
@@ -504,11 +514,27 @@ impl DrawingManager {
         vec![]
     }
 
-    /// 处理光标定时器（从原始代码迁移）
+    /// 处理光标定时器（优化：只重绘光标区域）
     pub fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
         if self.text_editing && timer_id == self.cursor_timer_id as u32 {
             // 切换光标可见性
             self.text_cursor_visible = !self.text_cursor_visible;
+            
+            // 脏矩形优化：只重绘光标所在的文本元素区域
+            if let Some(element_index) = self.editing_element_index
+                && let Some(element) = self.elements.get_elements().get(element_index) {
+                    // 计算光标区域（稍微扩大以确保完整重绘）
+                    let cursor_margin = 5;
+                    let dirty_rect = windows::Win32::Foundation::RECT {
+                        left: element.rect.left - cursor_margin,
+                        top: element.rect.top - cursor_margin,
+                        right: element.rect.right + cursor_margin,
+                        bottom: element.rect.bottom + cursor_margin,
+                    };
+                    return vec![Command::RequestRedrawRect(dirty_rect)];
+                }
+            
+            // 回退到全屏重绘
             vec![Command::RequestRedraw]
         } else {
             vec![]

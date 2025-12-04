@@ -366,4 +366,129 @@ impl ElementManager {
     pub fn count(&self) -> usize {
         self.elements.len()
     }
+
+    // ==================== 命令模式支持 ====================
+
+    /// 应用撤销操作
+    pub fn apply_undo(&mut self, action: &super::history::DrawingAction) {
+        use super::history::DrawingAction;
+        match action {
+            DrawingAction::AddElement { index, .. } => {
+                // 撤销添加 = 删除元素
+                if *index < self.elements.len() {
+                    self.elements.remove(*index);
+                }
+            }
+            DrawingAction::RemoveElement { element, index } => {
+                // 撤销删除 = 恢复元素
+                if *index <= self.elements.len() {
+                    self.elements.insert(*index, element.clone());
+                }
+            }
+            DrawingAction::MoveElement { index, old_points, old_rect, .. } => {
+                // 撤销移动 = 恢复原位置
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.points = old_points.clone();
+                    element.rect = *old_rect;
+                    element.path_geometry.replace(None);
+                }
+            }
+            DrawingAction::ResizeElement { index, old_points, old_rect, old_font_size, .. } => {
+                // 撤销调整大小 = 恢复原尺寸
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.points = old_points.clone();
+                    element.rect = *old_rect;
+                    element.font_size = *old_font_size;
+                    element.path_geometry.replace(None);
+                    element.text_layout.replace(None);
+                }
+            }
+            DrawingAction::ModifyText { index, old_text, old_points, old_rect, .. } => {
+                // 撤销文本修改 = 恢复原文本
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.text = old_text.clone();
+                    element.points = old_points.clone();
+                    element.rect = *old_rect;
+                    element.text_layout.replace(None);
+                }
+            }
+            DrawingAction::ModifyProperty { index, old_color, old_thickness, .. } => {
+                // 撤销属性修改 = 恢复原属性
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.color = *old_color;
+                    element.thickness = *old_thickness;
+                }
+            }
+            DrawingAction::Compound { actions } => {
+                // 复合操作：逆序撤销所有子操作
+                for action in actions.iter().rev() {
+                    self.apply_undo(action);
+                }
+            }
+        }
+    }
+
+    /// 应用重做操作
+    pub fn apply_redo(&mut self, action: &super::history::DrawingAction) {
+        use super::history::DrawingAction;
+        match action {
+            DrawingAction::AddElement { element, index } => {
+                // 重做添加 = 插入元素
+                if *index <= self.elements.len() {
+                    self.elements.insert(*index, element.clone());
+                }
+            }
+            DrawingAction::RemoveElement { index, .. } => {
+                // 重做删除 = 删除元素
+                if *index < self.elements.len() {
+                    self.elements.remove(*index);
+                }
+            }
+            DrawingAction::MoveElement { index, dx, dy, .. } => {
+                // 重做移动 = 再次移动
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.move_by(*dx, *dy);
+                }
+            }
+            DrawingAction::ResizeElement { index, new_points, new_rect, new_font_size, .. } => {
+                // 重做调整大小 = 应用新尺寸
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.points = new_points.clone();
+                    element.rect = *new_rect;
+                    element.font_size = *new_font_size;
+                    element.path_geometry.replace(None);
+                    element.text_layout.replace(None);
+                }
+            }
+            DrawingAction::ModifyText { index, new_text, new_points, new_rect, .. } => {
+                // 重做文本修改 = 应用新文本
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.text = new_text.clone();
+                    element.points = new_points.clone();
+                    element.rect = *new_rect;
+                    element.text_layout.replace(None);
+                }
+            }
+            DrawingAction::ModifyProperty { index, new_color, new_thickness, .. } => {
+                // 重做属性修改 = 应用新属性
+                if let Some(element) = self.elements.get_mut(*index) {
+                    element.color = *new_color;
+                    element.thickness = *new_thickness;
+                }
+            }
+            DrawingAction::Compound { actions } => {
+                // 复合操作：顺序重做所有子操作
+                for action in actions {
+                    self.apply_redo(action);
+                }
+            }
+        }
+    }
+
+    /// 在指定位置插入元素
+    pub fn insert_element(&mut self, index: usize, element: DrawingElement) {
+        if index <= self.elements.len() {
+            self.elements.insert(index, element);
+        }
+    }
 }

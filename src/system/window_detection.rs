@@ -1,12 +1,12 @@
 use super::SystemError;
 
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowRect, GetWindowTextW,
-    IsWindowVisible, WindowFromPoint,
+    IsWindowVisible,
 };
 
-/// 窗口信息（从原始代码迁移）
+/// 窗口信息
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
     /// 窗口句柄
@@ -66,7 +66,7 @@ impl ChildControlInfo {
     }
 }
 
-/// 窗口检测器（从原始代码迁移）
+/// 窗口检测器
 #[derive(Debug)]
 pub struct WindowDetector {
     windows: Vec<WindowInfo>,
@@ -155,7 +155,8 @@ impl WindowDetector {
         Ok(())
     }
 
-    /// 根据鼠标位置获取当前应该高亮的子控件（从原始代码迁移）
+    /// 根据鼠标位置获取当前应该高亮的子控件
+    /// 直接使用已缓存的子控件列表进行匹配，返回面积最小的匹配控件
     pub fn get_child_control_at_point(&mut self, x: i32, y: i32) -> Option<&ChildControlInfo> {
         // 找到鼠标位置下的所有子控件
         let mut matching_controls = Vec::new();
@@ -170,27 +171,7 @@ impl WindowDetector {
             return None;
         }
 
-        // 使用ChildWindowFromPoint来获取最顶层的子控件（从原始代码迁移）
-        unsafe {
-            let point = POINT { x, y };
-            // 先找到父窗口
-            let parent_hwnd = WindowFromPoint(point);
-            if !parent_hwnd.0.is_null() {
-                use windows::Win32::UI::WindowsAndMessaging::ChildWindowFromPoint;
-                let child_hwnd = ChildWindowFromPoint(parent_hwnd, point);
-                if !child_hwnd.0.is_null() && child_hwnd != parent_hwnd {
-                    // 在匹配的控件中查找对应的控件
-                    for (index, control) in &matching_controls {
-                        if control.hwnd == child_hwnd {
-                            self.current_highlighted_control = Some(*index);
-                            return Some(control);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 如果ChildWindowFromPoint失败，返回最小的匹配控件（从原始代码迁移）
+        // 返回面积最小的匹配控件（最可能是用户想选择的控件）
         if let Some((index, control)) = matching_controls
             .iter()
             .min_by_key(|(_, c)| (c.rect.right - c.rect.left) * (c.rect.bottom - c.rect.top))
@@ -203,24 +184,22 @@ impl WindowDetector {
         }
     }
 
-    /// 综合检测：根据鼠标位置同时检测窗口和子控件（从原始代码迁移）
+    /// 综合检测：根据鼠标位置同时检测窗口和子控件
     /// 返回 (窗口信息, 子控件信息)
     pub fn detect_at_point(
         &mut self,
         x: i32,
         y: i32,
     ) -> (Option<WindowInfo>, Option<ChildControlInfo>) {
-        // 首先检测窗口（从原始代码迁移）
+        // 首先检测窗口
         let window = self.get_window_at_point(x, y);
 
-        // 如果找到了窗口，再检测其子控件（从原始代码迁移）
+        // 每次都刷新子控件列表（移除缓存优化，确保可靠性）
         let control = if let Some(ref window_info) = window {
-            // 刷新该窗口的子控件
-            if self.refresh_child_controls(window_info.hwnd).is_ok() {
-                self.get_child_control_at_point(x, y).cloned()
-            } else {
-                None
-            }
+            // 刷新子控件列表
+            let _ = self.refresh_child_controls(window_info.hwnd);
+            // 在子控件列表中查找
+            self.get_child_control_at_point(x, y).cloned()
         } else {
             None
         };
@@ -228,10 +207,10 @@ impl WindowDetector {
         (window, control)
     }
 
-    /// 根据鼠标位置获取当前应该高亮的窗口（从原始代码迁移）
     fn get_window_at_point(&mut self, x: i32, y: i32) -> Option<WindowInfo> {
-        // 找到鼠标位置下的所有窗口
         let mut matching_windows = Vec::new();
+        // 遍历所有窗口，收集包含鼠标点的窗口
+        // self.windows 是由 EnumWindows 获取的，保证了从顶层到底层的顺序
         for (index, window) in self.windows.iter().enumerate() {
             if window.contains_point(x, y) {
                 matching_windows.push((index, window));
@@ -243,50 +222,14 @@ impl WindowDetector {
             return None;
         }
 
-        // 如果只有一个窗口，直接返回
-        if matching_windows.len() == 1 {
-            let (index, window) = matching_windows[0];
-            self.current_highlighted_window = Some(index);
-            return Some(window.clone());
-        }
-
-        // 如果有多个窗口，使用WindowFromPoint来确定最顶层的窗口
-        unsafe {
-            let point = POINT { x, y };
-            let hwnd_at_point = WindowFromPoint(point);
-
-            if !hwnd_at_point.0.is_null() {
-                // 获取顶级窗口（从原始代码迁移）
-                let mut top_level_hwnd = hwnd_at_point;
-                loop {
-                    match GetParent(top_level_hwnd) {
-                        Ok(parent) => {
-                            if parent.0.is_null() {
-                                break;
-                            }
-                            top_level_hwnd = parent;
-                        }
-                        Err(_) => break,
-                    }
-                }
-
-                // 在匹配的窗口中查找对应的窗口
-                for (index, window) in &matching_windows {
-                    if window.hwnd == top_level_hwnd {
-                        self.current_highlighted_window = Some(*index);
-                        return Some((*window).clone());
-                    }
-                }
-            }
-        }
-
-        // 如果没有找到精确匹配，返回第一个匹配的窗口
+        // 【关键修改】直接返回第一个匹配的窗口（即 Z序 最上层的窗口）
+        // 不要使用 min_by_key 找最小面积，那会导致选中被遮挡的小窗口
         if let Some((index, window)) = matching_windows.first() {
             self.current_highlighted_window = Some(*index);
-            Some((*window).clone())
-        } else {
-            None
+            return Some((*window).clone());
         }
+
+        None
     }
 }
 
@@ -331,7 +274,7 @@ impl WindowDetectionManager {
         Ok(window_info)
     }
 
-    /// 综合检测：根据鼠标位置同时检测窗口和子控件（从原始代码迁移）
+    /// 综合检测：根据鼠标位置同时检测窗口和子控件
     /// 返回 (窗口信息, 子控件信息)
     pub fn detect_at_point(
         &mut self,
@@ -342,6 +285,7 @@ impl WindowDetectionManager {
             return (None, None);
         }
 
+        // 直接执行检测，不使用节流缓存（避免小窗口检测不到的问题）
         self.detector.detect_at_point(x, y)
     }
 }

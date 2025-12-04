@@ -42,6 +42,10 @@ impl CommandExecutor for App {
                 let _ = win_api::request_redraw(hwnd);
                 vec![]
             }
+            Command::RequestRedrawRect(rect) => {
+                let _ = win_api::request_redraw_rect(hwnd, &rect);
+                vec![]
+            }
             Command::UI(ui_message) => self.handle_message(Message::UI(ui_message)),
             Command::Drawing(drawing_message) => {
                 // 检查是否应该禁用某些绘图命令

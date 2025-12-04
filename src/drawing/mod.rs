@@ -76,6 +76,8 @@ pub struct DrawingManager {
     pub(super) interaction_start_pos: windows::Win32::Foundation::POINT,
     pub(super) interaction_start_rect: windows::Win32::Foundation::RECT,
     pub(super) interaction_start_font_size: f32,
+    /// 交互开始时元素的点集合（用于命令模式记录）
+    pub(super) interaction_start_points: Vec<windows::Win32::Foundation::POINT>,
     pub(super) text_editing: bool,
     pub(super) editing_element_index: Option<usize>,
     pub(super) text_cursor_pos: usize,
@@ -117,6 +119,7 @@ impl DrawingManager {
                 bottom: 0,
             },
             interaction_start_font_size: 0.0,
+            interaction_start_points: Vec::new(),
 
             text_editing: false,
             editing_element_index: None,
@@ -213,55 +216,109 @@ impl DrawingManager {
                 }
             }
             DrawingMessage::Undo => {
-                if let Some((elements, sel)) = self.history.undo() {
-                    // 获取变更的元素索引（在恢复状态前）
-                    let changed = self.history.get_last_changed_indices().to_vec();
-                    
-                    self.elements.restore_state(elements);
-                    self.selected_element = sel;
-                    self.elements.set_selected(self.selected_element);
-                    self.cache_dirty.replace(true);
-                    
-                    // 使用增量式缓存失效：只标记变更的元素为 dirty
-                    if changed.is_empty() {
-                        self.geometry_cache.invalidate_all();
+                // 命令模式撤销
+                if self.history.is_command_mode() {
+                    if let Some((action, sel)) = self.history.undo_action() {
+                        let changed = action.affected_indices();
+                        
+                        // 应用撤销操作
+                        self.elements.apply_undo(&action);
+                        self.selected_element = sel;
+                        self.elements.set_selected(self.selected_element);
+                        self.cache_dirty.replace(true);
+                        
+                        // 使用增量式缓存失效
+                        if changed.is_empty() {
+                            self.geometry_cache.invalidate_all();
+                        } else {
+                            self.geometry_cache.mark_dirty_batch(&changed);
+                        }
+                        vec![Command::UpdateToolbar, Command::RequestRedraw]
                     } else {
-                        self.geometry_cache.mark_dirty_batch(&changed);
+                        vec![Command::UpdateToolbar]
                     }
-                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
-                    vec![Command::UpdateToolbar]
+                    // 兼容模式（旧的快照方式）
+                    if let Some((elements, sel)) = self.history.undo() {
+                        let changed = self.history.get_last_changed_indices();
+                        
+                        self.elements.restore_state(elements);
+                        self.selected_element = sel;
+                        self.elements.set_selected(self.selected_element);
+                        self.cache_dirty.replace(true);
+                        
+                        if changed.is_empty() {
+                            self.geometry_cache.invalidate_all();
+                        } else {
+                            self.geometry_cache.mark_dirty_batch(&changed);
+                        }
+                        vec![Command::UpdateToolbar, Command::RequestRedraw]
+                    } else {
+                        vec![Command::UpdateToolbar]
+                    }
                 }
             }
             DrawingMessage::Redo => {
-                if let Some((elements, sel)) = self.history.redo() {
-                    // 获取变更的元素索引（在恢复状态前）
-                    let changed = self.history.get_last_changed_indices().to_vec();
-                    
-                    self.elements.restore_state(elements);
-                    self.selected_element = sel;
-                    self.elements.set_selected(self.selected_element);
-                    self.cache_dirty.replace(true);
-                    
-                    // 使用增量式缓存失效
-                    if changed.is_empty() {
-                        self.geometry_cache.invalidate_all();
+                // 命令模式重做
+                if self.history.is_command_mode() {
+                    if let Some((action, sel)) = self.history.redo_action() {
+                        let changed = action.affected_indices();
+                        
+                        // 应用重做操作
+                        self.elements.apply_redo(&action);
+                        self.selected_element = sel;
+                        self.elements.set_selected(self.selected_element);
+                        self.cache_dirty.replace(true);
+                        
+                        if changed.is_empty() {
+                            self.geometry_cache.invalidate_all();
+                        } else {
+                            self.geometry_cache.mark_dirty_batch(&changed);
+                        }
+                        vec![Command::RequestRedraw]
                     } else {
-                        self.geometry_cache.mark_dirty_batch(&changed);
+                        vec![]
                     }
-                    vec![Command::RequestRedraw]
                 } else {
-                    vec![]
+                    // 兼容模式
+                    if let Some((elements, sel)) = self.history.redo() {
+                        let changed = self.history.get_last_changed_indices();
+                        
+                        self.elements.restore_state(elements);
+                        self.selected_element = sel;
+                        self.elements.set_selected(self.selected_element);
+                        self.cache_dirty.replace(true);
+                        
+                        if changed.is_empty() {
+                            self.geometry_cache.invalidate_all();
+                        } else {
+                            self.geometry_cache.mark_dirty_batch(&changed);
+                        }
+                        vec![Command::RequestRedraw]
+                    } else {
+                        vec![]
+                    }
                 }
             }
             DrawingMessage::DeleteElement(index) => {
-                self.history
-                    .save_state(&self.elements, self.selected_element);
+                // 命令模式：记录删除操作
+                if let Some(element) = self.elements.get_elements().get(index).cloned() {
+                    let action = history::DrawingAction::RemoveElement {
+                        element,
+                        index,
+                    };
+                    self.history.record_action(
+                        action,
+                        self.selected_element,
+                        None, // 删除后无选中
+                    );
+                }
+                
                 if self.elements.remove_element(index) {
                     self.selected_element = None;
                     self.cache_dirty.replace(true);
                     self.geometry_cache.remove(index); // 删除对应元素的缓存
-                    vec![Command::RequestRedraw]
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![]
                 }
@@ -285,8 +342,17 @@ impl DrawingManager {
                 vec![Command::UpdateToolbar, Command::RequestRedraw]
             }
             DrawingMessage::AddElement(element) => {
-                self.history
-                    .save_state(&self.elements, self.selected_element);
+                // 命令模式：记录添加操作
+                let index = self.elements.count();
+                let action = history::DrawingAction::AddElement {
+                    element: (*element).clone(),
+                    index,
+                };
+                self.history.record_action(
+                    action,
+                    self.selected_element,
+                    None,
+                );
                 self.elements.add_element(*element);
                 vec![Command::RequestRedraw]
             }
@@ -679,6 +745,7 @@ impl DrawingManager {
                             self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                             self.interaction_start_rect = element.rect;
                             self.interaction_start_font_size = element.font_size;
+                            self.interaction_start_points = element.points.clone();
                             return (vec![Command::RequestRedraw], true);
                         }
                         // 点击文本内容区域，继续编辑；返回重绘以消费事件，避免上层退出
@@ -704,6 +771,7 @@ impl DrawingManager {
                         // 先获取元素信息，避免借用冲突
                         let element_rect = element.rect;
                         let element_font_size = element.font_size;
+                        let element_points = element.points.clone();
 
                         // 单击只选择文本元素，不进入编辑模式（双击才进入编辑模式）
                         self.handle_message(DrawingMessage::SelectElement(Some(idx)));
@@ -714,6 +782,7 @@ impl DrawingManager {
                         self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                         self.interaction_start_rect = element_rect;
                         self.interaction_start_font_size = element_font_size;
+                        self.interaction_start_points = element_points;
 
                         return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                     }
@@ -752,6 +821,7 @@ impl DrawingManager {
                             self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                             self.interaction_start_rect = element.rect;
                             self.interaction_start_font_size = element.font_size;
+                            self.interaction_start_points = element.points.clone();
                             return (vec![Command::RequestRedraw], true);
                         }
                         // 2) 已选元素内部（移动）- 也必须在选择框内且元素可见
@@ -770,6 +840,7 @@ impl DrawingManager {
                                 self.interaction_start_pos =
                                     windows::Win32::Foundation::POINT { x, y };
                                 self.interaction_start_rect = element.rect;
+                                self.interaction_start_points = element.points.clone();
                                 return (vec![Command::RequestRedraw], true);
                             }
                         }
@@ -781,14 +852,14 @@ impl DrawingManager {
                 self.elements
                     .get_element_at_position_with_selection(x, y, selection_rect)
             {
-                // 先获取元素信息，避免借用冲突
-                let (element_tool, element_rect, element_font_size) = {
+            // 先获取元素信息，避免借用冲突
+                let (element_tool, element_rect, element_font_size, element_points) = {
                     if let Some(element) = self.elements.get_elements().get(idx) {
                         if element.tool == DrawingTool::Pen {
                             return (vec![], false); // 返回空命令，不消费此事件
                         }
 
-                        (element.tool, element.rect, element.font_size)
+                        (element.tool, element.rect, element.font_size, element.points.clone())
                     } else {
                         return (vec![], false);
                     }
@@ -807,6 +878,7 @@ impl DrawingManager {
                 self.interaction_start_rect = element_rect;
                 self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
                 self.interaction_start_font_size = element_font_size;
+                self.interaction_start_points = element_points;
 
                 // 检查是否点击了手柄（与原代码逻辑一致）
                 let handle_mode =
@@ -854,9 +926,7 @@ impl DrawingManager {
         self.selected_element = None;
         self.elements.set_selected(None);
 
-        // 保存历史状态（在操作开始前保存，以便精确撤销）
-        self.history
-            .save_state(&self.elements, self.selected_element);
+        // 命令模式不需要在开始时保存状态，而是在 end_drag 时记录 AddElement 操作
 
         // 设置交互模式为绘制图形
         self.interaction_mode = ElementInteractionMode::Drawing;
@@ -920,38 +990,111 @@ impl DrawingManager {
     }
 
     fn end_drag(&mut self) {
-        if self.interaction_mode == ElementInteractionMode::Drawing
-            && let Some(mut element) = self.current_element.take() {
-                // 根据不同工具类型判断是否保存
-                let should_save = match element.tool {
-                    DrawingTool::Pen => {
-                        // 手绘工具：至少要有2个点
-                        element.points.len() > 1
-                    }
-                    DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
-                        // 形状工具：检查尺寸
-                        if element.points.len() >= 2 {
-                            let dx = (element.points[1].x - element.points[0].x).abs();
-                            let dy = (element.points[1].y - element.points[0].y).abs();
-                            dx > 5 || dy > 5 // 至少有一个方向大于5像素
-                        } else {
-                            false
+        match &self.interaction_mode {
+            ElementInteractionMode::Drawing => {
+                if let Some(mut element) = self.current_element.take() {
+                    // 根据不同工具类型判断是否保存
+                    let should_save = match element.tool {
+                        DrawingTool::Pen => {
+                            // 手绘工具：至少要有2个点
+                            element.points.len() > 1
                         }
-                    }
-                    DrawingTool::Text => {
-                        // 文本工具：必须有位置点且文本内容不为空
-                        !element.points.is_empty() && !element.text.trim().is_empty()
-                    }
-                    _ => false,
-                };
+                        DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
+                            // 形状工具：检查尺寸
+                            if element.points.len() >= 2 {
+                                let dx = (element.points[1].x - element.points[0].x).abs();
+                                let dy = (element.points[1].y - element.points[0].y).abs();
+                                dx > 5 || dy > 5 // 至少有一个方向大于5像素
+                            } else {
+                                false
+                            }
+                        }
+                        DrawingTool::Text => {
+                            // 文本工具：必须有位置点且文本内容不为空
+                            !element.points.is_empty() && !element.text.trim().is_empty()
+                        }
+                        _ => false,
+                    };
 
-                if should_save {
-                    // 关键：保存前更新边界矩形
-                    element.update_bounding_rect();
-                    // 通过 ElementManager 添加元素
-                    self.elements.add_element(element);
+                    if should_save {
+                        // 关键：保存前更新边界矩形
+                        element.update_bounding_rect();
+                        
+                        // 命令模式：记录添加操作
+                        let index = self.elements.count();
+                        let action = history::DrawingAction::AddElement {
+                            element: element.clone(),
+                            index,
+                        };
+                        self.history.record_action(
+                            action,
+                            self.selected_element,
+                            None, // 添加后不选中
+                        );
+                        
+                        // 通过 ElementManager 添加元素
+                        self.elements.add_element(element);
+                    }
                 }
             }
+            ElementInteractionMode::MovingElement => {
+                // 命令模式：记录移动操作
+                if let Some(index) = self.selected_element {
+                    if let Some(element) = self.elements.get_elements().get(index) {
+                        let dx = element.rect.left - self.interaction_start_rect.left;
+                        let dy = element.rect.top - self.interaction_start_rect.top;
+                        
+                        // 只有实际发生移动才记录
+                        if dx != 0 || dy != 0 {
+                            let action = history::DrawingAction::MoveElement {
+                                index,
+                                dx,
+                                dy,
+                                old_points: self.interaction_start_points.clone(),
+                                old_rect: self.interaction_start_rect,
+                            };
+                            self.history.record_action(
+                                action,
+                                self.selected_element,
+                                self.selected_element,
+                            );
+                        }
+                    }
+                }
+            }
+            ElementInteractionMode::ResizingElement(_) => {
+                // 命令模式：记录调整大小操作
+                if let Some(index) = self.selected_element {
+                    if let Some(element) = self.elements.get_elements().get(index) {
+                        // 检查是否实际发生了变化
+                        let rect_changed = element.rect.left != self.interaction_start_rect.left
+                            || element.rect.top != self.interaction_start_rect.top
+                            || element.rect.right != self.interaction_start_rect.right
+                            || element.rect.bottom != self.interaction_start_rect.bottom;
+                        let points_changed = element.points != self.interaction_start_points;
+                        let font_size_changed = (element.font_size - self.interaction_start_font_size).abs() > 0.01;
+                        
+                        if rect_changed || points_changed || font_size_changed {
+                            let action = history::DrawingAction::ResizeElement {
+                                index,
+                                old_points: self.interaction_start_points.clone(),
+                                old_rect: self.interaction_start_rect,
+                                old_font_size: self.interaction_start_font_size,
+                                new_points: element.points.clone(),
+                                new_rect: element.rect,
+                                new_font_size: element.font_size,
+                            };
+                            self.history.record_action(
+                                action,
+                                self.selected_element,
+                                self.selected_element,
+                            );
+                        }
+                    }
+                }
+            }
+            ElementInteractionMode::None => {}
+        }
     }
 
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
