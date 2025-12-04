@@ -40,13 +40,17 @@ pub unsafe fn capture_screen_region_to_hbitmap(
     let width = selection_rect.right - selection_rect.left;
     let height = selection_rect.bottom - selection_rect.top;
 
-    // Assume caller validated width/height. Keep behavior aligned with existing code.
+    // SAFETY: 以下 GDI 调用均为 Windows API 的标准用法：
+    // 1. GetDC(NULL) 获取屏幕 DC，始终有效
+    // 2. CreateCompatibleDC/Bitmap 创建兼容的内存 DC 和位图
+    // 3. SelectObject 将位图选入 DC，返回旧对象以便恢复
+    // 4. BitBlt 复制屏幕内容到内存位图
     let screen_dc = unsafe { GetDC(Some(HWND(std::ptr::null_mut()))) };
     let mem_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
     let bitmap = unsafe { CreateCompatibleBitmap(screen_dc, width, height) };
     let old_bitmap = unsafe { SelectObject(mem_dc, bitmap.into()) };
 
-    // Copy from screen into the memory DC-backed bitmap
+    // SAFETY: BitBlt 从屏幕 DC 复制到内存 DC，两个 DC 都有效。
     let _ = unsafe {
         BitBlt(
             mem_dc,
@@ -61,7 +65,10 @@ pub unsafe fn capture_screen_region_to_hbitmap(
         )
     };
 
-    // Detach and cleanup DCs; return a standalone HBITMAP to the caller
+    // SAFETY: 清理资源：
+    // 1. 恢复原始位图选择
+    // 2. 删除内存 DC（我们创建的）
+    // 3. 释放屏幕 DC（使用 ReleaseDC 而非 DeleteDC）
     unsafe {
         SelectObject(mem_dc, old_bitmap);
         let _ = DeleteDC(mem_dc);

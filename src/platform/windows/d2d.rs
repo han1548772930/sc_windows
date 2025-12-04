@@ -21,8 +21,6 @@ pub struct Direct2DRenderer {
     pub dwrite_factory: Option<IDWriteFactory>,
     pub text_format: Option<IDWriteTextFormat>,
 
-    // 画刷缓存（真正的Direct2D画刷）
-    brushes: HashMap<BrushId, ID2D1SolidColorBrush>,
     // 颜色到画刷的缓存（避免每帧创建）: (Brush, LastUsedFrame)
     brush_cache: HashMap<u32, (ID2D1SolidColorBrush, u64)>,
     // 文本格式缓存（避免每次测量/绘制时创建）
@@ -45,7 +43,27 @@ impl Direct2DRenderer {
             layer_target: None,
             dwrite_factory: None,
             text_format: None,
-            brushes: HashMap::new(),
+            brush_cache: HashMap::new(),
+            text_format_cache: std::sync::Mutex::new(HashMap::new()),
+            frame_count: 0,
+            screen_width: 0,
+            screen_height: 0,
+        })
+    }
+
+    /// 创建使用共享 Factory 的 Direct2D 渲染器
+    ///
+    /// 优先使用全局共享的 Factory 实例，避免重复创建重量级 COM 对象。
+    pub fn new_with_shared_factories() -> std::result::Result<Self, PlatformError> {
+        let factories = super::factory::SharedFactories::try_get()
+            .ok_or_else(|| PlatformError::InitError("Failed to get shared factories".to_string()))?;
+
+        Ok(Self {
+            d2d_factory: Some(factories.d2d_factory_clone()),
+            render_target: None,
+            layer_target: None,
+            dwrite_factory: Some(factories.dwrite_factory_clone()),
+            text_format: None,
             brush_cache: HashMap::new(),
             text_format_cache: std::sync::Mutex::new(HashMap::new()),
             frame_count: 0,
@@ -78,6 +96,7 @@ impl Direct2DRenderer {
                 width: width as u32,
                 height: height as u32,
             };
+            // SAFETY: Resize 是安全的 COM 方法调用
             unsafe {
                 if render_target.Resize(&size).is_ok() {
                     self.screen_width = width;
@@ -92,6 +111,7 @@ impl Direct2DRenderer {
         self.screen_height = height;
 
         // 初始化COM（从原始代码迁移）
+        // SAFETY: COM 初始化是幂等操作，重复调用是安全的
         unsafe {
             let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if result.is_err() {
@@ -104,11 +124,23 @@ impl Direct2DRenderer {
             }
         }
 
-        // 创建D2D工厂（从原始代码迁移）
-        let d2d_factory: ID2D1Factory = unsafe {
-            D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)
-        }
-        .map_err(|e| PlatformError::InitError(format!("D2D factory creation failed: {e:?}")))?;
+        // 优先使用已有的 Factory（可能来自 new_with_shared_factories）
+        // 如果没有，尝试从全局共享单例获取，最后才创建新的
+        let d2d_factory: ID2D1Factory = if let Some(ref factory) = self.d2d_factory {
+            factory.clone()
+        } else if let Some(shared) = super::factory::SharedFactories::try_get() {
+            let factory = shared.d2d_factory_clone();
+            self.d2d_factory = Some(factory.clone());
+            factory
+        } else {
+            // SAFETY: D2D1CreateFactory 是 Windows API 的安全封装
+            let factory: ID2D1Factory = unsafe {
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)
+            }
+            .map_err(|e| PlatformError::InitError(format!("D2D factory creation failed: {e:?}")))?;
+            self.d2d_factory = Some(factory.clone());
+            factory
+        };
 
         // 创建渲染目标（从原始代码迁移）
         let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
@@ -140,11 +172,22 @@ impl Direct2DRenderer {
                 })?
         };
 
-        // 创建DirectWrite工厂（从原始代码迁移）
-        let dwrite_factory: IDWriteFactory = unsafe {
-            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(|e| {
-                PlatformError::InitError(format!("DirectWrite factory creation failed: {e:?}"))
-            })?
+        // 优先使用已有的 DWrite Factory，否则从共享单例获取或创建新的
+        let dwrite_factory: IDWriteFactory = if let Some(ref factory) = self.dwrite_factory {
+            factory.clone()
+        } else if let Some(shared) = super::factory::SharedFactories::try_get() {
+            let factory = shared.dwrite_factory_clone();
+            self.dwrite_factory = Some(factory.clone());
+            factory
+        } else {
+            // SAFETY: DWriteCreateFactory 是 Windows API 的安全封装
+            let factory: IDWriteFactory = unsafe {
+                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(|e| {
+                    PlatformError::InitError(format!("DirectWrite factory creation failed: {e:?}"))
+                })?
+            };
+            self.dwrite_factory = Some(factory.clone());
+            factory
         };
 
         // 创建文本格式（从原始代码迁移）
@@ -163,83 +206,6 @@ impl Direct2DRenderer {
                     PlatformError::InitError(format!("Text format creation failed: {e:?}"))
                 })?
         };
-
-        // 创建所有必要的画刷（从原始代码迁移）
-        let selection_border_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_SELECTION_BORDER, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!(
-                        "Selection border brush creation failed: {e:?}"
-                    ))
-                })?
-        };
-
-        let handle_fill_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_FILL, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Handle fill brush creation failed: {e:?}"))
-                })?
-        };
-
-        let handle_border_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_HANDLE_BORDER, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Handle border brush creation failed: {e:?}"))
-                })?
-        };
-
-        let toolbar_bg_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_TOOLBAR_BG, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Toolbar bg brush creation failed: {e:?}"))
-                })?
-        };
-
-        let button_hover_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_BUTTON_HOVER, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Button hover brush creation failed: {e:?}"))
-                })?
-        };
-
-        let button_active_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_BUTTON_ACTIVE, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Button active brush creation failed: {e:?}"))
-                })?
-        };
-
-        let text_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_TEXT_NORMAL, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Text brush creation failed: {e:?}"))
-                })?
-        };
-
-        let mask_brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&crate::constants::COLOR_MASK, None)
-                .map_err(|e| {
-                    PlatformError::InitError(format!("Mask brush creation failed: {e:?}"))
-                })?
-        };
-
-        // 存储画刷到缓存中（使用预定义的ID）
-        self.brushes.insert(1, selection_border_brush);
-        self.brushes.insert(2, handle_fill_brush);
-        self.brushes.insert(3, handle_border_brush);
-        self.brushes.insert(4, toolbar_bg_brush);
-        self.brushes.insert(5, button_hover_brush);
-        self.brushes.insert(6, button_active_brush);
-        self.brushes.insert(7, text_brush);
-        self.brushes.insert(8, mask_brush);
 
         // 存储资源
         self.d2d_factory = Some(d2d_factory);
@@ -486,43 +452,6 @@ impl Direct2DRenderer {
         ))
     }
 
-    /// 绘制GDI位图作为背景（从原始代码迁移）
-    pub fn draw_gdi_bitmap_background(
-        &mut self,
-        gdi_dc: windows::Win32::Graphics::Gdi::HDC,
-        width: i32,
-        height: i32,
-    ) -> std::result::Result<(), PlatformError> {
-        if let Some(ref render_target) = self.render_target {
-            // 从GDI位图创建D2D位图
-            let d2d_bitmap = self.create_d2d_bitmap_from_gdi(gdi_dc, width, height)?;
-
-            // 绘制D2D位图作为背景
-            let dest_rect = D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: width as f32,
-                bottom: height as f32,
-            };
-
-            unsafe {
-                render_target.DrawBitmap(
-                    &d2d_bitmap,
-                    Some(&dest_rect),
-                    1.0, // 不透明度
-                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                    None, // 源矩形（使用整个位图）
-                );
-            }
-
-            Ok(())
-        } else {
-            Err(PlatformError::ResourceError(
-                "No render target available".to_string(),
-            ))
-        }
-    }
-
     /// 获取屏幕宽度
     pub fn get_screen_width(&self) -> i32 {
         self.screen_width
@@ -531,11 +460,6 @@ impl Direct2DRenderer {
     /// 获取屏幕高度
     pub fn get_screen_height(&self) -> i32 {
         self.screen_height
-    }
-
-    /// 获取画刷（从原始代码迁移）
-    pub fn get_brush(&self, id: &u32) -> Option<&ID2D1SolidColorBrush> {
-        self.brushes.get(id)
     }
 
     /// 渲染选择区域到BMP数据（包含绘图元素）

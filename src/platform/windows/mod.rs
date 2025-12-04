@@ -2,18 +2,19 @@
 //!
 //! 该模块包含 Windows 平台的各种实现：
 //! - `d2d`: Direct2D 渲染器
-//! - `dxgi`: DXGI 屏幕捕获
+//! - `factory`: D2D/DWrite Factory 全局共享管理
 //! - `gdi`: GDI 屏幕捕获
 //! - `resources`: RAII 资源封装
 //! - `system`: 系统信息查询
 
 pub mod d2d;
-pub mod dxgi;
+pub mod factory;
 pub mod gdi;
 pub mod resources;
 pub mod system;
 
 pub use d2d::Direct2DRenderer;
+pub use factory::SharedFactories;
 pub use resources::{ManagedBitmap, ManagedDC, ManagedHandle};
 
 use windows::Win32::Foundation::HWND;

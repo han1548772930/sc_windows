@@ -60,6 +60,9 @@ impl ManagedBitmap {
 impl Drop for ManagedBitmap {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
+            // SAFETY: self.0 是有效的 HBITMAP 句柄（已通过 is_invalid 检查），
+            // 且我们拥有其所有权（构造时的合约保证）。
+            // DeleteObject 是幂等的，即使重复调用也是安全的。
             unsafe {
                 let _ = DeleteObject(self.0.into());
             }
@@ -110,6 +113,9 @@ impl ManagedDC {
 impl Drop for ManagedDC {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
+            // SAFETY: self.0 是有效的 HDC 句柄（已通过 is_invalid 检查），
+            // 且是由 CreateCompatibleDC 等函数创建的（构造时的合约保证）。
+            // 不应用于 GetDC 返回的 HDC。
             unsafe {
                 let _ = DeleteDC(self.0);
             }
@@ -156,6 +162,8 @@ impl ManagedHandle {
 impl Drop for ManagedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
+            // SAFETY: self.0 是有效的 HANDLE（已通过 is_invalid 检查），
+            // 且我们拥有其所有权。CloseHandle 对无效句柄会返回错误但不会崩溃。
             unsafe {
                 let _ = windows::Win32::Foundation::CloseHandle(self.0);
             }

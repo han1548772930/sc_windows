@@ -214,7 +214,6 @@ impl ScreenshotManager {
     /// 按需捕获屏幕并返回GDI位图句柄
     /// 调用方负责释放返回的HBITMAP
     pub fn capture_screen_to_gdi_bitmap(&self) -> Result<HBITMAP, ScreenshotError> {
-        // 使用统一的平台层截图函数，避免重复的GDI代码
         let screen_rect = windows::Win32::Foundation::RECT {
             left: 0,
             top: 0,

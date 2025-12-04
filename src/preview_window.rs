@@ -40,9 +40,13 @@ struct PreviewRenderer {
 
 impl PreviewRenderer {
     fn new() -> Result<Self> {
+        // 优先使用全局共享的 Factory，避免重复创建重量级 COM 对象
+        let d2d_renderer = Direct2DRenderer::new_with_shared_factories()
+            .or_else(|_| Direct2DRenderer::new())
+            .map_err(|e| anyhow::anyhow!("D2D Init Error: {:?}", e))?;
+
         Ok(Self {
-            d2d_renderer: Direct2DRenderer::new()
-                .map_err(|e| anyhow::anyhow!("D2D Init Error: {:?}", e))?,
+            d2d_renderer,
             image_bitmap: None,
             icon_cache: HashMap::new(),
             icons_loaded: false,

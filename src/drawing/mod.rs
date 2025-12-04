@@ -214,11 +214,20 @@ impl DrawingManager {
             }
             DrawingMessage::Undo => {
                 if let Some((elements, sel)) = self.history.undo() {
+                    // 获取变更的元素索引（在恢复状态前）
+                    let changed = self.history.get_last_changed_indices().to_vec();
+                    
                     self.elements.restore_state(elements);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
                     self.cache_dirty.replace(true);
-                    self.geometry_cache.invalidate_all(); // 撤销后清理所有缓存
+                    
+                    // 使用增量式缓存失效：只标记变更的元素为 dirty
+                    if changed.is_empty() {
+                        self.geometry_cache.invalidate_all();
+                    } else {
+                        self.geometry_cache.mark_dirty_batch(&changed);
+                    }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![Command::UpdateToolbar]
@@ -226,11 +235,20 @@ impl DrawingManager {
             }
             DrawingMessage::Redo => {
                 if let Some((elements, sel)) = self.history.redo() {
+                    // 获取变更的元素索引（在恢复状态前）
+                    let changed = self.history.get_last_changed_indices().to_vec();
+                    
                     self.elements.restore_state(elements);
                     self.selected_element = sel;
                     self.elements.set_selected(self.selected_element);
                     self.cache_dirty.replace(true);
-                    self.geometry_cache.invalidate_all(); // 重做后清理所有缓存
+                    
+                    // 使用增量式缓存失效
+                    if changed.is_empty() {
+                        self.geometry_cache.invalidate_all();
+                    } else {
+                        self.geometry_cache.mark_dirty_batch(&changed);
+                    }
                     vec![Command::RequestRedraw]
                 } else {
                     vec![]
