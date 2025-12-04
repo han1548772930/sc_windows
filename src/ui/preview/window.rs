@@ -1,10 +1,7 @@
-use crate::ocr::OcrResult;
-use crate::platform::traits::PlatformRenderer;
-use crate::platform::windows::Direct2DRenderer;
+//! 预览窗口主体（窗口创建、消息处理）
+
 use anyhow::Result;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::{
@@ -14,607 +11,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, ICON_CLICK_PADDING, ICON_HOVER_BG_COLOR_D2D,
-    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, ICON_START_X, TITLE_BAR_BG_COLOR_D2D,
-    TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
+    BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, ICON_START_X,
+    TITLE_BAR_HEIGHT,
 };
+use crate::ocr::OcrResult;
 
-use std::collections::HashMap;
-
-/// D2D 图标位图集合
-struct D2DIconBitmaps {
-    normal: ID2D1Bitmap,
-    hover: ID2D1Bitmap,
-    // active 状态可以共用 hover 或 normal，或者单独添加
-    active_normal: Option<ID2D1Bitmap>,
-    active_hover: Option<ID2D1Bitmap>,
-}
-
-/// 预览窗口渲染器（负责所有 Direct2D 绘图）
-struct PreviewRenderer {
-    d2d_renderer: Direct2DRenderer,
-    image_bitmap: Option<ID2D1Bitmap>,
-    icon_cache: HashMap<String, D2DIconBitmaps>,
-    icons_loaded: bool,
-}
-
-impl PreviewRenderer {
-    fn new() -> Result<Self> {
-        // 优先使用全局共享的 Factory，避免重复创建重量级 COM 对象
-        let d2d_renderer = Direct2DRenderer::new_with_shared_factories()
-            .or_else(|_| Direct2DRenderer::new())
-            .map_err(|e| anyhow::anyhow!("D2D Init Error: {:?}", e))?;
-
-        Ok(Self {
-            d2d_renderer,
-            image_bitmap: None,
-            icon_cache: HashMap::new(),
-            icons_loaded: false,
-        })
-    }
-
-    fn initialize(&mut self, hwnd: HWND, width: i32, height: i32) -> Result<()> {
-        // 记录旧的 RenderTarget 指针，用于检测是否发生了重建
-        use windows::core::Interface;
-        let old_rt_ptr = self
-            .d2d_renderer
-            .render_target
-            .as_ref()
-            .map(|rt| rt.as_raw());
-
-        self.d2d_renderer
-            .initialize(hwnd, width, height)
-            .map_err(|e| anyhow::anyhow!("D2D Initialize Error: {:?}", e))?;
-
-        // 检查 RenderTarget 是否改变
-        let new_rt_ptr = self
-            .d2d_renderer
-            .render_target
-            .as_ref()
-            .map(|rt| rt.as_raw());
-
-        let rt_changed = match (old_rt_ptr, new_rt_ptr) {
-            (Some(p1), Some(p2)) => p1 != p2,
-            (None, None) => false,
-            _ => true,
-        };
-
-        // 只有在 RenderTarget 真正改变（重建）时才清理资源
-        // 如果只是 Resize，则保留资源
-        if rt_changed {
-            self.image_bitmap = None;
-            self.icon_cache.clear();
-            self.icons_loaded = false;
-        }
-
-        // 初始化后加载图标（如果尚未加载）
-        if !self.icons_loaded {
-            self.load_icons()?;
-            self.icons_loaded = true;
-        }
-        Ok(())
-    }
-
-    fn set_image_from_pixels(&mut self, pixels: &[u8], width: i32, height: i32) -> Result<()> {
-        if self.image_bitmap.is_some() {
-            return Ok(());
-        }
-
-        let d2d_bitmap = self
-            .d2d_renderer
-            .create_bitmap_from_pixels(pixels, width as u32, height as u32)
-            .map_err(|e| anyhow::anyhow!("Failed to create D2D bitmap from pixels: {:?}", e))?;
-
-        self.image_bitmap = Some(d2d_bitmap);
-        Ok(())
-    }
-
-    /// 加载所有图标到 D2D 位图
-    fn load_icons(&mut self) -> Result<()> {
-        // 定义要加载的图标列表
-        let icons = [
-            "pin",
-            "window-close",
-            "window-maximize",
-            "window-minimize",
-            "window-restore",
-        ];
-
-        for name in icons.iter() {
-            // 1. 加载普通状态
-            let normal_pixels = Self::load_svg_pixels(name, ICON_SIZE, None)?;
-            let normal_bitmap = self
-                .d2d_renderer
-                .create_bitmap_from_pixels(
-                    &normal_pixels,
-                    (ICON_SIZE * 2) as u32,
-                    (ICON_SIZE * 2) as u32,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to create bitmap for {}: {:?}", name, e))?;
-
-            // 2. 加载悬停状态 (对于图标，悬停通常是改变背景，图标本身可能不变，或者变色)
-            // 这里我们简单复用普通位图，或者如果有特定颜色需求（如关闭按钮变白）则重新生成
-            let hover_pixels = if *name == "window-close" {
-                // 关闭按钮悬停时变白
-                Self::load_svg_pixels(name, ICON_SIZE, Some((255, 255, 255)))?
-            } else {
-                // 其他图标悬停时保持原色（背景色由 draw_custom_title_bar 绘制）
-                normal_pixels.clone()
-            };
-
-            let hover_bitmap = self
-                .d2d_renderer
-                .create_bitmap_from_pixels(
-                    &hover_pixels,
-                    (ICON_SIZE * 2) as u32,
-                    (ICON_SIZE * 2) as u32,
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to create hover bitmap for {}: {:?}", name, e)
-                })?;
-
-            let (active_normal, active_hover) = if *name == "pin" {
-                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
-                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
-
-                let an_bmp = self
-                    .d2d_renderer
-                    .create_bitmap_from_pixels(
-                        &an_pixels,
-                        (ICON_SIZE * 2) as u32,
-                        (ICON_SIZE * 2) as u32,
-                    )
-                    .ok();
-                let ah_bmp = self
-                    .d2d_renderer
-                    .create_bitmap_from_pixels(
-                        &ah_pixels,
-                        (ICON_SIZE * 2) as u32,
-                        (ICON_SIZE * 2) as u32,
-                    )
-                    .ok();
-                (an_bmp, ah_bmp)
-            } else {
-                (None, None)
-            };
-
-            self.icon_cache.insert(
-                name.to_string(),
-                D2DIconBitmaps {
-                    normal: normal_bitmap,
-                    hover: hover_bitmap,
-                    active_normal,
-                    active_hover,
-                },
-            );
-        }
-
-        Ok(())
-    }
-
-    /// 加载 SVG 并渲染为像素数据 (RGBA)
-    fn load_svg_pixels(
-        filename: &str,
-        size: i32,
-        color_override: Option<(u8, u8, u8)>,
-    ) -> Result<Vec<u8>> {
-        let svg_path = format!("icons/{}.svg", filename);
-        let svg_data = std::fs::read_to_string(&svg_path)?;
-        let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default())?;
-
-        // 使用 2x 超采样
-        let scale = 2.0;
-        let render_size = (size as f32 * scale) as u32;
-        let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)
-            .ok_or_else(|| anyhow::anyhow!("Failed to create pixmap"))?;
-
-        // 透明背景
-        pixmap.fill(tiny_skia::Color::TRANSPARENT);
-
-        let svg_size = tree.size();
-        let render_ts = tiny_skia::Transform::from_scale(
-            size as f32 * scale / svg_size.width(),
-            size as f32 * scale / svg_size.height(),
-        );
-
-        resvg::render(&tree, render_ts, &mut pixmap.as_mut());
-
-        // 如果需要颜色覆盖 (简单粗暴地将非透明像素染成指定颜色)
-        if let Some((r, g, b)) = color_override {
-            let pixels = pixmap.data_mut();
-            for i in (0..pixels.len()).step_by(4) {
-                // pixels is RGBA
-                let alpha = pixels[i + 3];
-                if alpha > 0 {
-                    pixels[i] = r;
-                    pixels[i + 1] = g;
-                    pixels[i + 2] = b;
-                    // Alpha 保持不变
-                }
-            }
-        }
-
-        Ok(pixmap.data().to_vec())
-    }
-
-    /// 将文本按指定宽度分行
-    fn split_text_into_lines(&self, text: &str, width: f32) -> Vec<String> {
-        self.d2d_renderer
-            .split_text_into_lines(text, width, "Microsoft YaHei", 18.0)
-            .unwrap_or_else(|_| vec![text.to_string()])
-    }
-
-    /// 获取点击位置的字符索引
-    fn get_text_position_from_point(&self, text: &str, x: f32) -> usize {
-        self.d2d_renderer
-            .get_text_position_from_point(text, x, "Microsoft YaHei", 18.0)
-            .unwrap_or(0)
-    }
-
-    fn begin_frame(&mut self) -> Result<()> {
-        use crate::platform::traits::PlatformRenderer;
-        self.d2d_renderer
-            .begin_frame()
-            .map_err(|e| anyhow::anyhow!("BeginFrame Error: {:?}", e))
-    }
-
-    fn end_frame(&mut self) -> Result<()> {
-        use crate::platform::traits::PlatformRenderer;
-        self.d2d_renderer
-            .end_frame()
-            .map_err(|e| anyhow::anyhow!("EndFrame Error: {:?}", e))
-    }
-
-    fn clear(&mut self, r: f32, g: f32, b: f32, a: f32) -> Result<()> {
-        use crate::platform::traits::PlatformRenderer;
-        self.d2d_renderer
-            .clear(crate::platform::Color { r, g, b, a })
-            .map_err(|e| anyhow::anyhow!("Clear Error: {:?}", e))
-    }
-
-    /// 绘制自定义标题栏
-    fn draw_custom_title_bar(
-        &mut self,
-        width: i32,
-        icons: &[SvgIcon],
-        is_pinned: bool,
-    ) -> Result<()> {
-        use crate::platform::traits::{Color, DrawStyle, PlatformRenderer, Rectangle};
-
-        // 绘制标题栏背景
-        let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
-        let bg_color = Color {
-            r: TITLE_BAR_BG_COLOR_D2D.r,
-            g: TITLE_BAR_BG_COLOR_D2D.g,
-            b: TITLE_BAR_BG_COLOR_D2D.b,
-            a: TITLE_BAR_BG_COLOR_D2D.a,
-        };
-
-        let bg_style = DrawStyle {
-            stroke_color: bg_color,
-            fill_color: Some(bg_color),
-            stroke_width: 0.0,
-        };
-
-        self.d2d_renderer
-            .draw_rectangle(title_bar_rect, &bg_style)
-            .map_err(|e| anyhow::anyhow!("Failed to draw title bar bg: {:?}", e))?;
-
-        // 绘制标题栏按钮和图标
-        for icon in icons {
-            // 跳过不可见的图标
-            if icon.rect.right > width {
-                continue;
-            }
-
-            let icon_rect = Rectangle::from_bounds(
-                icon.rect.left as f32,
-                icon.rect.top as f32,
-                icon.rect.right as f32,
-                icon.rect.bottom as f32,
-            );
-
-            // 绘制悬停/激活背景
-            if icon.hovered {
-                let (bg_color_d2d, use_rounded) = if icon.is_title_bar_button {
-                    if icon.name == "window-close" {
-                        (CLOSE_BUTTON_HOVER_BG_COLOR_D2D, false)
-                    } else {
-                        (TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, false)
-                    }
-                } else {
-                    (ICON_HOVER_BG_COLOR_D2D, true)
-                };
-
-                let hover_color = Color {
-                    r: bg_color_d2d.r,
-                    g: bg_color_d2d.g,
-                    b: bg_color_d2d.b,
-                    a: bg_color_d2d.a,
-                };
-
-                let hover_style = DrawStyle {
-                    stroke_color: hover_color,
-                    fill_color: Some(hover_color),
-                    stroke_width: 0.0,
-                };
-
-                if use_rounded {
-                    // 普通图标：圆角背景
-                    let padding = ICON_HOVER_PADDING as f32;
-                    let hover_rect = Rectangle::new(
-                        icon_rect.x - padding,
-                        icon_rect.y - padding,
-                        icon_rect.width + padding * 2.0,
-                        icon_rect.height + padding * 2.0,
-                    );
-
-                    self.d2d_renderer
-                        .draw_rounded_rectangle(hover_rect, ICON_HOVER_RADIUS, &hover_style)
-                        .map_err(|e| anyhow::anyhow!("Failed to draw icon hover: {:?}", e))?;
-                } else {
-                    // 标题栏按钮：矩形背景
-                    let mut button_rect = icon_rect;
-                    // 扩展到标准按钮宽度
-                    let button_width = BUTTON_WIDTH_OCR as f32;
-                    let center_x = icon_rect.x + icon_rect.width / 2.0;
-                    button_rect.x = center_x - button_width / 2.0;
-                    button_rect.width = button_width;
-                    button_rect.y = 0.0; // 铺满高度
-                    button_rect.height = TITLE_BAR_HEIGHT as f32;
-
-                    // 关闭按钮延伸到边缘
-                    if icon.name == "window-close" {
-                        button_rect.width = (width as f32) - button_rect.x;
-                    }
-
-                    self.d2d_renderer
-                        .draw_rectangle(button_rect, &hover_style)
-                        .map_err(|e| anyhow::anyhow!("Failed to draw button hover: {:?}", e))?;
-                }
-            }
-
-            // 绘制图标本身 (SVG -> D2D Bitmap)
-            if let Some(bitmaps) = self.icon_cache.get(&icon.name) {
-                let bitmap_to_use = if icon.name == "pin" && is_pinned {
-                    if icon.hovered {
-                        bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
-                    } else {
-                        bitmaps.active_normal.as_ref().unwrap_or(&bitmaps.normal)
-                    }
-                } else if icon.hovered {
-                    &bitmaps.hover
-                } else {
-                    &bitmaps.normal
-                };
-
-                let icon_width = ICON_SIZE as f32;
-                let icon_height = ICON_SIZE as f32;
-
-                // 居中计算
-                let center_x = icon_rect.x + icon_rect.width / 2.0;
-                let center_y = icon_rect.y + icon_rect.height / 2.0;
-
-                let draw_rect = D2D_RECT_F {
-                    left: center_x - icon_width / 2.0,
-                    top: center_y - icon_height / 2.0,
-                    right: center_x + icon_width / 2.0,
-                    bottom: center_y + icon_height / 2.0,
-                };
-
-                self.d2d_renderer
-                    .draw_d2d_bitmap(bitmap_to_use, Some(draw_rect), 1.0, None)
-                    .map_err(|e| anyhow::anyhow!("Failed to draw icon {}: {:?}", icon.name, e))?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn render(
-        &mut self,
-        text_lines: &[String],
-        text_rect: RECT,
-        width: i32,
-        icons: &[SvgIcon],
-        is_pinned: bool,
-        _is_maximized: bool,
-        scroll_offset: i32,
-        line_height: i32,
-        image_width: i32,
-        image_height: i32,
-        selection: Option<((usize, usize), (usize, usize))>,
-        show_text_area: bool,
-    ) -> Result<()> {
-        self.begin_frame()?;
-
-        self.clear(
-            crate::constants::CONTENT_BG_COLOR_D2D.r,
-            crate::constants::CONTENT_BG_COLOR_D2D.g,
-            crate::constants::CONTENT_BG_COLOR_D2D.b,
-            crate::constants::CONTENT_BG_COLOR_D2D.a,
-        )?;
-
-        // 1. 绘制标题栏（包括按钮背景）
-        self.draw_custom_title_bar(width, icons, is_pinned)?;
-
-        // 2. 绘制图片（如果存在）
-        if let Some(bitmap) = &self.image_bitmap {
-            let original_width = image_width as f32;
-            let original_height = image_height as f32;
-
-            // Pin 模式：图片紧贴标题栏下方，原始大小显示
-            // OCR 模式：图片在左侧区域居中显示
-            let (image_x, image_y, display_width, display_height) = if !show_text_area {
-                // Pin 模式：直接显示原始大小，紧贴标题栏
-                let x = 0.0;
-                let y = TITLE_BAR_HEIGHT as f32;
-                (x, y, original_width, original_height)
-            } else {
-                // OCR 模式：在左侧区域居中显示
-                let available_width = (width - 350 - 40) as f32;
-                let available_height = (text_rect.bottom - text_rect.top) as f32;
-                let start_y = TITLE_BAR_HEIGHT as f32 + 10.0;
-
-                // 限制最大可用高度
-                let max_height =
-                    (crate::platform::windows::system::get_screen_size().1 as f32) - start_y - 20.0;
-                let effective_available_height = available_height.min(max_height);
-
-                // 计算缩放比例 (保持长宽比，不放大超过原图)
-                let scale_x = available_width / original_width;
-                let scale_y = effective_available_height / original_height;
-                let scale = scale_x.min(scale_y).min(1.0);
-
-                let display_w = original_width * scale;
-                let display_h = original_height * scale;
-
-                // 居中显示
-                let left_area_center_x = 20.0 + available_width / 2.0;
-                let x = left_area_center_x - display_w / 2.0;
-                let y = start_y + (effective_available_height - display_h) / 2.0;
-
-                (x, y, display_w, display_h)
-            };
-
-            let image_dest_rect = D2D_RECT_F {
-                left: image_x,
-                top: image_y,
-                right: image_x + display_width,
-                bottom: image_y + display_height,
-            };
-
-            self.d2d_renderer
-                .draw_d2d_bitmap(bitmap, Some(image_dest_rect), 1.0, None)
-                .map_err(|e| anyhow::anyhow!("Failed to draw bitmap: {:?}", e))?;
-        }
-
-        if show_text_area {
-            let text_color = crate::platform::traits::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            };
-            let text_style = crate::platform::traits::TextStyle {
-                font_size: 18.0,
-                color: text_color,
-                font_family: "Microsoft YaHei".to_string(),
-            };
-
-            // 剪裁文本区域...
-            let start_y = text_rect.top as f32 - scroll_offset as f32;
-
-            // 预计算选择范围
-            let (start_sel, end_sel) = if let Some((s, e)) = selection {
-                if s <= e { (s, e) } else { (e, s) }
-            } else {
-                ((usize::MAX, 0), (usize::MAX, 0))
-            };
-
-            for (i, line) in text_lines.iter().enumerate() {
-                let line_y = start_y + (i as f32 * line_height as f32);
-
-                // 优化：只绘制可见区域内的行
-                if line_y + (line_height as f32) < text_rect.top as f32 {
-                    continue;
-                }
-                if line_y > text_rect.bottom as f32 {
-                    break;
-                }
-
-                let pos = crate::platform::traits::Point {
-                    x: text_rect.left as f32,
-                    y: line_y,
-                };
-
-                // 绘制选择高亮
-                if i >= start_sel.0 && i <= end_sel.0 {
-                    let mut sel_rect = crate::platform::traits::Rectangle {
-                        x: pos.x,
-                        y: pos.y,
-                        width: 0.0,
-                        height: line_height as f32,
-                    };
-
-                    // 计算高亮行的起始和结束字符索引
-                    let start_char = if i == start_sel.0 { start_sel.1 } else { 0 };
-                    let end_char = if i == end_sel.0 {
-                        end_sel.1
-                    } else {
-                        line.chars().count()
-                    };
-
-                    if start_char < end_char {
-                        // 测量前缀宽度 (start_char之前)
-                        let prefix = line.chars().take(start_char).collect::<String>();
-                        let (prefix_width, _) = self
-                            .d2d_renderer
-                            .measure_text_layout_size(&prefix, 10000.0, &text_style)
-                            .unwrap_or((0.0, 0.0));
-
-                        // 测量选中部分宽度
-                        let selected_text = line
-                            .chars()
-                            .skip(start_char)
-                            .take(end_char - start_char)
-                            .collect::<String>();
-                        let (sel_width, _) = self
-                            .d2d_renderer
-                            .measure_text_layout_size(&selected_text, 10000.0, &text_style)
-                            .unwrap_or((0.0, 0.0));
-
-                        sel_rect.x += prefix_width;
-                        sel_rect.width = sel_width;
-
-                        // 绘制高亮矩形
-                        let highlight_color = crate::platform::traits::Color {
-                            r: 0.78,
-                            g: 0.97,
-                            b: 0.77,
-                            a: 1.0,
-                        }; // #C8F7C5
-                        let highlight_style = crate::platform::traits::DrawStyle {
-                            stroke_color: highlight_color,
-                            fill_color: Some(highlight_color),
-                            stroke_width: 0.0,
-                        };
-
-                        let _ = self.d2d_renderer.draw_rectangle(sel_rect, &highlight_style);
-                    }
-                }
-
-                // 绘制文本行
-                self.d2d_renderer
-                    .draw_text(line, pos, &text_style)
-                    .map_err(|e| anyhow::anyhow!("Failed to draw text: {:?}", e))?;
-            }
-        }
-
-        self.end_frame()?;
-        Ok(())
-    }
-}
-
-// SVG 图标结构 - 简化版，只保存位置和状态信息
-#[derive(Clone)]
-struct SvgIcon {
-    name: String,
-    rect: RECT,
-    hovered: bool,
-    is_title_bar_button: bool, // 是否是标题栏按钮
-}
-
-// DWM边距结构
-#[repr(C)]
-#[derive(Clone, Copy)]
-#[allow(non_snake_case)]
-struct MARGINS {
-    cxLeftWidth: i32,
-    cxRightWidth: i32,
-    cyTopHeight: i32,
-    cyBottomHeight: i32,
-}
+use super::renderer::PreviewRenderer;
+use super::types::{SvgIcon, MARGINS};
 
 /// 预览显示窗口 (支持 OCR 结果和 Pin 模式)
 pub struct PreviewWindow {
@@ -647,6 +50,7 @@ pub struct PreviewWindow {
     // Direct2D 渲染器
     renderer: Option<PreviewRenderer>,
 }
+
 impl PreviewWindow {
     // 获取窗口边框厚度
     fn get_frame_thickness(hwnd: HWND) -> i32 {
@@ -975,7 +379,10 @@ impl PreviewWindow {
                 cyTopHeight: -1,
                 cyBottomHeight: -1,
             };
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
+            let _ = DwmExtendFrameIntoClientArea(
+                hwnd,
+                &margins as *const MARGINS as *const _,
+            );
 
             // 触发一次 Frame 改变
             SetWindowPos(
@@ -1415,8 +822,11 @@ impl PreviewWindow {
                         // 文本选择逻辑 (仅当显示文本区域时)
                         if window.show_text_area {
                             let text_rect = window.text_area_rect;
-                            if x >= text_rect.left && x <= text_rect.right
-                               && y >= text_rect.top && y <= text_rect.bottom {
+                            if x >= text_rect.left
+                                && x <= text_rect.right
+                                && y >= text_rect.top
+                                && y <= text_rect.bottom
+                            {
                                 // 计算点击位置对应的行和字符
                                 let relative_y = y - text_rect.top + window.scroll_offset;
                                 let line_index = (relative_y / window.line_height) as usize;
@@ -1529,20 +939,21 @@ impl PreviewWindow {
                 WM_MOUSEWHEEL => {
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
-                         let window = &mut *window_ptr;
-                         if window.show_text_area {
-                             let delta = ((wparam.0 >> 16) as i16) as i32;
-                             // 滚动...
-                             let scroll_amount = (delta / 120) * window.line_height * 3;
-                             window.scroll_offset -= scroll_amount;
+                        let window = &mut *window_ptr;
+                        if window.show_text_area {
+                            let delta = ((wparam.0 >> 16) as i16) as i32;
+                            // 滚动...
+                            let scroll_amount = (delta / 120) * window.line_height * 3;
+                            window.scroll_offset -= scroll_amount;
 
-                             // Clamping
-                             let max_scroll = (window.text_lines.len() as i32 * window.line_height)
+                            // Clamping
+                            let max_scroll = (window.text_lines.len() as i32 * window.line_height)
                                 - (window.text_area_rect.bottom - window.text_area_rect.top);
-                             window.scroll_offset = window.scroll_offset.clamp(0, max_scroll.max(0));
+                            window.scroll_offset = window.scroll_offset.clamp(0, max_scroll.max(0));
 
-                             let _ = InvalidateRect(Some(hwnd), Some(&window.text_area_rect), false);
-                         }
+                            let _ =
+                                InvalidateRect(Some(hwnd), Some(&window.text_area_rect), false);
+                        }
                     }
                     LRESULT(0)
                 }
@@ -1568,7 +979,8 @@ impl PreviewWindow {
                     if !window_ptr.is_null() {
                         let window = &mut *window_ptr;
                         let vk = wparam.0 as u16;
-                        let ctrl_pressed = (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
+                        let ctrl_pressed =
+                            (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
 
                         if ctrl_pressed && window.show_text_area {
                             match vk {
@@ -1585,20 +997,29 @@ impl PreviewWindow {
                                 }
                                 0x43 /* VK_C */ => {
                                     // Ctrl+C: 复制选中文本
-                                    if let (Some(start), Some(end)) = (window.selection_start, window.selection_end) {
-                                        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+                                    if let (Some(start), Some(end)) =
+                                        (window.selection_start, window.selection_end)
+                                    {
+                                        let (start, end) =
+                                            if start <= end { (start, end) } else { (end, start) };
                                         let mut selected_text = String::new();
 
                                         for i in start.0..=end.0 {
-                                            if i >= window.text_lines.len() { break; }
+                                            if i >= window.text_lines.len() {
+                                                break;
+                                            }
                                             let line = &window.text_lines[i];
                                             let chars: Vec<char> = line.chars().collect();
 
                                             let start_char = if i == start.0 { start.1 } else { 0 };
-                                            let end_char = if i == end.0 { end.1 } else { chars.len() };
+                                            let end_char =
+                                                if i == end.0 { end.1 } else { chars.len() };
 
                                             if start_char < chars.len() {
-                                                let slice: String = chars[start_char..end_char.min(chars.len())].iter().collect();
+                                                let slice: String = chars
+                                                    [start_char..end_char.min(chars.len())]
+                                                    .iter()
+                                                    .collect();
                                                 selected_text.push_str(&slice);
                                             }
                                             if i < end.0 {
@@ -1607,7 +1028,9 @@ impl PreviewWindow {
                                         }
 
                                         if !selected_text.is_empty() {
-                                            let _ = crate::screenshot::save::copy_text_to_clipboard(&selected_text);
+                                            let _ = crate::screenshot::save::copy_text_to_clipboard(
+                                                &selected_text,
+                                            );
                                         }
                                     }
                                     return LRESULT(0);

@@ -12,8 +12,14 @@ use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 
 pub mod cursor;
+pub mod preview;
 pub mod svg_icons;
 pub mod toolbar;
+pub mod types;
+
+// Re-export types for convenience
+pub use preview::PreviewWindow;
+pub use types::ToolbarButton;
 
 use svg_icons::SvgIconManager;
 use toolbar::ToolbarManager;

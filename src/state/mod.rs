@@ -7,18 +7,21 @@ mod idle;
 mod selecting;
 mod editing;
 mod processing;
+pub mod types;
+
+// Re-export types for convenience
+pub use types::{AppState, ProcessingOperation};
 
 pub use idle::IdleState;
 pub use selecting::SelectingState;
 pub use editing::EditingState;
 pub use processing::ProcessingState;
 
-use crate::drawing::DrawingManager;
+use crate::drawing::{DrawingManager, DrawingTool};
 use crate::message::Command;
 use crate::screenshot::ScreenshotManager;
 use crate::system::SystemManager;
 use crate::ui::UIManager;
-use crate::types::DrawingTool;
 use windows::Win32::Foundation::RECT;
 
 /// 状态上下文，提供对各 Manager 的访问
@@ -46,7 +49,7 @@ pub enum StateTransition {
     /// 转换到编辑状态
     ToEditing { selection: RECT, tool: DrawingTool },
     /// 转换到处理中状态
-    ToProcessing { operation: crate::types::ProcessingOperation },
+    ToProcessing { operation: ProcessingOperation },
 }
 
 /// 应用状态处理器 trait
@@ -124,16 +127,16 @@ pub trait AppStateHandler: Send {
 }
 
 /// 创建状态处理器的工厂函数
-pub fn create_state(state: &crate::types::AppState) -> Box<dyn AppStateHandler> {
+pub fn create_state(state: &AppState) -> Box<dyn AppStateHandler> {
     match state {
-        crate::types::AppState::Idle => Box::new(IdleState::new()),
-        crate::types::AppState::Selecting { start_x, start_y, current_x, current_y } => {
+        AppState::Idle => Box::new(IdleState::new()),
+        AppState::Selecting { start_x, start_y, current_x, current_y } => {
             Box::new(SelectingState::new(*start_x, *start_y, *current_x, *current_y))
         }
-        crate::types::AppState::Editing { selection, tool } => {
+        AppState::Editing { selection, tool } => {
             Box::new(EditingState::new(*selection, *tool))
         }
-        crate::types::AppState::Processing { operation } => {
+        AppState::Processing { operation } => {
             Box::new(ProcessingState::new(operation.clone()))
         }
     }

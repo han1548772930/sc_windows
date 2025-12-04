@@ -4,7 +4,7 @@
 //!
 //! # 使用方式
 //! ```ignore
-//! use crate::config::ConfigManager;
+//! use crate::settings::ConfigManager;
 //!
 //! // 获取配置（自动使用全局单例）
 //! let thickness = ConfigManager::global().line_thickness();
@@ -13,7 +13,7 @@
 //! ConfigManager::reload_global();
 //! ```
 
-use crate::settings::Settings;
+use super::Settings;
 use std::sync::{Arc, RwLock};
 
 /// 配置变更回调类型

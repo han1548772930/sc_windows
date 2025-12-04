@@ -1,6 +1,5 @@
 pub mod app;
 pub mod command_executor;
-pub mod config;
 pub mod constants;
 pub mod drawing;
 pub mod error;
@@ -8,7 +7,6 @@ pub mod event_handler;
 pub mod file_dialog;
 pub mod message;
 pub mod ocr;
-pub mod preview_window;
 pub mod platform;
 pub mod state;
 

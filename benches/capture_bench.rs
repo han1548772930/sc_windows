@@ -3,7 +3,7 @@
 //! 测试截图相关操作的性能（不含实际屏幕捕获，因为需要GUI环境）。
 //! 运行: `cargo bench --bench capture_bench`
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 /// 测试选择状态管理性能
 fn bench_selection_state(c: &mut Criterion) {
@@ -51,9 +51,7 @@ fn bench_selection_state(c: &mut Criterion) {
         let mut state = SelectionState::new();
         state.start_selection(100, 100);
         state.end_selection(500, 500);
-        b.iter(|| {
-            black_box(state.get_effective_selection())
-        });
+        b.iter(|| black_box(state.get_effective_selection()));
     });
 
     group.finish();
@@ -70,7 +68,7 @@ fn bench_handle_detection(c: &mut Criterion) {
         let mut state = SelectionState::new();
         state.start_selection(100, 100);
         state.end_selection(500, 500);
-        
+
         b.iter(|| {
             // 测试点击左上角手柄
             black_box(state.get_handle_at_position(100, 100))
@@ -81,7 +79,7 @@ fn bench_handle_detection(c: &mut Criterion) {
         let mut state = SelectionState::new();
         state.start_selection(100, 100);
         state.end_selection(500, 500);
-        
+
         b.iter(|| {
             // 测试点击不在任何手柄上的位置
             black_box(state.get_handle_at_position(300, 300))
@@ -119,9 +117,7 @@ fn bench_utils(c: &mut Criterion) {
             right: 1920,
             bottom: 1080,
         };
-        b.iter(|| {
-            sc_windows::utils::clamp_to_rect(black_box(2000), black_box(1500), &rect)
-        });
+        b.iter(|| sc_windows::utils::clamp_to_rect(black_box(2000), black_box(1500), &rect));
     });
 
     // 测试拖拽阈值检查
@@ -144,9 +140,7 @@ fn bench_utils(c: &mut Criterion) {
             right: 100,
             bottom: 100,
         };
-        b.iter(|| {
-            sc_windows::utils::is_rect_valid(&rect, black_box(50))
-        });
+        b.iter(|| sc_windows::utils::is_rect_valid(&rect, black_box(50)));
     });
 
     group.finish();
@@ -165,7 +159,7 @@ fn bench_history_manager(c: &mut Criterion) {
     group.bench_function("save_state", |b| {
         let mut history = HistoryManager::new();
         let mut elements = ElementManager::new();
-        
+
         // 添加一些元素
         for _ in 0..10 {
             let mut el = DrawingElement::new(DrawingTool::Rectangle);
@@ -173,7 +167,7 @@ fn bench_history_manager(c: &mut Criterion) {
             el.points.push(POINT { x: 100, y: 100 });
             elements.add_element(el);
         }
-        
+
         b.iter(|| {
             history.save_state(&elements, None);
         });
@@ -183,16 +177,22 @@ fn bench_history_manager(c: &mut Criterion) {
     group.bench_function("undo", |b| {
         let mut history = HistoryManager::new();
         let mut elements = ElementManager::new();
-        
+
         // 保存多个状态
         for i in 0..20 {
             let mut el = DrawingElement::new(DrawingTool::Rectangle);
-            el.points.push(POINT { x: i * 10, y: i * 10 });
-            el.points.push(POINT { x: i * 10 + 100, y: i * 10 + 100 });
+            el.points.push(POINT {
+                x: i * 10,
+                y: i * 10,
+            });
+            el.points.push(POINT {
+                x: i * 10 + 100,
+                y: i * 10 + 100,
+            });
             elements.add_element(el);
             history.save_state(&elements, None);
         }
-        
+
         b.iter(|| {
             // 撤销一次，然后重做恢复，保持基准测试可重复
             if let Some((restored, sel)) = history.undo() {
@@ -238,18 +238,24 @@ fn bench_element_manager(c: &mut Criterion) {
                 let mut manager = ElementManager::new();
                 for i in 0..count {
                     let mut el = DrawingElement::new(DrawingTool::Rectangle);
-                    el.points.push(POINT { x: i * 50, y: i * 50 });
-                    el.points.push(POINT { x: i * 50 + 40, y: i * 50 + 40 });
+                    el.points.push(POINT {
+                        x: i * 50,
+                        y: i * 50,
+                    });
+                    el.points.push(POINT {
+                        x: i * 50 + 40,
+                        y: i * 50 + 40,
+                    });
                     el.update_bounding_rect();
                     manager.add_element(el);
                 }
-                
+
                 b.iter(|| {
                     // 查找中间位置的元素
-                    black_box(manager.get_element_at_position(
-                        (count / 2) * 50 + 20,
-                        (count / 2) * 50 + 20,
-                    ))
+                    black_box(
+                        manager
+                            .get_element_at_position((count / 2) * 50 + 20, (count / 2) * 50 + 20),
+                    )
                 });
             },
         );

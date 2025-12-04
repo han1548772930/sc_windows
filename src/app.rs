@@ -1,5 +1,5 @@
 use crate::command_executor::CommandExecutor;
-use crate::config::ConfigManager;
+use crate::settings::ConfigManager;
 use crate::drawing::DrawingManager;
 use crate::error::{AppError, AppResult};
 use crate::event_handler::{
@@ -686,7 +686,7 @@ impl App {
         let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
         // 创建固钉窗口
-        if let Err(e) = crate::preview_window::PreviewWindow::show(bmp_data, vec![], selection_rect, true) {
+        if let Err(e) = crate::ui::PreviewWindow::show(bmp_data, vec![], selection_rect, true) {
             return Err(AppError::WinApi(format!(
                 "Failed to show pin window: {e:?}"
             )));
@@ -837,7 +837,7 @@ impl App {
             && ocr_results[0].text == "OCR识别失败";
         
         // 显示OCR结果窗口
-        if let Err(e) = crate::preview_window::PreviewWindow::show(
+        if let Err(e) = crate::ui::PreviewWindow::show(
             image_data,
             ocr_results.clone(),
             selection_rect,
