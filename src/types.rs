@@ -146,7 +146,7 @@ pub struct DrawingElement {
     pub text_layout: RefCell<Option<IDWriteTextLayout>>,
 }
 
-/// 拖拽模式枚举（从原始代码迁移）
+/// 拖拽模式枚举
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DragMode {
     None,

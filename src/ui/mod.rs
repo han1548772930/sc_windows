@@ -41,7 +41,7 @@ impl UIManager {
         })
     }
 
-    /// 重置状态（从原始reset_to_initial_state迁移）
+    /// 重置状态
     pub fn reset_state(&mut self) {
         // 隐藏工具栏
         self.toolbar.hide();
@@ -59,7 +59,7 @@ impl UIManager {
     ) -> Vec<Command> {
         match message {
             UIMessage::ShowToolbar(rect) => {
-                // 使用正确的屏幕尺寸（从原始代码迁移）
+                // 使用正确的屏幕尺寸
                 self.toolbar
                     .update_position(&rect, screen_width, screen_height);
                 self.toolbar.show(); // 显示工具栏
@@ -82,11 +82,11 @@ impl UIManager {
             }
             UIMessage::ToolbarButtonClicked(button) => self.toolbar.handle_button_click(button),
             UIMessage::ShowDialog(_dialog_type) => {
-                // 对话框系统已移除，返回空命令
+                // No-op
                 vec![]
             }
             UIMessage::CloseDialog => {
-                // 对话框系统已移除，返回空命令
+                // No-op
                 vec![]
             }
         }
@@ -254,7 +254,7 @@ impl UIManager {
 
     /// 处理键盘输入
     pub fn handle_key_input(&mut self, _key: u32) -> Vec<Command> {
-        // 对话框系统已移除，返回空命令
+        // No-op
         vec![]
     }
 
@@ -273,7 +273,7 @@ impl UIManager {
         self.toolbar.disabled_buttons.contains(&button)
     }
 
-    /// 更新工具栏选中的绘图工具（从原始代码迁移）
+    /// 更新工具栏选中的绘图工具
     pub fn update_toolbar_selected_tool(&mut self, tool: crate::types::DrawingTool) {
         // 将绘图工具转换为工具栏按钮
         let button = match tool {

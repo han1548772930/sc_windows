@@ -138,10 +138,6 @@ pub struct HistoryManager {
     current_position: usize,
     /// 最大历史记录数
     max_history: usize,
-    /// 兼容模式：使用旧的快照栈（用于平滑过渡）
-    legacy_stack: Vec<HistoryState>,
-    /// 是否使用命令模式
-    use_command_mode: bool,
 }
 
 impl Default for HistoryManager {
@@ -157,9 +153,7 @@ impl HistoryManager {
             base_state: None,
             action_stack: Vec::new(),
             current_position: 0,
-            max_history: 50, // 命令模式占用内存少，可以增加历史记录数
-            legacy_stack: Vec::new(),
-            use_command_mode: true, // 默认启用命令模式
+            max_history: 50,
         }
     }
 
@@ -170,10 +164,6 @@ impl HistoryManager {
         selected_before: Option<usize>,
         selected_after: Option<usize>,
     ) {
-        if !self.use_command_mode {
-            return;
-        }
-
         // 如果当前位置不在栈顶，清除后面的历史
         if self.current_position < self.action_stack.len() {
             self.action_stack.truncate(self.current_position);
@@ -198,7 +188,7 @@ impl HistoryManager {
     /// 撤销操作（命令模式）
     /// 返回需要应用的操作和选中状态
     pub fn undo_action(&mut self) -> Option<(DrawingAction, Option<usize>)> {
-        if !self.use_command_mode || self.current_position == 0 {
+        if self.current_position == 0 {
             return None;
         }
 
@@ -209,7 +199,7 @@ impl HistoryManager {
 
     /// 重做操作（命令模式）
     pub fn redo_action(&mut self) -> Option<(DrawingAction, Option<usize>)> {
-        if !self.use_command_mode || self.current_position >= self.action_stack.len() {
+        if self.current_position >= self.action_stack.len() {
             return None;
         }
 
@@ -218,123 +208,47 @@ impl HistoryManager {
         Some((entry.action.clone(), entry.selected_after))
     }
 
-    /// 保存当前状态（兼容旧接口）
-    /// 注意：命令模式下此方法仅设置基准状态，不会每次都创建快照
+    /// 保存当前状态（设置基准状态）
     pub fn save_state(
         &mut self,
         element_manager: &ElementManager,
         selected_element: Option<usize>,
     ) {
-        if self.use_command_mode {
-            // 命令模式：仅在没有基准状态时保存
-            if self.base_state.is_none() {
-                self.base_state = Some(HistoryState {
-                    elements: element_manager.get_elements().clone(),
-                    selected_element,
-                    changed_indices: vec![],
-                });
-            }
-            return;
-        }
-
-        // 兼容模式：使用旧的快照逻辑
-        let changed_indices = self.compute_changed_indices_legacy(element_manager);
-        
-        let state = HistoryState {
-            elements: element_manager.get_elements().clone(),
-            selected_element,
-            changed_indices,
-        };
-
-        if self.current_position < self.legacy_stack.len() {
-            self.legacy_stack.truncate(self.current_position);
-        }
-
-        self.legacy_stack.push(state);
-        self.current_position = self.legacy_stack.len();
-
-        if self.legacy_stack.len() > self.max_history {
-            self.legacy_stack.remove(0);
-            self.current_position = self.legacy_stack.len();
-        }
-    }
-
-    /// 撤销操作（兼容旧接口）
-    pub fn undo(&mut self) -> Option<(Vec<DrawingElement>, Option<usize>)> {
-        if self.use_command_mode {
-            // 命令模式不支持此接口，返回 None
-            // 调用方应使用 undo_action + apply_undo
-            return None;
-        }
-
-        if self.current_position > 0 {
-            self.current_position -= 1;
-            let state = &self.legacy_stack[self.current_position];
-            Some((state.elements.clone(), state.selected_element))
-        } else {
-            None
-        }
-    }
-
-    /// 重做操作（兼容旧接口）
-    pub fn redo(&mut self) -> Option<(Vec<DrawingElement>, Option<usize>)> {
-        if self.use_command_mode {
-            return None;
-        }
-
-        if self.current_position < self.legacy_stack.len() {
-            let state = &self.legacy_stack[self.current_position];
-            self.current_position += 1;
-            Some((state.elements.clone(), state.selected_element))
-        } else {
-            None
+        // 仅在没有基准状态时保存
+        if self.base_state.is_none() {
+            self.base_state = Some(HistoryState {
+                elements: element_manager.get_elements().clone(),
+                selected_element,
+                changed_indices: vec![],
+            });
         }
     }
 
     /// 是否可以撤销
     pub fn can_undo(&self) -> bool {
-        if self.use_command_mode {
-            self.current_position > 0
-        } else {
-            self.current_position > 0
-        }
+        self.current_position > 0
     }
 
     /// 是否可以重做
     pub fn can_redo(&self) -> bool {
-        if self.use_command_mode {
-            self.current_position < self.action_stack.len()
-        } else {
-            self.current_position < self.legacy_stack.len()
-        }
+        self.current_position < self.action_stack.len()
     }
 
     /// 清空历史记录
     pub fn clear(&mut self) {
         self.base_state = None;
         self.action_stack.clear();
-        self.legacy_stack.clear();
         self.current_position = 0;
     }
 
     /// 获取最近一次操作变更的元素索引
     pub fn get_last_changed_indices(&self) -> Vec<usize> {
-        if self.use_command_mode {
-            if self.current_position > 0 && self.current_position <= self.action_stack.len() {
-                self.action_stack[self.current_position - 1]
-                    .action
-                    .affected_indices()
-            } else {
-                vec![]
-            }
+        if self.current_position > 0 && self.current_position <= self.action_stack.len() {
+            self.action_stack[self.current_position - 1]
+                .action
+                .affected_indices()
         } else {
-            if self.current_position > 0 && self.current_position <= self.legacy_stack.len() {
-                self.legacy_stack[self.current_position - 1]
-                    .changed_indices
-                    .clone()
-            } else {
-                vec![]
-            }
+            vec![]
         }
     }
 
@@ -352,38 +266,4 @@ impl HistoryManager {
         });
     }
 
-    /// 检查是否使用命令模式
-    pub fn is_command_mode(&self) -> bool {
-        self.use_command_mode
-    }
-
-    /// 计算与上一个状态相比变更的元素索引（兼容模式）
-    fn compute_changed_indices_legacy(&self, element_manager: &ElementManager) -> Vec<usize> {
-        let current_elements = element_manager.get_elements();
-        
-        if self.legacy_stack.is_empty() || self.current_position == 0 {
-            return (0..current_elements.len()).collect();
-        }
-        
-        let prev_state = &self.legacy_stack[self.current_position - 1];
-        let prev_elements = &prev_state.elements;
-        
-        let mut changed = Vec::new();
-        
-        for i in 0..current_elements.len() {
-            if i >= prev_elements.len() {
-                changed.push(i);
-            }
-        }
-        
-        if current_elements.len() != prev_elements.len() {
-            return (0..current_elements.len().max(prev_elements.len())).collect();
-        }
-        
-        if changed.is_empty() && !current_elements.is_empty() {
-            changed.push(current_elements.len() - 1);
-        }
-        
-        changed
-    }
 }

@@ -35,7 +35,7 @@ impl WindowInfo {
     }
 }
 
-/// 子控件信息（从原始代码迁移）
+/// 子控件信息
 #[derive(Debug, Clone)]
 pub struct ChildControlInfo {
     /// 控件句柄
@@ -100,7 +100,7 @@ impl WindowDetector {
         }
     }
 
-    /// 获取所有活动窗口（从原始代码迁移）
+    /// 获取所有活动窗口
     pub fn refresh_windows(&mut self) -> Result<(), SystemError> {
         self.windows.clear();
 
@@ -116,7 +116,7 @@ impl WindowDetector {
             }
         }
 
-        // 过滤掉不需要的窗口（从原始代码迁移）
+        // 过滤掉不需要的窗口
         self.windows.retain(|window| {
             window.is_visible
                 && !window.is_minimized
@@ -129,7 +129,7 @@ impl WindowDetector {
         Ok(())
     }
 
-    /// 刷新指定窗口的子控件（从原始代码迁移）
+    /// 刷新指定窗口的子控件
     pub fn refresh_child_controls(&mut self, parent_hwnd: HWND) -> Result<(), SystemError> {
         self.child_controls.clear();
 
@@ -145,7 +145,7 @@ impl WindowDetector {
             }
         }
 
-        // 过滤掉不需要的子控件（从原始代码迁移）
+        // 过滤掉不需要的子控件
         self.child_controls.retain(|control| {
             control.is_visible
                 && control.rect.right > control.rect.left
@@ -255,12 +255,12 @@ impl WindowDetectionManager {
         self.detection_enabled = false;
     }
 
-    /// 刷新窗口列表（从原始代码迁移）
+    /// 刷新窗口列表
     pub fn refresh_windows(&mut self) -> Result<(), SystemError> {
         self.detector.refresh_windows()
     }
 
-    /// 检测指定点的窗口（从原始代码迁移）
+    /// 检测指定点的窗口
     pub fn detect_window_at_point(
         &mut self,
         x: i32,
@@ -290,7 +290,7 @@ impl WindowDetectionManager {
     }
 }
 
-/// EnumWindows的回调函数（从原始代码迁移）
+/// EnumWindows的回调函数
 unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     unsafe {
         let windows = &mut *(lparam.0 as *mut Vec<WindowInfo>);
@@ -301,7 +301,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
             return windows::core::BOOL::from(true); // 继续枚举
         }
 
-        // 修正全屏窗口的矩形坐标，确保不超出屏幕边界（从原始代码迁移）
+        // 修正全屏窗口的矩形坐标，确保不超出屏幕边界
         let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
 
         // 限制窗口矩形在屏幕范围内
@@ -319,7 +319,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
             String::new()
         };
 
-        // 获取窗口类名（从原始代码迁移）
+        // 获取窗口类名
         let mut class_buffer = [0u16; 256];
         let class_len = GetClassNameW(hwnd, &mut class_buffer);
         let class_name = if class_len > 0 {
@@ -328,7 +328,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
             String::new()
         };
 
-        // 检查窗口是否可见和最小化状态（从原始代码迁移）
+        // 检查窗口是否可见和最小化状态
         let is_visible = IsWindowVisible(hwnd).as_bool();
         use windows::Win32::UI::WindowsAndMessaging::IsIconic;
         let is_minimized = IsIconic(hwnd).as_bool();
@@ -348,7 +348,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
     }
 }
 
-/// EnumChildWindows的回调函数（从原始代码迁移）
+/// EnumChildWindows的回调函数
 unsafe extern "system" fn enum_child_windows_proc(
     hwnd: HWND,
     lparam: LPARAM,

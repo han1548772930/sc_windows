@@ -61,7 +61,6 @@ impl ElementInteractionMode {
 }
 
 pub struct DrawingManager {
-    /// 共享的配置引用
     pub(super) settings: Arc<RwLock<Settings>>,
     pub(super) tools: ToolManager,
     pub(super) elements: ElementManager,
@@ -216,88 +215,44 @@ impl DrawingManager {
                 }
             }
             DrawingMessage::Undo => {
-                // 命令模式撤销
-                if self.history.is_command_mode() {
-                    if let Some((action, sel)) = self.history.undo_action() {
-                        let changed = action.affected_indices();
-                        
-                        // 应用撤销操作
-                        self.elements.apply_undo(&action);
-                        self.selected_element = sel;
-                        self.elements.set_selected(self.selected_element);
-                        self.cache_dirty.replace(true);
-                        
-                        // 使用增量式缓存失效
-                        if changed.is_empty() {
-                            self.geometry_cache.invalidate_all();
-                        } else {
-                            self.geometry_cache.mark_dirty_batch(&changed);
-                        }
-                        vec![Command::UpdateToolbar, Command::RequestRedraw]
+                if let Some((action, sel)) = self.history.undo_action() {
+                    let changed = action.affected_indices();
+                    
+                    // 应用撤销操作
+                    self.elements.apply_undo(&action);
+                    self.selected_element = sel;
+                    self.elements.set_selected(self.selected_element);
+                    self.cache_dirty.replace(true);
+                    
+                    // 使用增量式缓存失效
+                    if changed.is_empty() {
+                        self.geometry_cache.invalidate_all();
                     } else {
-                        vec![Command::UpdateToolbar]
+                        self.geometry_cache.mark_dirty_batch(&changed);
                     }
+                    vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
-                    // 兼容模式（旧的快照方式）
-                    if let Some((elements, sel)) = self.history.undo() {
-                        let changed = self.history.get_last_changed_indices();
-                        
-                        self.elements.restore_state(elements);
-                        self.selected_element = sel;
-                        self.elements.set_selected(self.selected_element);
-                        self.cache_dirty.replace(true);
-                        
-                        if changed.is_empty() {
-                            self.geometry_cache.invalidate_all();
-                        } else {
-                            self.geometry_cache.mark_dirty_batch(&changed);
-                        }
-                        vec![Command::UpdateToolbar, Command::RequestRedraw]
-                    } else {
-                        vec![Command::UpdateToolbar]
-                    }
+                    vec![Command::UpdateToolbar]
                 }
             }
             DrawingMessage::Redo => {
-                // 命令模式重做
-                if self.history.is_command_mode() {
-                    if let Some((action, sel)) = self.history.redo_action() {
-                        let changed = action.affected_indices();
-                        
-                        // 应用重做操作
-                        self.elements.apply_redo(&action);
-                        self.selected_element = sel;
-                        self.elements.set_selected(self.selected_element);
-                        self.cache_dirty.replace(true);
-                        
-                        if changed.is_empty() {
-                            self.geometry_cache.invalidate_all();
-                        } else {
-                            self.geometry_cache.mark_dirty_batch(&changed);
-                        }
-                        vec![Command::RequestRedraw]
+                if let Some((action, sel)) = self.history.redo_action() {
+                    let changed = action.affected_indices();
+                    
+                    // 应用重做操作
+                    self.elements.apply_redo(&action);
+                    self.selected_element = sel;
+                    self.elements.set_selected(self.selected_element);
+                    self.cache_dirty.replace(true);
+                    
+                    if changed.is_empty() {
+                        self.geometry_cache.invalidate_all();
                     } else {
-                        vec![]
+                        self.geometry_cache.mark_dirty_batch(&changed);
                     }
+                    vec![Command::RequestRedraw]
                 } else {
-                    // 兼容模式
-                    if let Some((elements, sel)) = self.history.redo() {
-                        let changed = self.history.get_last_changed_indices();
-                        
-                        self.elements.restore_state(elements);
-                        self.selected_element = sel;
-                        self.elements.set_selected(self.selected_element);
-                        self.cache_dirty.replace(true);
-                        
-                        if changed.is_empty() {
-                            self.geometry_cache.invalidate_all();
-                        } else {
-                            self.geometry_cache.mark_dirty_batch(&changed);
-                        }
-                        vec![Command::RequestRedraw]
-                    } else {
-                        vec![]
-                    }
+                    vec![]
                 }
             }
             DrawingMessage::DeleteElement(index) => {
@@ -390,7 +345,7 @@ impl DrawingManager {
         selection_rect: Option<windows::Win32::Foundation::RECT>,
     ) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
-            // 添加拖拽距离阈值检查（与旧代码保持一致）
+            // 添加拖拽距离阈值检查
             // 只有当移动距离超过阈值时才开始真正的拖拽
             if crate::utils::is_drag_threshold_exceeded(
                 self.interaction_start_pos.x,
@@ -424,7 +379,7 @@ impl DrawingManager {
         match &self.interaction_mode {
             ElementInteractionMode::Drawing => {
                 if let Some(ref mut element) = self.current_element {
-                    // 如果有选择框，限制绘制在选择框内（从原始代码迁移）
+                    // 如果有选择框，限制绘制在选择框内
                     let (clamped_x, clamped_y) = if let Some(rect) = selection_rect {
                         crate::utils::clamp_to_rect(x, y, &rect)
                     } else {
@@ -658,7 +613,7 @@ impl DrawingManager {
         }
     }
 
-    /// 检测指定元素矩形上的手柄命中（参考旧代码逻辑）
+    /// 检测指定元素矩形上的手柄命中
     pub fn get_element_handle_at_position(
         &self,
         x: i32,
@@ -713,17 +668,17 @@ impl DrawingManager {
         y: i32,
         selection_rect: Option<windows::Win32::Foundation::RECT>,
     ) -> (Vec<Command>, bool) {
-        // 重置标志，下次点击可以创建新文本（与原代码保持一致）
+        // 重置标志，下次点击可以创建新文本
         // 注意：这必须在函数开始时重置，确保每次新的点击事件都会重置状态
         self.just_saved_text = false;
 
-        // 约束：除UI外，绘图交互仅在选择框内生效（保持与原始逻辑一致）
+        // 约束：除UI外，绘图交互仅在选择框内生效
         let inside_selection = match selection_rect {
             Some(r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom,
             None => true,
         };
 
-        // 文本编辑状态下的特殊处理（从原始代码迁移）
+        // 文本编辑状态下的特殊处理
         if self.text_editing
             && let Some(editing_index) = self.editing_element_index {
                 // 检查是否点击了正在编辑的文本元素
@@ -757,13 +712,13 @@ impl DrawingManager {
                 return (stop_commands, true);
             }
 
-        // 文本工具特殊处理（从原始代码迁移）
+        // 文本工具特殊处理
         if inside_selection
             && self.current_tool == DrawingTool::Text
             && !self.text_editing
             && !self.just_saved_text
         {
-            // 检查是否点击了任何现有元素（与原始代码保持一致）
+            // 检查是否点击了任何现有元素
             if let Some(idx) = self.elements.get_element_at_position(x, y) {
                 // 如果点击的是文本元素，选择它
                 if let Some(element) = self.elements.get_elements().get(idx)
@@ -776,7 +731,7 @@ impl DrawingManager {
                         // 单击只选择文本元素，不进入编辑模式（双击才进入编辑模式）
                         self.handle_message(DrawingMessage::SelectElement(Some(idx)));
 
-                        // 立即设置拖动状态，就像原代码那样（修复文本无法拖动的问题）
+                        // 立即设置拖动状态（修复文本无法拖动的问题）
                         self.interaction_mode = ElementInteractionMode::MovingElement;
                         self.mouse_pressed = true;
                         self.interaction_start_pos = windows::Win32::Foundation::POINT { x, y };
@@ -826,7 +781,7 @@ impl DrawingManager {
                         }
                         // 2) 已选元素内部（移动）- 也必须在选择框内且元素可见
                         if element.contains_point(x, y) {
-                            // 检查元素是否在选择框内可见（与原代码逻辑一致）
+                            // 检查元素是否在选择框内可见
                             let element_visible = if let Some(sel_rect) = selection_rect {
                                 self.elements
                                     .is_element_visible_in_selection(element, &sel_rect)
@@ -865,7 +820,7 @@ impl DrawingManager {
                     }
                 };
 
-                // 如果是画笔元素，不允许选择（与旧代码保持一致）
+                // 如果是画笔元素，不允许选择
                 if element_tool == DrawingTool::Pen {
                     // 笔画不能被选择，直接返回空命令
                     return (vec![], false);
@@ -880,7 +835,7 @@ impl DrawingManager {
                 self.interaction_start_font_size = element_font_size;
                 self.interaction_start_points = element_points;
 
-                // 检查是否点击了手柄（与原代码逻辑一致）
+                // 检查是否点击了手柄
                 let handle_mode =
                     self.get_element_handle_at_position(x, y, &element_rect, element_tool, idx);
 
@@ -890,7 +845,7 @@ impl DrawingManager {
                     self.mouse_pressed = true;
                     return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);
                 } else {
-                    // 没有点击手柄，立即开始移动元素（与原代码逻辑一致）
+                    // 没有点击手柄，立即开始移动元素
                     self.interaction_mode = ElementInteractionMode::MovingElement;
                     self.mouse_pressed = true;
                     return (vec![Command::UpdateToolbar, Command::RequestRedraw], true);

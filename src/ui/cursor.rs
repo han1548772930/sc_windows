@@ -69,7 +69,7 @@ impl CursorManager {
         )
     }
 
-    /// 根据应用状态确定合适的光标（原版本，保持向后兼容）
+    /// 根据应用状态确定合适的光标
     pub fn determine_cursor(
         x: i32,
         y: i32,

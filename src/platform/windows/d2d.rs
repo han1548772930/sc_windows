@@ -11,7 +11,7 @@ use windows::Win32::System::Com::*;
 use windows::core::*;
 
 pub struct Direct2DRenderer {
-    // Direct2D 资源（从原始代码迁移）
+    // Direct2D 资源
     pub d2d_factory: Option<ID2D1Factory>,
     pub render_target: Option<ID2D1HwndRenderTarget>,
     // Cache for layered rendering
@@ -72,7 +72,7 @@ impl Direct2DRenderer {
         })
     }
 
-    /// 初始化Direct2D资源（从原始代码迁移）
+    /// 初始化Direct2D资源
     pub fn initialize(
         &mut self,
         hwnd: HWND,
@@ -110,7 +110,7 @@ impl Direct2DRenderer {
         self.screen_width = width;
         self.screen_height = height;
 
-        // 初始化COM（从原始代码迁移）
+        // 初始化 COM
         // SAFETY: COM 初始化是幂等操作，重复调用是安全的
         unsafe {
             let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -142,7 +142,7 @@ impl Direct2DRenderer {
             factory
         };
 
-        // 创建渲染目标（从原始代码迁移）
+        // 创建渲染目标
         let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -190,7 +190,7 @@ impl Direct2DRenderer {
             factory
         };
 
-        // 创建文本格式（从原始代码迁移）
+        // 创建文本格式
         let text_format: IDWriteTextFormat = unsafe {
             dwrite_factory
                 .CreateTextFormat(
@@ -222,7 +222,7 @@ impl Direct2DRenderer {
         Ok(())
     }
 
-    /// 从GDI位图创建D2D位图（从原始代码迁移）
+    /// 从 GDI 位图创建 D2D 位图
     pub fn create_d2d_bitmap_from_gdi(
         &self,
         gdi_dc: windows::Win32::Graphics::Gdi::HDC,
@@ -235,7 +235,7 @@ impl Direct2DRenderer {
 
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建DIB来传输像素数据（从原始代码迁移）
+                // 创建 DIB 来传输像素数据
                 let bmi = BITMAPINFO {
                     bmiHeader: BITMAPINFOHEADER {
                         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -275,7 +275,7 @@ impl Direct2DRenderer {
                 SelectObject(temp_dc.handle(), old_bitmap);
                 // temp_dc 会在函数结束时自动释放
 
-                // 创建D2D位图（从原始代码迁移）
+                // 创建D2D位图
                 let bitmap_properties = D2D1_BITMAP_PROPERTIES {
                     pixelFormat: D2D1_PIXEL_FORMAT {
                         format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -698,7 +698,7 @@ impl PlatformRenderer for Direct2DRenderer {
 
     fn begin_frame(&mut self) -> std::result::Result<(), Self::Error> {
         self.frame_count += 1;
-        // 实现Direct2D的BeginDraw（从原始代码迁移）
+        // BeginDraw
         if let Some(ref render_target) = self.render_target {
             unsafe {
                 render_target.BeginDraw();
@@ -708,7 +708,7 @@ impl PlatformRenderer for Direct2DRenderer {
     }
 
     fn end_frame(&mut self) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的EndDraw（从原始代码迁移）
+        // EndDraw
         if let Some(ref render_target) = self.render_target {
             unsafe {
                 let result = render_target.EndDraw(None, None);
@@ -721,7 +721,7 @@ impl PlatformRenderer for Direct2DRenderer {
     }
 
     fn clear(&mut self, color: Color) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的Clear（从原始代码迁移）
+        // Clear
         if let Some(ref render_target) = self.render_target {
             let d2d_color = D2D1_COLOR_F {
                 r: color.r,
@@ -741,7 +741,7 @@ impl PlatformRenderer for Direct2DRenderer {
         rect: Rectangle,
         style: &DrawStyle,
     ) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的矩形绘制（从原始代码迁移）
+        // 实现Direct2D的矩形绘制
         // 先创建所有需要的画刷，避免借用冲突
         let fill_brush = if let Some(fill_color) = style.fill_color {
             Some(self.get_or_create_brush(fill_color)?)
@@ -837,7 +837,7 @@ impl PlatformRenderer for Direct2DRenderer {
         radius: f32,
         style: &DrawStyle,
     ) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的DrawEllipse（从原始代码迁移）
+        // DrawEllipse
         // 先创建需要的画刷，避免借用冲突
         let fill_brush = if let Some(fill_color) = style.fill_color {
             Some(self.get_or_create_brush(fill_color)?)
@@ -884,7 +884,7 @@ impl PlatformRenderer for Direct2DRenderer {
         end: Point,
         style: &DrawStyle,
     ) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的DrawLine（从原始代码迁移）
+        // DrawLine
         // 先取画刷，避免与render_target借用冲突
         let brush = self.get_or_create_brush(style.stroke_color)?;
         if let Some(ref render_target) = self.render_target {
@@ -968,7 +968,7 @@ impl PlatformRenderer for Direct2DRenderer {
         position: Point,
         style: &TextStyle,
     ) -> std::result::Result<(), Self::Error> {
-        // 实现Direct2D的DrawText（从原始代码迁移）
+        // 实现Direct2D的DrawText
         if self.render_target.is_none() || self.dwrite_factory.is_none() {
             return Ok(());
         }
@@ -1045,7 +1045,7 @@ impl PlatformRenderer for Direct2DRenderer {
         }
     }
 
-    /// 设置裁剪区域（从原始代码迁移）
+    /// 设置裁剪区域
     fn push_clip_rect(&mut self, rect: Rectangle) -> std::result::Result<(), Self::Error> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
@@ -1064,7 +1064,7 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    /// 恢复裁剪区域（从原始代码迁移）
+    /// 恢复裁剪区域
     fn pop_clip_rect(&mut self) -> std::result::Result<(), Self::Error> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
@@ -1514,28 +1514,11 @@ impl Direct2DRenderer {
 
             for metric in metrics {
                 let len = metric.length as usize;
-                // metric.length includes trailing whitespace/newline
-                // but we might want to trim newline if we are storing lines for rendering individually
-                // However, OcrResultWindow logic seems to handle lines individually.
-                // The original GDI logic split by \n first, then wrapped words.
-                // DWrite CreateTextLayout handles \n too.
-
                 if current_pos + len <= text_utf16.len() {
                     let line_utf16 = &text_utf16[current_pos..current_pos + len];
-                    // Convert back to String
                     let line_str = String::from_utf16_lossy(line_utf16);
-                    // Trim trailing newline if desired, but maybe keep it to match original behavior?
-                    // The original wrap_text_lines output lines without \n usually, but let's check.
-                    // Original split by \n, then wrapped.
-                    // DWrite will generate a line for \n.
-                    // Let's just return what DWrite gives.
-                    // Remove \r\n or \n at end if present?
-                    // render loop draws text. DrawText accepts \n but if we draw line by line...
-                    // The previous logic in OcrResultWindow used TextOutW which doesn't handle \n (displays block).
-                    // So lines should probably be clean.
-
+                    // 移除行末换行符，便于逐行渲染
                     lines.push(line_str.trim_end_matches(&['\r', '\n'][..]).to_string());
-
                     current_pos += len;
                 }
             }
@@ -1608,7 +1591,7 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 绘制D2D位图（从原始代码迁移）
+    /// 绘制 D2D 位图
     pub fn draw_d2d_bitmap(
         &self,
         bitmap: &ID2D1Bitmap,
@@ -1634,7 +1617,7 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 清除背景（从原始代码迁移）
+    /// 清除背景
     pub fn clear_background(
         &self,
         color: Option<D2D1_COLOR_F>,

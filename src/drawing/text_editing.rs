@@ -4,7 +4,7 @@ use crate::types::{DrawingElement, DrawingTool};
 use super::{DrawingError, DrawingManager};
 
 impl DrawingManager {
-    /// 使用Direct2D渲染文本元素（从原始代码完整迁移，支持多行、内边距、光标）
+    /// 使用Direct2D渲染文本元素（支持多行、内边距、光标）
     pub(super) fn draw_text_element_d2d(
         &self,
         element: &DrawingElement,
@@ -46,7 +46,7 @@ impl DrawingManager {
         if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory
         {
             unsafe {
-                // 计算文本区域（从原始代码迁移）
+                // 计算文本区域
                 let text_rect = if element.points.len() >= 2 {
                     crate::utils::d2d_rect_normalized(
                         element.points[0].x,
@@ -121,96 +121,6 @@ impl DrawingManager {
                                          cursor_brush.as_ref()
                                      )?;
                                 }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 使用Direct2D渲染文本元素（带坐标偏移，用于离屏合成，不绘制光标）
-    pub(super) fn draw_text_element_d2d_with_offset(
-        &self,
-        element: &DrawingElement,
-        render_target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
-        d2d_renderer: &crate::platform::windows::d2d::Direct2DRenderer,
-        offset_x: f32,
-        offset_y: f32,
-    ) -> Result<(), DrawingError> {
-        if element.points.is_empty() {
-            return Ok(());
-        }
-
-        // 创建画笔
-        let d2d_color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-            r: element.color.r,
-            g: element.color.g,
-            b: element.color.b,
-            a: element.color.a,
-        };
-
-        let brush = unsafe {
-            render_target
-                .CreateSolidColorBrush(&d2d_color, None)
-                .map_err(|e| DrawingError::RenderError(format!("Failed to create brush: {e:?}")))?    
-        };
-
-        if let Some(dwrite_factory) = &d2d_renderer.dwrite_factory {
-            unsafe {
-                // 计算文本区域（应用偏移）
-                let text_rect = if element.points.len() >= 2 {
-                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: (element.points[0].x as f32 - offset_x).min(element.points[1].x as f32 - offset_x),
-                        top: (element.points[0].y as f32 - offset_y).min(element.points[1].y as f32 - offset_y),
-                        right: (element.points[0].x as f32 - offset_x).max(element.points[1].x as f32 - offset_x),
-                        bottom: (element.points[0].y as f32 - offset_y).max(element.points[1].y as f32 - offset_y),
-                    }
-                } else if !element.points.is_empty() {
-                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                        left: element.points[0].x as f32 - offset_x,
-                        top: element.points[0].y as f32 - offset_y,
-                        right: element.points[0].x as f32 - offset_x + crate::constants::DEFAULT_TEXT_WIDTH as f32,
-                        bottom: element.points[0].y as f32 - offset_y + crate::constants::DEFAULT_TEXT_HEIGHT as f32,
-                    }
-                } else {
-                    return Ok(());
-                };
-
-                // 添加内边距
-                let text_content_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                    left: text_rect.left + crate::constants::TEXT_PADDING,
-                    top: text_rect.top + crate::constants::TEXT_PADDING,
-                    right: text_rect.right - crate::constants::TEXT_PADDING,
-                    bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
-                };
-
-                // 使用辅助函数创建文本格式
-                if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
-                    dwrite_factory,
-                    &element.font_name,
-                    element.font_size,
-                    element.font_weight,
-                    element.font_italic,
-                ) {
-                    // 使用辅助函数创建带样式的文本布局
-                    if let Ok(layout) = crate::utils::d2d_helpers::create_text_layout_with_style(
-                        dwrite_factory,
-                        &text_format,
-                        &element.text,
-                        text_content_rect.right - text_content_rect.left,
-                        text_content_rect.bottom - text_content_rect.top,
-                        element.font_underline,
-                        element.font_strikeout,
-                    ) {
-                        render_target.DrawTextLayout(
-                            crate::utils::d2d_helpers::d2d_point_f(
-                                text_content_rect.left,
-                                text_content_rect.top,
-                            ),
-                            &layout,
-                            &brush,
-                            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                    }
                 }
             }
         }
@@ -306,7 +216,7 @@ impl DrawingManager {
         Ok(())
     }
 
-    // ===== 文本编辑相关方法（从原始代码迁移） =====
+    // ===== 文本编辑相关方法 =====
 
     /// 获取指定位置的文本元素索引
     pub(super) fn get_text_element_at_position(&self, x: i32, y: i32) -> Option<usize> {
@@ -352,7 +262,7 @@ impl DrawingManager {
         self.elements.set_selected(None);
         self.selected_element = None;
 
-        // 确保工具栏状态与当前工具保持一致（与原始代码一致）
+        // 确保工具栏状态与当前工具保持一致
         self.current_tool = DrawingTool::Text;
 
         // 命令模式：不在此处保存历史，而是在 stop_text_editing 时
@@ -388,7 +298,7 @@ impl DrawingManager {
         let initial_width = (font_size * 6.0) as i32; // 大约6个字符的宽度
         let initial_height = dynamic_line_height + (crate::constants::TEXT_PADDING * 2.0) as i32;
 
-        // 设置第二个点来定义文本框尺寸（与旧代码保持一致）
+        // 设置第二个点来定义文本框尺寸
         text_element.points.push(windows::Win32::Foundation::POINT {
             x: x + initial_width,
             y: y + initial_height,
@@ -433,7 +343,7 @@ impl DrawingManager {
         self.editing_element_index = None;
         self.text_cursor_pos = 0;
 
-        // 保存当前工具状态，确保在保存文本后保持文本工具（与原始代码一致）
+        // 保存当前工具状态，确保在保存文本后保持文本工具
         self.current_tool = DrawingTool::Text;
 
         // 检查当前编辑的文本元素是否为空，如果为空则删除
@@ -445,7 +355,7 @@ impl DrawingManager {
                     // 删除空元素（不记录到历史，因为这是取消创建操作）
                     let _ = self.elements.remove_element(element_index);
 
-                    // 更新选中元素索引（与原始代码逻辑一致）
+                    // 更新选中元素索引
                     if let Some(selected) = self.selected_element {
                         if selected == element_index {
                             self.selected_element = None;
@@ -467,13 +377,13 @@ impl DrawingManager {
                 }
             }
 
-        // 强制确保工具状态保持为文本工具，防止被其他逻辑重置（与原始代码一致）
+        // 强制确保工具状态保持为文本工具，防止被其他逻辑重置
         self.current_tool = DrawingTool::Text;
 
-        // 设置标志，防止立即创建新的文本元素（与原代码保持一致）
+        // 设置标志，防止立即创建新的文本元素
         self.just_saved_text = true;
 
-        // 清除选中状态，这样保存文本后就不会进入手柄检查逻辑（与原始代码一致）
+        // 清除选中状态，这样保存文本后就不会进入手柄检查逻辑
         self.selected_element = None;
         self.elements.set_selected(None);
 
@@ -484,7 +394,7 @@ impl DrawingManager {
         ]
     }
 
-    /// 处理文本输入（从原始代码迁移）
+    /// 处理文本输入
     pub fn handle_text_input(&mut self, character: char) -> Vec<Command> {
         if !self.text_editing {
             return vec![];

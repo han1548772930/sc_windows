@@ -153,11 +153,9 @@ impl PreviewRenderer {
                     anyhow::anyhow!("Failed to create hover bitmap for {}: {:?}", name, e)
                 })?;
 
-            // 3. 加载激活状态 (Pin)
             let (active_normal, active_hover) = if *name == "pin" {
-                let green = (0, 128, 0);
-                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(green))?;
-                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(green))?; // 悬停时也保持绿色
+                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
+                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
 
                 let an_bmp = self
                     .d2d_renderer
@@ -374,9 +372,6 @@ impl PreviewRenderer {
                         .draw_rectangle(button_rect, &hover_style)
                         .map_err(|e| anyhow::anyhow!("Failed to draw button hover: {:?}", e))?;
                 }
-            } else if icon.name == "pin" && is_pinned {
-                // Pin 激活状态背景
-                // TODO: Differentiate active vs hover state visual if needed
             }
 
             // 绘制图标本身 (SVG -> D2D Bitmap)
@@ -393,7 +388,6 @@ impl PreviewRenderer {
                     &bitmaps.normal
                 };
 
-                let _icon_padding = ICON_CLICK_PADDING as f32; // 使用适当的 padding
                 let icon_width = ICON_SIZE as f32;
                 let icon_height = ICON_SIZE as f32;
 
@@ -424,7 +418,7 @@ impl PreviewRenderer {
         width: i32,
         icons: &[SvgIcon],
         is_pinned: bool,
-        is_maximized: bool,
+        _is_maximized: bool,
         scroll_offset: i32,
         line_height: i32,
         image_width: i32,
@@ -434,8 +428,12 @@ impl PreviewRenderer {
     ) -> Result<()> {
         self.begin_frame()?;
 
-        // 清除背景 - 使用浅灰色背景
-        self.clear(0.93, 0.93, 0.93, 1.0)?;
+        self.clear(
+            crate::constants::CONTENT_BG_COLOR_D2D.r,
+            crate::constants::CONTENT_BG_COLOR_D2D.g,
+            crate::constants::CONTENT_BG_COLOR_D2D.b,
+            crate::constants::CONTENT_BG_COLOR_D2D.a,
+        )?;
 
         // 1. 绘制标题栏（包括按钮背景）
         self.draw_custom_title_bar(width, icons, is_pinned)?;
@@ -491,32 +489,13 @@ impl PreviewRenderer {
                 .map_err(|e| anyhow::anyhow!("Failed to draw bitmap: {:?}", e))?;
         }
 
-        // 4. 绘制窗口边框 - 仅在非最大化时绘制
-        // 如果是 pin 模式且 is_pinned，可能不画边框？保持一致吧
-        // 注意：边框绘制逻辑暂时未实现，保留框架以便后续完善
-        if !is_pinned && !is_maximized {
-            let _border_color = crate::platform::traits::Color {
-                r: 0.8,
-                g: 0.8,
-                b: 0.8,
-                a: 1.0,
-            }; // 浅灰色边框
-            // TODO: 实现边框绘制逻辑
-        }
-
-        // 修正：边框绘制逻辑。原代码确实有点奇怪。
-        // 让我们忽略原代码的怪异之处，只在 show_text_area 为 true 时绘制文本
-
         if show_text_area {
-            // 3. 绘制文本和UI元素
-            // 使用平台抽象的颜色和文本样式
             let text_color = crate::platform::traits::Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
             };
-            // 字体大小 18.0 约等于 GDI height 24
             let text_style = crate::platform::traits::TextStyle {
                 font_size: 18.0,
                 color: text_color,
@@ -660,15 +639,6 @@ pub struct PreviewWindow {
     is_selecting: bool,                      // 是否正在选择文本
     selection_start: Option<(usize, usize)>, // 选择开始位置 (行号, 字符位置)
     selection_end: Option<(usize, usize)>,   // 选择结束位置 (行号, 字符位置)
-    // 注意：以下字段预留用于双击选词等功能，暂未实现
-    #[allow(dead_code)]
-    selection_start_pixel: Option<(i32, i32)>, // 选择开始的像素位置
-    #[allow(dead_code)]
-    selection_end_pixel: Option<(i32, i32)>, // 选择结束的像素位置
-    #[allow(dead_code)]
-    last_click_time: std::time::Instant, // 上次点击时间，用于双击检测
-    #[allow(dead_code)]
-    last_click_pos: Option<(i32, i32)>, // 上次点击位置
 
     // 置顶/Pin 状态
     is_pinned: bool,      // 是否置顶
@@ -925,27 +895,10 @@ impl PreviewWindow {
             let mut window_x = selection_rect.right + 20;
             let mut window_y = selection_rect.top;
 
-            // 如果是 pin 模式，位置可能要调整，或者直接使用 selection_rect 的位置？
-            // OcrResultWindow 默认在选区右侧弹出。
-            // PinWindow 默认在选区位置覆盖弹出。
-            // 用户说 "弹出...右边没有文字"，暗示可能是 OcrResultWindow 的行为（右侧弹出）。
-            // 但用户也说 "点击pin按钮的时候也弹出..."，如果我想替代 PinWindow，通常 PinWindow 是覆盖在截图区域的。
-            // 不过既然用户说 "右边没有文字"，这意味着原本有文字（OcrResultWindow），现在没了。
-            // 如果我用 PinWindow 的位置逻辑（selection_rect.left, selection_rect.top），那更像 PinWindow。
-            // 让我们使用 OcrResultWindow 的逻辑（右侧弹出）除非它放不下。
-            // 或者是混合逻辑：
-            // 如果 is_pin_mode，我们可能希望它就像原来的 PinWindow 一样（原地）。
-            // 原 PinWindow 逻辑：window_x = selection_rect.left, window_y = selection_rect.top
-
+            // Pin 模式使用选区位置，OCR 模式在右侧弹出
             if is_pin_mode {
                 window_x = selection_rect.left;
                 window_y = selection_rect.top;
-                // 重新计算 window_width/height 为图片大小+标题栏?
-                // 原 PinWindow window_width = actual_width, window_height = actual_height + TITLE_BAR_HEIGHT
-                // 我的上面计算加了 padding。为了保持 PinWindow 的紧凑感，我们应该去掉 padding?
-                // 但 OcrResultWindow 有 padding。
-                // 让我们保持 padding，这样比较美观，或者看用户喜好。
-                // 用户说 "跟 src\ocr_result_window.rs 一样的窗口"，所以保留 padding 比较好。
             } else {
                 if window_x + window_width > screen_width {
                     window_x = selection_rect.left - window_width - 20;
@@ -1061,10 +1014,6 @@ impl PreviewWindow {
                 is_selecting: false,
                 selection_start: None,
                 selection_end: None,
-                selection_start_pixel: None,
-                selection_end_pixel: None,
-                last_click_time: std::time::Instant::now(),
-                last_click_pos: None,
                 is_pinned: is_pin_mode,
                 show_text_area: !is_pin_mode,
                 renderer: PreviewRenderer::new().ok(),

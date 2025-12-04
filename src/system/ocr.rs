@@ -54,12 +54,11 @@ impl OcrManager {
     // - start_engine: 使用 ensure_engine_started 代替
     // - stop_engine_async: 与 stop_engine 重复，已合并
 
-    /// 启动异步状态检查（从原始代码迁移）
+    /// 启动异步状态检查
     pub fn start_async_status_check(&mut self, hwnd: windows::Win32::Foundation::HWND) {
-        // 使用原始代码的完整实现
         let hwnd_ptr = hwnd.0 as usize;
 
-        // 启动异步检查，使用原始代码的check_engine_status_async方法
+        // 启动异步检查
         crate::ocr::PaddleOcrEngine::check_engine_status_async(
             move |exe_exists, engine_ready, _status| {
                 // 在后台线程中检查完成后，发送消息到主线程更新状态
@@ -82,7 +81,7 @@ impl OcrManager {
         );
     }
 
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // OCR设置通常不需要重新加载，但可以在这里添加相关逻辑
     }
@@ -95,38 +94,6 @@ impl OcrManager {
     /// 查询缓存的OCR引擎可用性（不阻塞，供UI使用）
     pub fn is_available(&self) -> bool {
         self.engine_available
-    }
-
-    /// 执行OCR识别
-    pub fn perform_ocr(&mut self, image_data: &[u8]) -> Result<String, SystemError> {
-        if !self.engine_available {
-            return Err(SystemError::OcrError(
-                "OCR engine not available".to_string(),
-            ));
-        }
-
-        // 使用原始OCR模块进行识别
-        match crate::ocr::PaddleOcrEngine::new() {
-            Ok(mut engine) => {
-                match engine.recognize_from_memory(image_data) {
-                    Ok(results) => {
-                        // 合并所有识别结果
-                        let text = results
-                            .iter()
-                            .map(|r| r.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        Ok(text)
-                    }
-                    Err(e) => Err(SystemError::OcrError(format!(
-                        "OCR recognition failed: {e}"
-                    ))),
-                }
-            }
-            Err(e) => Err(SystemError::OcrError(format!(
-                "Failed to create OCR engine: {e}"
-            ))),
-        }
     }
 
     /// 从选择区域识别文本（统一的OCR流程处理）

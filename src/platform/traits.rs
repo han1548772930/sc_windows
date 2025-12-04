@@ -157,10 +157,10 @@ pub trait PlatformRenderer: Send + Sync {
     /// 获取文本尺寸
     fn measure_text(&self, text: &str, style: &TextStyle) -> Result<(f32, f32), Self::Error>;
 
-    /// 设置裁剪区域（从原始代码迁移）
+    /// 设置裁剪区域
     fn push_clip_rect(&mut self, rect: Rectangle) -> Result<(), Self::Error>;
 
-    /// 恢复裁剪区域（从原始代码迁移）
+    /// 恢复裁剪区域
     fn pop_clip_rect(&mut self) -> Result<(), Self::Error>;
 
     /// 获取Any引用（用于向下转型）

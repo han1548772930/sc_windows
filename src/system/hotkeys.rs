@@ -53,9 +53,9 @@ impl HotkeyManager {
         }
     }
 
-    /// 处理热键触发（从原始代码迁移）
+    /// 处理热键触发
     pub fn handle_hotkey_triggered(&mut self) -> Vec<Command> {
-        // 热键触发时执行截图（按照原始代码逻辑）
+        // 热键触发时执行截图
         vec![Command::TakeScreenshot]
     }
 
@@ -65,13 +65,13 @@ impl HotkeyManager {
         vec![]
     }
 
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // 热键设置重新加载通常需要重新注册热键
         // 这里只是标记需要重新注册，实际重新注册在reregister_hotkey中进行
     }
 
-    /// 重新注册热键（从原始代码迁移）
+    /// 重新注册热键
     pub fn reregister_hotkey(&mut self, hwnd: HWND) -> windows::core::Result<()> {
         // 先注销现有热键
         self.cleanup();
@@ -83,7 +83,7 @@ impl HotkeyManager {
         }
     }
 
-    /// 清理热键（从原始代码迁移）
+    /// 清理热键
     pub fn cleanup(&mut self) {
         // 注销所有注册的热键
         unsafe {

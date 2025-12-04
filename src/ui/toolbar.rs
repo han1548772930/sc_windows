@@ -5,7 +5,7 @@ use crate::types::ToolbarButton;
 use crate::utils::d2d_helpers::rounded_rect;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
-/// 工具栏管理器（从原始Toolbar迁移）
+/// 工具栏管理器
 pub struct ToolbarManager {
     /// 工具栏矩形区域
     pub rect: D2D_RECT_F,
@@ -24,7 +24,7 @@ pub struct ToolbarManager {
 }
 
 impl ToolbarManager {
-    /// 创建新的工具栏管理器（从原始Toolbar::new迁移）
+    /// 创建新的工具栏管理器
     pub fn new() -> Result<Self, UIError> {
         Ok(Self {
             rect: D2D_RECT_F {
@@ -42,14 +42,14 @@ impl ToolbarManager {
         })
     }
 
-    /// 更新工具栏位置（从原始update_position迁移）
+    /// 更新工具栏位置
     pub fn update_position(
         &mut self,
         selection_rect: &windows::Win32::Foundation::RECT,
         screen_width: i32,
         screen_height: i32,
     ) {
-        // 工具栏尺寸常量（从原始constants.rs迁移）
+        // 工具栏尺寸常量
         const TOOLBAR_HEIGHT: f32 = 40.0;
         const BUTTON_WIDTH: f32 = 30.0;
         const BUTTON_HEIGHT: f32 = 30.0;
@@ -85,7 +85,7 @@ impl ToolbarManager {
 
         self.buttons.clear();
 
-        // 修改：让按钮垂直居中，形成正方形（从原始代码迁移）
+        // 修改：让按钮垂直居中，形成正方形
         let button_y = toolbar_y + (TOOLBAR_HEIGHT - BUTTON_HEIGHT) / 2.0; // 垂直居中
         let mut button_x = toolbar_x + TOOLBAR_PADDING;
 
@@ -118,7 +118,7 @@ impl ToolbarManager {
         self.visible = true;
     }
 
-    /// 获取指定位置的按钮（从原始代码迁移）
+    /// 获取指定位置的按钮
     pub fn get_button_at_position(&self, x: i32, y: i32) -> ToolbarButton {
         for (rect, button_type) in &self.buttons {
             if x as f32 >= rect.left
@@ -132,12 +132,12 @@ impl ToolbarManager {
         ToolbarButton::None
     }
 
-    /// 设置悬停按钮（从原始代码迁移）
+    /// 设置悬停按钮
     pub fn set_hovered_button(&mut self, button: ToolbarButton) {
         self.hovered_button = button;
     }
 
-    /// 设置点击按钮（从原始代码迁移）
+    /// 设置点击按钮
     pub fn set_clicked_button(&mut self, button: ToolbarButton) {
         self.clicked_button = button;
     }
@@ -146,7 +146,7 @@ impl ToolbarManager {
         self.disabled_buttons = buttons;
     }
 
-    /// 清除点击按钮（从原始代码迁移）
+    /// 清除点击按钮
     pub fn clear_clicked_button(&mut self) {
         self.clicked_button = ToolbarButton::None;
     }
@@ -163,9 +163,9 @@ impl ToolbarManager {
         self.pressed_button = ToolbarButton::None;
     }
 
-    /// 处理按钮点击（从原始代码迁移）
+    /// 处理按钮点击
     pub fn handle_button_click(&mut self, button: ToolbarButton) -> Vec<Command> {
-        // 只有绘图工具按钮才设置为选中状态（从原始代码迁移）
+        // 只有绘图工具按钮才设置为选中状态
         match button {
             ToolbarButton::Rectangle
             | ToolbarButton::Circle
@@ -201,30 +201,30 @@ impl ToolbarManager {
                 vec![Command::Drawing(crate::message::DrawingMessage::Undo)]
             }
             ToolbarButton::ExtractText => {
-                // 实现文本提取功能（从原始代码迁移）
+                // 实现文本提取功能
                 vec![Command::ExtractText]
             }
             ToolbarButton::Languages => {
-                // 显示设置窗口以选择OCR语言（从原始代码迁移）
+                // 显示设置窗口以选择 OCR 语言
                 vec![Command::ShowSettings]
             }
             ToolbarButton::Pin => {
-                // 实现固定功能（从原始代码迁移）
+                // 实现固定功能
                 vec![Command::PinSelection]
             }
             ToolbarButton::Confirm => {
-                // 保存到剪贴板并隐藏窗口（从原始代码迁移）
+                // 保存到剪贴板并隐藏窗口
                 vec![Command::SaveSelectionToClipboard, Command::HideWindow]
             }
             ToolbarButton::Cancel => {
-                // 重置状态并隐藏窗口（从原始代码迁移）
+                // 重置状态并隐藏窗口
                 vec![Command::ResetToInitialState, Command::HideWindow]
             }
             _ => vec![Command::None],
         }
     }
 
-    /// 渲染工具栏（从原始代码迁移）
+    /// 渲染工具栏
     pub fn render(
         &self,
         renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
@@ -265,7 +265,7 @@ impl ToolbarManager {
 
                     for (button_rect, button_type) in &self.buttons {
                         // 创建按钮画刷
-                        // 绘制按钮背景状态 - 只有 hover 时才显示背景（从原始代码迁移）
+                        // 绘制按钮背景状态 - 只有 hover 时才显示背景
                         if self.hovered_button == *button_type {
                             // 悬停状态 - 使用新的辅助函数
                             if let Some(hover_brush) = &hover_brush {
@@ -281,7 +281,7 @@ impl ToolbarManager {
                             }
                         }
 
-                        // 确定图标颜色（从原始代码迁移）
+                        // 确定图标颜色
                         let is_disabled = self.disabled_buttons.contains(button_type);
                         let icon_color = if is_disabled {
                             // 禁用状态 - 灰色
@@ -294,7 +294,7 @@ impl ToolbarManager {
                             Some((16, 16, 16))
                         };
 
-                        // 渲染 SVG 图标（从原始代码迁移）
+                        // 渲染 SVG 图标
                         if let Ok(Some(icon_bitmap)) = svg_icons.render_icon_to_bitmap(
                             *button_type,
                             render_target,
@@ -350,13 +350,13 @@ impl ToolbarManager {
         }
     }
 
-    /// 处理鼠标按下（按照原始代码逻辑）
+    /// 处理鼠标按下
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        // 检查是否点击了工具栏按钮（按照原始代码逻辑）
+        // 检查是否点击了工具栏按钮
         let button_type = self.get_button_at_position(x, y);
         if button_type != crate::types::ToolbarButton::None {
              // 禁用按钮不可点击
@@ -364,7 +364,7 @@ impl ToolbarManager {
                  return vec![];
              }
 
-             // 记录按下的按钮（从原始代码迁移）
+             // 记录按下的按钮
              self.pressed_button = button_type;
              // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
              // 调试输出
@@ -376,13 +376,13 @@ impl ToolbarManager {
         vec![]
     }
 
-    /// 处理鼠标释放（按照原始代码逻辑）
+    /// 处理鼠标释放
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        // 检查是否在同一个按钮上释放（按照原始代码逻辑）
+        // 检查是否在同一个按钮上释放
         let toolbar_button = self.get_button_at_position(x, y);
         if toolbar_button != ToolbarButton::None && toolbar_button == self.pressed_button {
             // 按钮点击已经在 handle_mouse_down 中处理，这里只需要清除按下状态

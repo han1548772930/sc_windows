@@ -503,7 +503,7 @@ impl App {
     pub fn take_screenshot(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         use crate::utils::win_api;
 
-        // 重置状态并开始截图（按照原始代码逻辑）
+        // 重置状态并开始截图
         self.screenshot.reset_state();
 
         // 设置当前窗口并捕获屏幕
@@ -516,7 +516,7 @@ impl App {
         Ok(())
     }
 
-    /// 直接捕获屏幕（用于热键处理，与原始代码一致）
+    /// 直接捕获屏幕（用于热键处理）
     pub fn capture_screen_direct(&mut self) -> AppResult<()> {
         self.screenshot
             .capture_screen()
@@ -529,7 +529,7 @@ impl App {
         use crate::types::ToolbarButton;
         use std::collections::HashSet;
 
-        // 工具栏始终显示当前绘图工具（与原代码保持一致，选中元素时已经更新了当前工具）
+        // 工具栏始终显示当前绘图工具
         let current_tool = self.drawing.get_current_tool();
 
         // 更新工具栏选中状态

@@ -572,7 +572,6 @@ impl SettingsWindow {
 
             let mut current_y = margin;
 
-            // === 绘图设置分组 ===
 
             // 绘图设置分组标题
             if let Some(group_title) = self.find_control_by_text("绘图设置") {
@@ -638,7 +637,6 @@ impl SettingsWindow {
 
             current_y += item_spacing;
 
-            // === 颜色设置分组 ===
 
             // 颜色设置分组标题
             if let Some(color_group_title) = self.find_control_by_text("颜色设置") {
@@ -687,7 +685,6 @@ impl SettingsWindow {
 
             current_y += item_spacing;
 
-            // === 热键设置分组 ===
 
             // 热键设置分组标题
             if let Some(hotkey_group_title) = self.find_control_by_text("热键设置") {
@@ -728,7 +725,6 @@ impl SettingsWindow {
 
             current_y += item_spacing;
 
-            // === 配置路径设置分组 ===
 
             // 配置路径设置分组标题
             if let Some(config_path_group_title) = self.find_control_by_text("配置文件路径") {
@@ -782,7 +778,6 @@ impl SettingsWindow {
 
             current_y += item_spacing;
 
-            // === OCR语言设置 ===
 
             // OCR语言标签
             if let Some(ocr_label) = self.find_control_by_text("OCR识别语言:") {
@@ -810,7 +805,6 @@ impl SettingsWindow {
 
             let _current_y = current_y + item_spacing;
 
-            // === 底部按钮 ===
             let button_spacing = 10;
             let buttons_total_width = button_width * 2 + button_spacing;
             let buttons_start_x = (window_width - buttons_total_width) / 2;
@@ -863,7 +857,6 @@ impl SettingsWindow {
                 PCWSTR(to_wide_chars("Microsoft Sans Serif").as_ptr()), // 标准字体
             );
 
-            // === 创建分组标题 ===
 
             // 绘图设置分组标题
             let drawing_group_title = CreateWindowExW(
@@ -888,7 +881,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建标签控件 ===
 
             // 线条粗细标签
             let thickness_label = CreateWindowExW(
@@ -936,7 +928,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建输入控件 ===
 
             // 线条粗细输入框
             self.line_thickness_edit = CreateWindowExW(
@@ -985,7 +976,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建颜色设置标签 ===
 
             // 颜色设置分组标题
             let color_group_title = CreateWindowExW(
@@ -1033,7 +1023,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建颜色控件 ===
 
             // 绘图颜色预览框
             self.drawing_color_preview = CreateWindowExW(
@@ -1076,7 +1065,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建热键设置标签 ===
 
             // 热键设置分组标题
             let hotkey_group_title = CreateWindowExW(
@@ -1124,7 +1112,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建配置路径设置标签 ===
 
             // 配置路径设置分组标题
             let config_path_group_title = CreateWindowExW(
@@ -1172,7 +1159,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // === 创建热键输入控件 ===
 
             // 热键输入框 - 移除ES_READONLY样式，使用普通编辑框
             self.hotkey_edit = CreateWindowExW(
@@ -1209,7 +1195,6 @@ impl SettingsWindow {
             // 存储原始窗口过程
             SetWindowLongPtrW(self.hotkey_edit, GWLP_USERDATA, original_proc);
 
-            // === 创建配置路径控件 ===
 
             // 配置路径输入框
             self.config_path_edit = CreateWindowExW(
@@ -1259,7 +1244,6 @@ impl SettingsWindow {
             );
             Self::set_modern_theme(self.config_path_browse_button);
 
-            // === 创建OCR语言选择控件 ===
 
             // OCR语言标签
             let ocr_language_label = CreateWindowExW(
@@ -1338,7 +1322,6 @@ impl SettingsWindow {
                 );
             }
 
-            // === 创建按钮 ===
 
             // 确定按钮
             self.ok_button = CreateWindowExW(

@@ -118,7 +118,7 @@ impl ElementManager {
         None
     }
 
-    /// 检查元素是否在选择框内可见（从原始代码迁移）
+    /// 检查元素是否在选择框内可见
     pub fn is_element_visible_in_selection(
         &self,
         element: &crate::types::DrawingElement,

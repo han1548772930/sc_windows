@@ -5,7 +5,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::UI::{Shell::*, WindowsAndMessaging::*};
 use windows::core::*;
 
-/// 系统托盘管理器（从原始代码迁移）
+/// 系统托盘管理器
 #[derive(Debug)]
 pub struct TrayManager {
     hwnd: SafeHwnd,
@@ -23,7 +23,7 @@ impl TrayManager {
         })
     }
 
-    /// 初始化系统托盘（从原始代码迁移）
+    /// 初始化系统托盘
     pub fn initialize(&mut self, hwnd: HWND) -> std::result::Result<(), SystemError> {
         self.hwnd.set(Some(hwnd));
 
@@ -36,7 +36,7 @@ impl TrayManager {
         Ok(())
     }
 
-    /// 添加托盘图标（从原始代码迁移）
+    /// 添加托盘图标
     pub fn add_icon(&mut self, tooltip: &str, icon: HICON) -> std::result::Result<(), SystemError> {
         if self.is_added {
             return Ok(());
@@ -72,7 +72,7 @@ impl TrayManager {
         }
     }
 
-    /// 处理托盘消息（从原始代码迁移）
+    /// 处理托盘消息
     pub fn handle_message(&mut self, _wparam: u32, lparam: u32) -> Vec<Command> {
         match lparam {
             WM_RBUTTONUP => {
@@ -88,7 +88,7 @@ impl TrayManager {
         }
     }
 
-    /// 显示右键菜单（从原始代码迁移）
+    /// 显示右键菜单
     fn show_context_menu(&self) {
         unsafe {
             let hmenu = CreatePopupMenu().unwrap_or_default();
@@ -150,13 +150,13 @@ impl TrayManager {
         }
     }
 
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // 托盘设置通常不需要重新加载，但可以在这里添加相关逻辑
         // 例如更新托盘图标或提示文本
     }
 
-    /// 清理托盘资源（从原始代码迁移）
+    /// 清理托盘资源
     pub fn cleanup(&mut self) {
         if self.is_added {
             unsafe {
@@ -224,8 +224,3 @@ fn load_embedded_icon(icon_data: &[u8]) -> std::result::Result<HICON, SystemErro
     }
 }
 
-// 注意：以下函数已被移除，因为只需要加载嵌入的ICO文件
-// - load_icon_from_bytes: 复杂的通用字节加载
-// - load_icon_from_file: 通用文件加载
-// - create_icon_from_bitmap: 位图转图标
-// 现在只保留简化的 load_embedded_icon 函数

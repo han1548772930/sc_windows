@@ -102,23 +102,23 @@ impl SystemManager {
         self.ocr.stop_engine();
     }
 
-    /// 处理托盘消息（从原始代码迁移）
+    /// 处理托盘消息
     pub fn handle_tray_message(&mut self, wparam: u32, lparam: u32) -> Vec<Command> {
         self.tray.handle_message(wparam, lparam)
     }
 
-    /// 启动异步OCR引擎状态检查（从原始代码迁移）
+    /// 启动异步OCR引擎状态检查
     pub fn start_async_ocr_check(&mut self, hwnd: windows::Win32::Foundation::HWND) {
         // 通过OCR管理器启动异步状态检查
         self.ocr.start_async_status_check(hwnd);
     }
 
-    /// 异步停止OCR引擎（从原始代码迁移）
+    /// 异步停止OCR引擎
     pub fn stop_ocr_engine_async(&mut self) {
         self.ocr.stop_engine();
     }
 
-    /// 重新加载设置（从原始代码迁移）
+    /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // 重新加载热键设置
         self.hotkeys.reload_settings();
@@ -128,7 +128,7 @@ impl SystemManager {
         self.ocr.reload_settings();
     }
 
-    /// 重新注册热键（从原始代码迁移）
+    /// 重新注册热键
     pub fn reregister_hotkey(
         &mut self,
         hwnd: windows::Win32::Foundation::HWND,
@@ -136,7 +136,7 @@ impl SystemManager {
         self.hotkeys.reregister_hotkey(hwnd)
     }
 
-    /// 更新OCR引擎状态（从原始代码迁移）
+    /// 更新OCR引擎状态
     pub fn update_ocr_engine_status(
         &mut self,
         available: bool,

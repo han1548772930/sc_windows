@@ -47,9 +47,9 @@ pub struct ScreenshotManager {
     /// 是否显示选择框手柄（用于与绘图工具联动）
     show_selection_handles: bool,
 
-    /// 窗口检测器（从原始代码迁移）
+    /// 窗口检测器
     window_detector: crate::system::window_detection::WindowDetectionManager,
-    /// 自动高亮是否启用（从原始代码迁移）
+    /// 自动高亮是否启用
     auto_highlight_enabled: bool,
 
     /// 当前窗口句柄（用于排除自己的窗口）
@@ -107,12 +107,10 @@ impl ScreenshotManager {
         self.show_selection_handles = show;
     }
 
-    /// 获取屏幕宽度
     pub fn get_screen_width(&self) -> i32 {
         self.screen_width
     }
 
-    /// 获取屏幕高度
     pub fn get_screen_height(&self) -> i32 {
         self.screen_height
     }
@@ -164,7 +162,7 @@ impl ScreenshotManager {
                 vec![Command::HideOverlay]
             }
             ScreenshotMessage::StartSelection(x, y) => {
-                // 开始选择区域（从原始handle_left_button_down迁移）
+                // 开始选择区域
                 if self.current_screenshot.is_some() {
                     self.selection.start_selection(x, y);
                     vec![Command::RequestRedraw]
@@ -175,7 +173,7 @@ impl ScreenshotManager {
         }
     }
 
-    /// 渲染截图内容（按照原始代码逻辑）
+    /// 渲染截图内容
     pub fn render(
         &mut self,
         renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
@@ -227,7 +225,7 @@ impl ScreenshotManager {
         }
     }
 
-    /// 重置状态（从原始reset_to_initial_state迁移）
+    /// 重置状态
     pub fn reset_state(&mut self) {
         // 清除当前截图
         self.current_screenshot = None;
@@ -248,7 +246,7 @@ impl ScreenshotManager {
         // 默认显示选择框手柄（新一轮截图开始时应可见）
         self.show_selection_handles = true;
 
-        // 重新启用自动窗口高亮功能（从原始代码迁移）
+        // 重新启用自动窗口高亮功能
         self.auto_highlight_enabled = true;
     }
 
@@ -259,7 +257,7 @@ impl ScreenshotManager {
 
     // 注意: 绘图工具管理已移至Drawing模块
 
-    /// 重新截取当前屏幕（从WindowState迁移）
+    /// 重新截取当前屏幕
     pub fn capture_screen(&mut self) -> std::result::Result<(), ScreenshotError> {
         let exclude_hwnd = self
             .current_window
@@ -288,7 +286,7 @@ impl ScreenshotManager {
             data: vec![], // 暂时为空，实际数据将按需捕获
         });
 
-        // 刷新窗口列表（从原始代码迁移）
+        // 刷新窗口列表
         if let Err(e) = self.window_detector.refresh_windows() {
             eprintln!("Warning: Failed to refresh windows: {e:?}");
             // 继续运行，不退出程序
@@ -297,7 +295,7 @@ impl ScreenshotManager {
         Ok(())
     }
 
-    /// 从GDI位图创建D2D位图（从原始代码迁移，恢复原有逻辑）
+    /// 从GDI位图创建D2D位图
     pub fn create_d2d_bitmap_from_gdi(
         &mut self,
         renderer: &mut dyn crate::platform::PlatformRenderer<Error = crate::platform::PlatformError>,
@@ -305,7 +303,7 @@ impl ScreenshotManager {
         // 按需捕获屏幕到GDI位图
         let gdi_bitmap = self.capture_screen_to_gdi_bitmap()?;
 
-        // 使用downcast获取Direct2DRenderer（与旧代码保持一致）
+            // 使用 downcast 获取 Direct2DRenderer
         if let Some(d2d_renderer) = renderer
             .as_any_mut()
             .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
@@ -342,7 +340,7 @@ impl ScreenshotManager {
                 ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
                 // temp_dc 和 managed_bitmap 会在离开作用域时自动释放
 
-                // 存储D2D位图（关键：与旧代码保持一致）
+                // 存储 D2D 位图
                 self.screenshot_bitmap = Some(d2d_bitmap);
                 Ok(())
             }
@@ -360,20 +358,20 @@ impl ScreenshotManager {
         self.current_screenshot.as_ref().map(|s| s.data.as_slice())
     }
 
-    /// 处理鼠标移动（完全按照原始代码逻辑，包含拖拽检测）
+    /// 处理鼠标移动（包含拖拽检测）
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         // 绘图工具处理已移至Drawing模块
 
-        // 第二优先级：检测拖拽开始（从原始代码迁移）
+        // 第二优先级：检测拖拽开始
         if self.selection.is_mouse_pressed() && self.auto_highlight_enabled {
             let drag_start = self.selection.get_interaction_start_pos();
 
             if crate::utils::is_drag_threshold_exceeded(drag_start.x, drag_start.y, x, y) {
-                // 开始拖拽，禁用自动高亮（从原始代码迁移）
+                // 开始拖拽，禁用自动高亮
                 self.auto_highlight_enabled = false;
 
-                // 如果之前有自动高亮的选择，清除它并开始新的手动选择（从原始代码迁移）
+                // 如果之前有自动高亮的选择，清除它并开始新的手动选择
                 if self.selection.has_selection() {
                     self.selection.clear_selection();
                     self.selection.start_selection(drag_start.x, drag_start.y);
@@ -406,33 +404,33 @@ impl ScreenshotManager {
                 (vec![], false)
             }
         } else {
-            // 窗口自动高亮检测（仅在启用自动高亮且没有按下鼠标时）（完全按照原始代码逻辑）
+            // 窗口自动高亮检测（仅在启用自动高亮且没有按下鼠标时）
             if self.auto_highlight_enabled && !self.selection.is_mouse_pressed() {
-                // 同时检测窗口和子控件（按照原始代码逻辑）
+                // 同时检测窗口和子控件
                 let (window_info, control_info) = self.window_detector.detect_at_point(x, y);
 
                 if let Some(control) = control_info {
-                    // 优先显示子控件高亮，并限制在屏幕范围内（按照原始代码逻辑）
+                    // 优先显示子控件高亮，并限制在屏幕范围内
                     let limited_rect = crate::utils::clamp_rect_to_screen(
                         control.rect,
                         self.screen_width,
                         self.screen_height,
                     );
-                    // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
+                    // 直接设置 selection_rect，而不是 auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
                     (vec![Command::RequestRedraw], true)
                 } else if let Some(window) = window_info {
-                    // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内（按照原始代码逻辑）
+                    // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内
                     let limited_rect = crate::utils::clamp_rect_to_screen(
                         window.rect,
                         self.screen_width,
                         self.screen_height,
                     );
-                    // 按照原始代码：直接设置selection_rect，而不是auto_highlight_rect
+                    // 直接设置 selection_rect，而不是 auto_highlight_rect
                     self.selection.set_selection_rect(limited_rect);
                     (vec![Command::RequestRedraw], true)
                 } else {
-                    // 如果没有检测到窗口或子控件，清除自动高亮（按照原始代码逻辑）
+                    // 如果没有检测到窗口或子控件，清除自动高亮
                     if self.selection.has_selection() {
                         self.selection.clear_selection();
                         (vec![Command::RequestRedraw], true)
@@ -446,20 +444,20 @@ impl ScreenshotManager {
         }
     }
 
-    /// 处理鼠标按下（完全按照原始代码逻辑）
+    /// 处理鼠标按下
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         if self.current_screenshot.is_none() {
             return (vec![], false);
         }
 
-        // 设置鼠标按下状态（从原始代码迁移）
+        // 设置鼠标按下状态
         self.selection.set_mouse_pressed(true);
         self.selection.set_interaction_start_pos(x, y);
 
         // 绘图工具和元素点击检查已移至Drawing模块
 
-        // 第三优先级：检查工具栏点击（从原始代码迁移）
+        // 第三优先级：检查工具栏点击
         if self.selection.has_selection() {
             // 工具栏点击检测需要通过UI管理器处理
             // 这里暂时跳过，让UI管理器在App层处理工具栏点击
@@ -479,7 +477,7 @@ impl ScreenshotManager {
             }
         }
 
-        // 第四优先级：开始新的选择框创建（从原始代码迁移）
+        // 第四优先级：开始新的选择框创建
         // 修复：当启用自动高亮时，不要立即开始选择框创建，
         // 等待在 handle_mouse_move 中超过拖拽阈值后再开始，
         // 以避免小幅移动被误判为“单击确认”。
@@ -491,28 +489,28 @@ impl ScreenshotManager {
         }
     }
 
-    /// 开始拖拽操作（完全按照原始代码的start_drag逻辑）
+    /// 开始拖拽操作
     fn start_drag_internal(&mut self, x: i32, y: i32) {
-        // 如果已经有选择框，不允许在外面重新框选（从原始代码迁移）
+        // 如果已经有选择框，不允许在外面重新框选
         if self.selection.has_selection() {
             let _ = self
                 .selection_interaction
                 .mouse_down(&mut self.selection, x, y);
             // 未命中时不开始新选择，保持原行为
         } else {
-            // 只有在没有选择框时才允许创建新的选择框（从原始代码迁移）
+            // 只有在没有选择框时才允许创建新的选择框
             self.selection.start_selection(x, y);
         }
     }
 
-    /// 处理鼠标释放（完全按照原始代码逻辑）
+    /// 处理鼠标释放
     /// 返回 (命令列表, 是否消费了事件)
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
         // 绘图工具完成处理已移至Drawing模块
 
-        // 检查是否是单击（没有拖拽）（从原始代码迁移）
+        // 检查是否是单击（没有拖拽）
         let start_pos = self.selection.get_interaction_start_pos();
         let is_click = self.selection.is_mouse_pressed()
             && !crate::utils::is_drag_threshold_exceeded(start_pos.x, start_pos.y, x, y);
@@ -556,7 +554,7 @@ impl ScreenshotManager {
             self.auto_highlight_enabled = true;
         }
 
-        // 如果没有选择区域，重新启用自动高亮以便下次使用（从原始代码迁移）
+        // 如果没有选择区域，重新启用自动高亮以便下次使用
         if !self.selection.has_selection() {
             self.auto_highlight_enabled = true;
         }
@@ -578,7 +576,7 @@ impl ScreenshotManager {
         self.selection.has_selection()
     }
 
-    /// 获取当前选择区域（从原始代码迁移）
+    /// 获取当前选择区域
     pub fn get_selection(&self) -> Option<windows::Win32::Foundation::RECT> {
         self.selection.get_selection()
     }
@@ -588,7 +586,7 @@ impl ScreenshotManager {
         self.hide_ui_for_capture
     }
 
-    /// 临时隐藏UI元素进行截图（从原始代码迁移）
+    /// 临时隐藏UI元素进行截图
     pub fn hide_ui_for_capture(&mut self, hwnd: windows::Win32::Foundation::HWND) {
         self.hide_ui_for_capture = true;
         unsafe {
@@ -603,7 +601,7 @@ impl ScreenshotManager {
         }
     }
 
-    /// 恢复UI元素显示（从原始代码迁移）
+    /// 恢复UI元素显示
     pub fn show_ui_after_capture(&mut self, hwnd: windows::Win32::Foundation::HWND) {
         self.hide_ui_for_capture = false;
         unsafe {
@@ -616,7 +614,7 @@ impl ScreenshotManager {
         }
     }
 
-    /// 处理双击事件（从原始代码迁移）
+    /// 处理双击事件
     pub fn handle_double_click(&mut self, _x: i32, _y: i32) -> Vec<Command> {
         // 双击可能用于确认选择或快速操作
         // 如果有选择区域，双击可能表示确认选择
