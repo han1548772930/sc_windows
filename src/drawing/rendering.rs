@@ -2,13 +2,12 @@ use crate::platform::{PlatformError, PlatformRenderer};
 use crate::types::{DrawingElement, DrawingTool};
 use crate::utils::d2d_helpers::ellipse;
 use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
 
 use super::{DrawingError, DrawingManager, ElementInteractionMode};
 
 impl DrawingManager {
     /// 批量绘制元素数量阈值，超过此数量时启用批量绘制优化
-    const BATCH_RENDER_THRESHOLD: usize = 10;
+    const BATCH_RENDER_THRESHOLD: usize = 50;
 
     /// 批量渲染元素（按类型分组优化）
     ///
@@ -138,86 +137,8 @@ impl DrawingManager {
             .as_any_mut()
             .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
         ) {
-            // Fallback flag
-            let mut layer_success = false;
-
-            // Layered rendering logic
-            // 1. If cache is dirty, update the committed layer
-            // Check cache_dirty using interior mutability
-            let _is_dirty = *self.cache_dirty.borrow();
-            // TEMPORARY: Disable layer update to fallback to direct rendering
-            if false {
-                // was: if is_dirty
-                if let Some(layer_target) = d2d_renderer.get_or_create_layer_target() {
-                    // Clone target to use it while also borrowing d2d_renderer
-                    let layer_target = layer_target.clone();
-
-                    let mut success = true;
-                    unsafe {
-                        layer_target.BeginDraw();
-                        // Clear with transparent black
-                        let clear_color =
-                            windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                                r: 0.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            };
-                        layer_target.Clear(Some(&clear_color));
-
-                        // Render all non-active elements to the layer
-                        for (i, element) in self.elements.get_elements().iter().enumerate() {
-                            // Skip if this is the selected element (it will be drawn dynamically on top)
-                            if Some(i) != self.selected_element {
-                                // We pass the layer_target explicitly
-                                let target_interface: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget = &layer_target;
-                                if let Err(e) =
-                                    self.draw_element_d2d(element, target_interface, d2d_renderer)
-                                {
-                                    eprintln!("Failed to draw element to layer: {}", e);
-                                    success = false;
-                                }
-                            }
-                        }
-                        if let Err(e) = layer_target.EndDraw(None, None) {
-                            eprintln!("Layer EndDraw failed: {:?}", e);
-                            success = false;
-                        }
-                    }
-
-                    if success {
-                        *self.cache_dirty.borrow_mut() = false;
-                    }
-                } else {
-                    eprintln!("Failed to get layer target");
-                }
-            }
-
-            // 2. Draw the committed layer to the main render target
-            // TEMPORARY: Disable layer drawing
-            if false {
-                // was: if let Some(layer_target) = d2d_renderer.get_or_create_layer_target()
-                unsafe {
-                    if let Ok(bitmap) = d2d_renderer
-                        .get_or_create_layer_target()
-                        .unwrap()
-                        .GetBitmap()
-                        && let Some(render_target) = &d2d_renderer.render_target
-                    {
-                        render_target.DrawBitmap(
-                            &bitmap,
-                            None,
-                            1.0,
-                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                            None,
-                        );
-                        layer_success = true;
-                    }
-                }
-            }
-
-            // Fallback: If layer rendering failed or target unavailable, draw elements directly
-            if !layer_success && let Some(render_target) = &d2d_renderer.render_target {
+            // 直接渲染所有元素
+            if let Some(render_target) = &d2d_renderer.render_target {
                 let target_clone = render_target.clone();
                 let element_count = self.elements.get_elements().len();
 

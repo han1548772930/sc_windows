@@ -84,17 +84,12 @@ impl DrawingElement {
                 right: 0,
                 bottom: 0,
             },
-            color: D2D1_COLOR_F {
-                r: 1.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            },
-            thickness: 3.0,
+            color: crate::constants::DEFAULT_DRAWING_COLOR,
+            thickness: crate::constants::DEFAULT_LINE_THICKNESS,
             text: String::new(),
-            font_size: 20.0,
-            font_name: "Microsoft YaHei".to_string(),
-            font_weight: 400,
+            font_size: crate::constants::DEFAULT_FONT_SIZE,
+            font_name: crate::constants::DEFAULT_FONT_NAME.to_string(),
+            font_weight: crate::constants::DEFAULT_FONT_WEIGHT,
             font_italic: false,
             font_underline: false,
             font_strikeout: false,
@@ -106,10 +101,10 @@ impl DrawingElement {
 
     pub fn get_effective_font_size(&self) -> f32 {
         if self.tool == DrawingTool::Text {
-            self.font_size.max(8.0)
+            self.font_size.max(crate::constants::MIN_FONT_SIZE)
         } else {
             // 非文本元素不应该有字体大小，但为了兼容性返回默认值
-            20.0
+            crate::constants::DEFAULT_FONT_SIZE
         }
     }
 

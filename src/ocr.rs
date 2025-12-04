@@ -314,7 +314,7 @@ impl PaddleOcrEngine {
             "chinese_cht" => Some(PathBuf::from("models\\config_chinese_cht.txt")),
             "japan" => Some(PathBuf::from("models\\config_japan.txt")),
             "korean" => Some(PathBuf::from("models\\config_korean.txt")),
-            "chinese" | _ => None,
+            _ => None, // "chinese" or any unknown language uses default config
         }
     }
 
@@ -700,10 +700,8 @@ pub fn crop_bmp(original_image_data: &[u8], crop_rect: &RECT) -> Result<Vec<u8>>
             new_bmp.extend_from_slice(&original_image_data[src_pixel_start..src_pixel_end]);
 
             // 添加行填充
-            let padding = new_row_size - crop_width * bytes_per_pixel;
-            for _ in 0..padding {
-                new_bmp.push(0);
-            }
+            let padding = (new_row_size - crop_width * bytes_per_pixel) as usize;
+            new_bmp.resize(new_bmp.len() + padding, 0);
         }
     }
 

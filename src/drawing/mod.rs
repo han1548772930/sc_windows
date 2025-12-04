@@ -15,7 +15,9 @@
 //! - 文本标注
 
 use crate::message::{Command, DrawingMessage};
+use crate::settings::Settings;
 use crate::types::{DrawingElement, DrawingTool};
+use std::sync::{Arc, RwLock};
 
 pub mod cache;
 pub mod elements;
@@ -59,6 +61,8 @@ impl ElementInteractionMode {
 }
 
 pub struct DrawingManager {
+    /// 共享的配置引用
+    pub(super) settings: Arc<RwLock<Settings>>,
     pub(super) tools: ToolManager,
     pub(super) elements: ElementManager,
     pub(super) history: HistoryManager,
@@ -83,9 +87,13 @@ pub struct DrawingManager {
 
 impl DrawingManager {
     /// 创建新的绘图管理器
-    pub fn new() -> Result<Self, DrawingError> {
+    ///
+    /// # 参数
+    /// - `settings`: 共享的配置引用
+    pub fn new(settings: Arc<RwLock<Settings>>) -> Result<Self, DrawingError> {
         Ok(Self {
-            tools: ToolManager::new(),
+            tools: ToolManager::new(Arc::clone(&settings)),
+            settings,
             elements: ElementManager::new(),
             history: HistoryManager::new(),
             geometry_cache: GeometryCache::new(),
@@ -832,20 +840,21 @@ impl DrawingManager {
         // 创建新元素
         let mut new_element = DrawingElement::new(self.current_tool);
         if self.current_tool == DrawingTool::Text {
-            // 文本元素使用字体颜色与字体设置（修复：使用正确的font_color而不是text_color）
-            let settings = crate::settings::Settings::load();
-            new_element.color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
-                r: settings.font_color.0 as f32 / 255.0,
-                g: settings.font_color.1 as f32 / 255.0,
-                b: settings.font_color.2 as f32 / 255.0,
-                a: 1.0,
-            };
-            new_element.font_size = settings.font_size;
-            new_element.font_name = settings.font_name.clone();
-            new_element.font_weight = settings.font_weight;
-            new_element.font_italic = settings.font_italic;
-            new_element.font_underline = settings.font_underline;
-            new_element.font_strikeout = settings.font_strikeout;
+            // 文本元素使用字体颜色与字体设置（从共享配置获取）
+            if let Ok(settings) = self.settings.read() {
+                new_element.color = windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                    r: settings.font_color.0 as f32 / 255.0,
+                    g: settings.font_color.1 as f32 / 255.0,
+                    b: settings.font_color.2 as f32 / 255.0,
+                    a: 1.0,
+                };
+                new_element.font_size = settings.font_size;
+                new_element.font_name = settings.font_name.clone();
+                new_element.font_weight = settings.font_weight;
+                new_element.font_italic = settings.font_italic;
+                new_element.font_underline = settings.font_underline;
+                new_element.font_strikeout = settings.font_strikeout;
+            }
         } else {
             // 其他元素使用绘图颜色与线宽（从 ToolManager 获取）
             new_element.color = self.tools.get_brush_color();

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod command_executor;
+pub mod config;
 pub mod constants;
 pub mod drawing;
 pub mod error;

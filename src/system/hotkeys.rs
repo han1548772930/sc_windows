@@ -1,5 +1,7 @@
 use super::SystemError;
 use crate::message::Command;
+use crate::settings::Settings;
+use std::sync::{Arc, RwLock};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
@@ -9,20 +11,26 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 pub struct HotkeyManager {
     /// 已注册的热键
     registered_hotkeys: Vec<u32>,
+    /// 共享的配置引用
+    settings: Arc<RwLock<Settings>>,
 }
 
 impl HotkeyManager {
     /// 创建新的热键管理器
-    pub fn new() -> Result<Self, SystemError> {
+    pub fn new(settings: Arc<RwLock<Settings>>) -> Result<Self, SystemError> {
         Ok(Self {
             registered_hotkeys: Vec::new(),
+            settings,
         })
     }
 
-    /// 注册全局热键（从原始代码迁移）
+    /// 注册全局热键
     pub fn register_hotkeys(&mut self, hwnd: HWND) -> Result<(), SystemError> {
-        // 从设置中读取热键配置
-        let settings = crate::settings::Settings::load();
+        // 从共享配置中读取热键配置
+        let (hotkey_modifiers, hotkey_key) = self.settings
+            .read()
+            .map(|s| (s.hotkey_modifiers, s.hotkey_key))
+            .unwrap_or((0x0003, 'S' as u32)); // 默认 Ctrl+Alt+S
         let hotkey_id = 1001;
 
         // 注册全局热键
@@ -30,8 +38,8 @@ impl HotkeyManager {
             let result = RegisterHotKey(
                 Some(hwnd),
                 hotkey_id,
-                HOT_KEY_MODIFIERS(settings.hotkey_modifiers),
-                settings.hotkey_key,
+                HOT_KEY_MODIFIERS(hotkey_modifiers),
+                hotkey_key,
             );
 
             if result.is_ok() {

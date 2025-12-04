@@ -4,7 +4,6 @@
 )]
 use sc_windows::constants::*;
 use sc_windows::platform::windows::Direct2DRenderer;
-use sc_windows::settings::Settings;
 use sc_windows::utils::{to_wide_chars, win_api};
 use sc_windows::{App, Command, CommandExecutor, WINDOW_CLASS_NAME};
 
@@ -101,6 +100,7 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     unsafe {
         match msg {
+            // WM_CREATE 和 WM_DESTROY 需要特殊处理（创建/销毁 App 本身）
             WM_CREATE => {
                 let _ = windows::Win32::System::Com::CoInitialize(None);
 
@@ -118,14 +118,14 @@ unsafe extern "system" fn window_proc(
                         match App::new(Box::new(renderer)) {
                             Ok(mut app) => {
                                 let _ = app.init_system_tray(hwnd);
-
                                 app.start_async_ocr_check(hwnd);
-                                let settings = Settings::load();
+                                // 从 ConfigManager 获取热键配置
+                                let (hotkey_modifiers, hotkey_key) = app.config().hotkey();
                                 let _ = RegisterHotKey(
                                     Some(hwnd),
                                     HOTKEY_SCREENSHOT_ID,
-                                    HOT_KEY_MODIFIERS(settings.hotkey_modifiers),
-                                    settings.hotkey_key,
+                                    HOT_KEY_MODIFIERS(hotkey_modifiers),
+                                    hotkey_key,
                                 );
 
                                 let app_box = Box::new(app);
@@ -143,20 +143,6 @@ unsafe extern "system" fn window_proc(
                 }
             }
 
-            WM_CLOSE => {
-                let is_visible = win_api::is_window_visible(hwnd);
-
-                if !is_visible {
-                    let _ = win_api::destroy_window(hwnd);
-                } else if let Some(app) = get_app_state(hwnd) {
-                    app.reset_to_initial_state();
-                    let _ = win_api::hide_window(hwnd);
-                } else {
-                    let _ = win_api::destroy_window(hwnd);
-                }
-                LRESULT(0)
-            }
-
             WM_DESTROY => {
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_SCREENSHOT_ID);
                 sc_windows::ocr::PaddleOcrEngine::cleanup_global_engine();
@@ -171,119 +157,24 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
-            WM_PAINT => {
-                if let Some(app) = get_app_state(hwnd)
-                    && let Err(e) = app.paint(hwnd) {
-                        eprintln!("Paint failed: {e}");
-                    }
-                LRESULT(0)
-            }
-
-            WM_MOUSEMOVE => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
-                    let commands = app.handle_mouse_move(x, y);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
-            WM_LBUTTONDOWN => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
-                    let commands = app.handle_mouse_down(x, y);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
-            WM_LBUTTONUP => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
-                    let commands = app.handle_mouse_up(x, y);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
-            WM_LBUTTONDBLCLK => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let (x, y) = sc_windows::utils::extract_mouse_coords(lparam);
-                    let commands = app.handle_double_click(x, y);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
-            WM_CHAR => {
-                if let Some(app) = get_app_state(hwnd)
-                    && let Some(character) = char::from_u32(wparam.0 as u32)
-                        && (!character.is_control() || character == ' ' || character == '\t') {
-                            let commands = app.handle_text_input(character);
-                            handle_commands(app, commands, hwnd);
-                        }
-                LRESULT(0)
-            }
-
-            WM_SETCURSOR => LRESULT(1),
-
-            val if val == WM_TRAY_MESSAGE => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let commands = app.handle_tray_message(wparam.0 as u32, lparam.0 as u32);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
-            val if val == WM_HIDE_WINDOW_CUSTOM => {
-                if let Some(app) = get_app_state(hwnd) {
-                    app.stop_ocr_engine_async();
-                    let _ = win_api::hide_window(hwnd);
-                }
-                LRESULT(0)
-            }
-
-            val if val == WM_RELOAD_SETTINGS => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let commands = app.reload_settings();
-                    handle_commands(app, commands, hwnd);
-                    let _ = app.reregister_hotkey(hwnd);
-                }
-                LRESULT(0)
-            }
-
-            val if val == WM_OCR_STATUS_UPDATE => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let available = wparam.0 != 0;
-                    app.update_ocr_engine_status(available, hwnd);
-                    let commands = vec![
-                        sc_windows::message::Command::UpdateToolbar,
-                        sc_windows::message::Command::RequestRedraw,
-                    ];
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
+            // OCR 完成、热键、定时器等需要特殊处理的消息
             val if val == WM_OCR_COMPLETED => {
                 if let Some(app) = get_app_state(hwnd) {
                     let data_ptr = lparam.0 as *mut sc_windows::system::ocr::OcrCompletionData;
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
                         
-                        // 使用 App 方法处理 OCR 结果
                         let (has_results, is_ocr_failed, text) = app.handle_ocr_completed(
                             data.ocr_results,
                             data.image_data,
                             data.selection_rect,
                         );
 
-                        // 复制文本到剪贴板
                         if has_results
                             && let Err(e) = sc_windows::screenshot::save::copy_text_to_clipboard(&text) {
                                 eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
                             }
 
-                        // 显示提示消息
                         if !has_results || is_ocr_failed {
                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
                             let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
@@ -297,6 +188,7 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+
             WM_HOTKEY => {
                 if wparam.0 == HOTKEY_SCREENSHOT_ID as usize
                     && let Some(app) = get_app_state(hwnd) {
@@ -310,30 +202,28 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
 
-            WM_KEYDOWN => {
-                if let Some(app) = get_app_state(hwnd) {
-                    let commands = app.handle_key_input(wparam.0 as u32);
-                    handle_commands(app, commands, hwnd);
-                }
-                LRESULT(0)
-            }
-
             WM_TIMER => {
                 if wparam.0 == TIMER_CAPTURE_DELAY_ID {
                     let _ = KillTimer(Some(hwnd), TIMER_CAPTURE_DELAY_ID);
                     if let Some(app) = get_app_state(hwnd) {
                         perform_capture_and_show(hwnd, app);
                     }
-                    LRESULT(0)
-                } else {
-                    if let Some(app) = get_app_state(hwnd) {
-                        let commands = app.handle_cursor_timer(wparam.0 as u32);
-                        handle_commands(app, commands, hwnd);
-                    }
-                    LRESULT(0)
+                } else if let Some(app) = get_app_state(hwnd) {
+                    let commands = app.handle_cursor_timer(wparam.0 as u32);
+                    handle_commands(app, commands, hwnd);
                 }
+                LRESULT(0)
             }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+
+            // 其他消息委托给 App.handle_window_message()
+            _ => {
+                if let Some(app) = get_app_state(hwnd) {
+                    if let Some(result) = app.handle_window_message(hwnd, msg, wparam, lparam) {
+                        return result;
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
         }
     }
 }

@@ -176,3 +176,14 @@ pub const ICON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.88, g: 0.9
 pub const TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.88, g: 0.88, b: 0.88, a: 1.0 };
 pub const CLOSE_BUTTON_HOVER_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.91, g: 0.07, b: 0.14, a: 1.0 };
 pub const TITLE_BAR_BG_COLOR_D2D: D2D1_COLOR_F = D2D1_COLOR_F { r: 0.93, g: 0.93, b: 0.93, a: 1.0 };
+
+// 绘图元素默认值
+pub const DEFAULT_LINE_THICKNESS: f32 = 3.0;
+pub const DEFAULT_FONT_SIZE: f32 = 20.0;
+pub const DEFAULT_FONT_NAME: &str = "Microsoft YaHei";
+pub const DEFAULT_FONT_WEIGHT: i32 = 400;
+pub const DEFAULT_DRAWING_COLOR: D2D1_COLOR_F = D2D1_COLOR_F { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+
+// 光标闪烁定时器
+pub const CURSOR_BLINK_TIMER_ID: u32 = 1;
+pub const CURSOR_BLINK_INTERVAL_MS: u32 = 500;

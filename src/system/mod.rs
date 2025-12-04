@@ -10,6 +10,8 @@
 //! - [`WindowDetectionManager`](window_detection::WindowDetectionManager): 窗口检测
 
 use crate::message::{Command, SystemMessage};
+use crate::settings::Settings;
+use std::sync::{Arc, RwLock};
 
 pub mod hotkeys;
 pub mod ocr;
@@ -23,6 +25,9 @@ use window_detection::WindowDetectionManager;
 
 /// 系统管理器
 pub struct SystemManager {
+    /// 共享的配置引用
+    #[allow(dead_code)]
+    settings: Arc<RwLock<Settings>>,
     /// 托盘管理器
     tray: TrayManager,
     /// 热键管理器
@@ -35,12 +40,16 @@ pub struct SystemManager {
 
 impl SystemManager {
     /// 创建新的系统管理器
-    pub fn new() -> Result<Self, SystemError> {
+    ///
+    /// # 参数
+    /// - `settings`: 共享的配置引用
+    pub fn new(settings: Arc<RwLock<Settings>>) -> Result<Self, SystemError> {
         Ok(Self {
             tray: TrayManager::new()?,
-            hotkeys: HotkeyManager::new()?,
+            hotkeys: HotkeyManager::new(Arc::clone(&settings))?,
             window_detection: WindowDetectionManager::new()?,
             ocr: OcrManager::new()?,
+            settings,
         })
     }
 

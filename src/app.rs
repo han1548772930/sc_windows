@@ -1,3 +1,5 @@
+use crate::command_executor::CommandExecutor;
+use crate::config::ConfigManager;
 use crate::drawing::DrawingManager;
 use crate::error::{AppError, AppResult};
 use crate::event_handler::{
@@ -11,6 +13,8 @@ use crate::ui::UIManager;
 
 /// 应用程序主结构体
 pub struct App {
+    /// 配置管理器
+    config: ConfigManager,
     /// 截图管理器
     screenshot: ScreenshotManager,
     /// 绘图管理器
@@ -29,16 +33,23 @@ impl App {
     pub fn new(
         platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
     ) -> AppResult<Self> {
+        // 初始化配置管理器（仅加载一次配置文件）
+        let config = ConfigManager::new();
+        
+        // 获取共享的配置引用，供子模块使用
+        let shared_settings = config.get_shared();
+        
         let screenshot = ScreenshotManager::new()?;
         
         // 缓存屏幕尺寸，避免重复调用系统API
         let screen_size = crate::platform::windows::system::get_screen_size();
 
         Ok(Self {
+            config,
             screenshot,
-            drawing: DrawingManager::new()?,
+            drawing: DrawingManager::new(std::sync::Arc::clone(&shared_settings))?,
             ui: UIManager::new()?,
-            system: SystemManager::new()?,
+            system: SystemManager::new(shared_settings)?,
             platform,
             screen_size,
         })
@@ -181,9 +192,17 @@ impl App {
 
     /// 重新加载设置
     pub fn reload_settings(&mut self) -> Vec<Command> {
+        // 重新加载配置
+        self.config.reload();
+        
         self.system.reload_settings();
         self.drawing.reload_drawing_properties();
         vec![Command::UpdateToolbar, Command::RequestRedraw]
+    }
+    
+    /// 获取配置管理器引用
+    pub fn config(&self) -> &ConfigManager {
+        &self.config
     }
 
     /// 重新注册热键
@@ -631,6 +650,118 @@ impl App {
         self.system.ocr_is_available()
     }
     
+    /// 统一处理窗口消息
+    /// 返回 Some(LRESULT) 表示消息已处理，None 表示需要默认处理
+    pub fn handle_window_message(
+        &mut self,
+        hwnd: windows::Win32::Foundation::HWND,
+        msg: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+    ) -> Option<windows::Win32::Foundation::LRESULT> {
+        use crate::constants::*;
+        use crate::utils::win_api;
+        use windows::Win32::Foundation::LRESULT;
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        match msg {
+            WM_CLOSE => {
+                if !win_api::is_window_visible(hwnd) {
+                    let _ = win_api::destroy_window(hwnd);
+                } else {
+                    self.reset_to_initial_state();
+                    let _ = win_api::hide_window(hwnd);
+                }
+                Some(LRESULT(0))
+            }
+
+            WM_PAINT => {
+                if let Err(e) = self.paint(hwnd) {
+                    eprintln!("Paint failed: {e}");
+                }
+                Some(LRESULT(0))
+            }
+
+            WM_MOUSEMOVE => {
+                let (x, y) = crate::utils::extract_mouse_coords(lparam);
+                let commands = self.handle_mouse_move(x, y);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            WM_LBUTTONDOWN => {
+                let (x, y) = crate::utils::extract_mouse_coords(lparam);
+                let commands = self.handle_mouse_down(x, y);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            WM_LBUTTONUP => {
+                let (x, y) = crate::utils::extract_mouse_coords(lparam);
+                let commands = self.handle_mouse_up(x, y);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            WM_LBUTTONDBLCLK => {
+                let (x, y) = crate::utils::extract_mouse_coords(lparam);
+                let commands = self.handle_double_click(x, y);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            WM_CHAR => {
+                if let Some(character) = char::from_u32(wparam.0 as u32) {
+                    if !character.is_control() || character == ' ' || character == '\t' {
+                        let commands = self.handle_text_input(character);
+                        self.execute_command_chain(commands, hwnd);
+                    }
+                }
+                Some(LRESULT(0))
+            }
+
+            WM_SETCURSOR => Some(LRESULT(1)),
+
+            WM_KEYDOWN => {
+                let commands = self.handle_key_input(wparam.0 as u32);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            val if val == WM_TRAY_MESSAGE => {
+                let commands = self.handle_tray_message(wparam.0 as u32, lparam.0 as u32);
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            val if val == WM_HIDE_WINDOW_CUSTOM => {
+                self.stop_ocr_engine_async();
+                let _ = win_api::hide_window(hwnd);
+                Some(LRESULT(0))
+            }
+
+            val if val == WM_RELOAD_SETTINGS => {
+                let commands = self.reload_settings();
+                self.execute_command_chain(commands, hwnd);
+                let _ = self.reregister_hotkey(hwnd);
+                Some(LRESULT(0))
+            }
+
+            val if val == WM_OCR_STATUS_UPDATE => {
+                let available = wparam.0 != 0;
+                self.update_ocr_engine_status(available, hwnd);
+                let commands = vec![
+                    crate::message::Command::UpdateToolbar,
+                    crate::message::Command::RequestRedraw,
+                ];
+                self.execute_command_chain(commands, hwnd);
+                Some(LRESULT(0))
+            }
+
+            _ => None, // 返回 None 让调用者使用 DefWindowProcW
+        }
+    }
+
     /// 处理OCR完成消息
     /// 返回: (has_results, is_ocr_failed, ocr_text)
     pub fn handle_ocr_completed(
