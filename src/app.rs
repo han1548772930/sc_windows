@@ -8,14 +8,17 @@ use crate::event_handler::{
 use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
 use crate::screenshot::ScreenshotManager;
+use crate::state::{AppStateHandler, StateContext, StateTransition, create_state};
 use crate::system::SystemManager;
 use crate::types::{AppState, DrawingTool, ProcessingOperation};
 use crate::ui::UIManager;
 
 /// 应用程序主结构体
 pub struct App {
-    /// 应用状态机
+    /// 应用状态机（保留用于状态查询）
     state: AppState,
+    /// 当前状态处理器
+    current_state: Box<dyn AppStateHandler>,
     /// 配置管理器
     config: ConfigManager,
     /// 截图管理器
@@ -47,8 +50,12 @@ impl App {
         // 缓存屏幕尺寸，避免重复调用系统API
         let screen_size = crate::platform::windows::system::get_screen_size();
 
+        let state = AppState::Idle;
+        let current_state = create_state(&state);
+        
         Ok(Self {
-            state: AppState::Idle,
+            state,
+            current_state,
             config,
             screenshot,
             drawing: DrawingManager::new(std::sync::Arc::clone(&shared_settings))?,
@@ -66,10 +73,7 @@ impl App {
 
     /// 重置到初始状态
     pub fn reset_to_initial_state(&mut self) {
-        self.state = AppState::Idle;
-        self.screenshot.reset_state();
-        self.drawing.reset_state();
-        self.ui.reset_state();
+        self.apply_transition(StateTransition::ToIdle);
     }
 
     // ========== 状态机方法 ==========
@@ -77,6 +81,23 @@ impl App {
     /// 获取当前应用状态
     pub fn get_state(&self) -> &AppState {
         &self.state
+    }
+
+    /// 应用状态转换
+    fn apply_transition(&mut self, transition: StateTransition) {
+        let new_state = match transition {
+            StateTransition::None => return,
+            StateTransition::ToIdle => AppState::Idle,
+            StateTransition::ToSelecting { start_x, start_y } => AppState::Selecting {
+                start_x,
+                start_y,
+                current_x: start_x,
+                current_y: start_y,
+            },
+            StateTransition::ToEditing { selection, tool } => AppState::Editing { selection, tool },
+            StateTransition::ToProcessing { operation } => AppState::Processing { operation },
+        };
+        self.transition_to(new_state);
     }
 
     /// 状态转换
@@ -87,28 +108,31 @@ impl App {
         #[cfg(debug_assertions)]
         eprintln!("State transition: {:?} -> {:?}", self.state, new_state);
 
-        // 根据新状态执行进入逻辑
-        match &new_state {
-            AppState::Idle => {
-                // 进入空闲状态时重置各管理器
-                self.screenshot.reset_state();
-                self.drawing.reset_state();
-                self.ui.reset_state();
-            }
-            AppState::Selecting { .. } => {
-                // 进入框选状态
-            }
-            AppState::Editing { selection, tool } => {
-                // 进入编辑状态，更新选择区域和工具
-                self.screenshot.update_selection(*selection);
-                self.drawing.set_current_tool(*tool);
-            }
-            AppState::Processing { .. } => {
-                // 进入处理中状态
-            }
+        // 调用旧状态的 on_exit
+        {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.on_exit(&mut ctx);
         }
 
-        self.state = new_state;
+        // 更新状态
+        self.state = new_state.clone();
+        self.current_state = create_state(&new_state);
+
+        // 调用新状态的 on_enter
+        {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.on_enter(&mut ctx);
+        }
     }
 
     /// 进入编辑状态（便捷方法）
@@ -300,39 +324,26 @@ impl App {
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
         use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 
-        // ESC键在任何状态下都可以退出
+        // ESC键在任何状态下都可以退出（保持在App层处理）
         if key == VK_ESCAPE.0 as u32 {
             self.reset_to_initial_state();
             return vec![Command::HideWindow];
         }
 
-        // 其他按键根据状态处理
-        match self.state {
-            AppState::Idle => {
-                // 空闲状态下只处理系统按键
-                self.system.handle_key_input(key)
-            }
-            AppState::Selecting { .. } => {
-                // 框选状态下不处理其他按键
-                vec![]
-            }
-            AppState::Editing { .. } => {
-                // 编辑状态下传递给各个管理器处理
-                let mut commands = Vec::new();
-                commands.extend(self.system.handle_key_input(key));
-                if commands.is_empty() {
-                    commands.extend(self.drawing.handle_key_input(key));
-                }
-                if commands.is_empty() {
-                    commands.extend(self.ui.handle_key_input(key));
-                }
-                commands
-            }
-            AppState::Processing { .. } => {
-                // 处理中状态不处理按键
-                vec![]
-            }
-        }
+        // 其他按键委托给当前状态处理器
+        let (commands, transition) = {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.handle_key_input(key, &mut ctx)
+        };
+        
+        // 应用状态转换
+        self.apply_transition(transition);
+        commands
     }
 
     /// 选择绘图工具
@@ -353,45 +364,19 @@ impl App {
 
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
-        let mut commands = Vec::new();
-
-        match self.state {
-            AppState::Idle => {
-                // 空闲状态也要处理鼠标移动（自动高亮等）
-                let (s_cmds, _consumed) = self.screenshot.handle_mouse_move(x, y);
-                commands.extend(s_cmds);
-            }
-            AppState::Selecting { start_x, start_y, .. } => {
-                // 同步当前点并更新框选
-                self.state = AppState::Selecting {
-                    start_x,
-                    start_y,
-                    current_x: x,
-                    current_y: y,
-                };
-                let (s_cmds, _consumed) = self.screenshot.handle_mouse_move(x, y);
-                commands.extend(s_cmds);
-            }
-            AppState::Editing { .. } => {
-                // UI -> Drawing -> Screenshot
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_move(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let selection_rect = self.screenshot.get_selection();
-                    let (drawing_commands, drawing_consumed) =
-                        self.drawing.handle_mouse_move(x, y, selection_rect);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed && !self.drawing.is_dragging() {
-                        let (screenshot_commands, _screenshot_consumed) =
-                            self.screenshot.handle_mouse_move(x, y);
-                        commands.extend(screenshot_commands);
-                    }
-                }
-            }
-            AppState::Processing { .. } => {}
-        }
+        // 委托给当前状态处理器
+        let (commands, _consumed, transition) = {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.handle_mouse_move(x, y, &mut ctx)
+        };
+        
+        // 应用状态转换
+        self.apply_transition(transition);
 
         // 统一设置鼠标指针（保持原逻辑）
         let cursor_id = {
@@ -444,125 +429,68 @@ impl App {
 
     /// 处理鼠标按下
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
-        match self.state {
-            AppState::Idle => {
-                // 从空闲进入框选状态
-                let (cmds, consumed) = self.screenshot.handle_mouse_down(x, y);
-                if consumed || self.screenshot.has_screenshot() {
-                    self.state = AppState::Selecting {
-                        start_x: x,
-                        start_y: y,
-                        current_x: x,
-                        current_y: y,
-                    };
-                }
-                cmds
-            }
-            AppState::Selecting { .. } => {
-                let (cmds, _consumed) = self.screenshot.handle_mouse_down(x, y);
-                cmds
-            }
-            AppState::Editing { .. } => {
-                let mut commands = Vec::new();
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_down(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let selection_rect = self.screenshot.get_selection();
-                    let (drawing_commands, drawing_consumed) =
-                        self.drawing.handle_mouse_down(x, y, selection_rect);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed {
-                        let (screenshot_commands, screenshot_consumed) =
-                            self.screenshot.handle_mouse_down(x, y);
-                        commands.extend(screenshot_commands);
-
-                        if !screenshot_consumed {
-                            commands.extend(
-                                self.drawing
-                                    .handle_message(crate::message::DrawingMessage::SelectElement(None)),
-                            );
-                        }
-                    }
-                }
-                commands
-            }
-            AppState::Processing { .. } => vec![],
-        }
+        // 委托给当前状态处理器
+        let (commands, _consumed, transition) = {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.handle_mouse_down(x, y, &mut ctx)
+        };
+        
+        // 应用状态转换
+        self.apply_transition(transition);
+        commands
     }
 
     /// 处理鼠标释放
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
-        match self.state {
-            AppState::Selecting { .. } => {
-                let (cmds, _consumed) = self.screenshot.handle_mouse_up(x, y);
-                if let Some(sel) = self.screenshot.get_selection() {
-                    self.enter_editing_state(sel);
-                } else {
-                    self.state = AppState::Idle;
-                }
-                cmds
-            }
-            AppState::Editing { .. } => {
-                let mut commands = Vec::new();
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_up(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let (drawing_commands, drawing_consumed) = self.drawing.handle_mouse_up(x, y);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed {
-                        let (screenshot_commands, _screenshot_consumed) =
-                            self.screenshot.handle_mouse_up(x, y);
-                        commands.extend(screenshot_commands);
-                    }
-                }
-                commands
-            }
-            _ => vec![],
-        }
+        // 委托给当前状态处理器
+        let (commands, _consumed, transition) = {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.handle_mouse_up(x, y, &mut ctx)
+        };
+        
+        // 应用状态转换
+        self.apply_transition(transition);
+        commands
     }
 
     /// 处理双击事件
     pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
-        match self.state {
-            AppState::Editing { .. } => {
-                let mut commands = Vec::new();
-
-                // UI层优先处理
-                commands.extend(self.ui.handle_double_click(x, y));
-
-                if commands.is_empty() {
-                    let selection_rect = self.screenshot.get_selection();
-                    // 优先让Drawing处理（双击文本进入编辑）
-                    let dcmds = self
-                        .drawing
-                        .handle_double_click(x, y, selection_rect.as_ref());
-                    if dcmds.is_empty() {
-                        // 若未消费，再交给Screenshot（双击确认选择保存）
-                        commands.extend(self.screenshot.handle_double_click(x, y));
-                    } else {
-                        commands.extend(dcmds);
-                    }
-                }
-                commands
-            }
-            // 其他状态不处理双击
-            _ => vec![],
-        }
+        // 委托给当前状态处理器
+        let (commands, transition) = {
+            let mut ctx = StateContext {
+                screenshot: &mut self.screenshot,
+                drawing: &mut self.drawing,
+                ui: &mut self.ui,
+                system: &mut self.system,
+            };
+            self.current_state.handle_double_click(x, y, &mut ctx)
+        };
+        
+        // 应用状态转换
+        self.apply_transition(transition);
+        commands
     }
 
     /// 处理文本输入
     pub fn handle_text_input(&mut self, character: char) -> Vec<Command> {
-        // 只在编辑状态下处理文本输入
-        if !matches!(self.state, AppState::Editing { .. }) {
-            return vec![];
-        }
-
-        // 文本输入主要由绘图管理器处理（文本工具）
-        self.drawing.handle_text_input(character)
+        // 委托给当前状态处理器
+        let mut ctx = StateContext {
+            screenshot: &mut self.screenshot,
+            drawing: &mut self.drawing,
+            ui: &mut self.ui,
+            system: &mut self.system,
+        };
+        self.current_state.handle_text_input(character, &mut ctx)
     }
 
     /// 处理托盘消息

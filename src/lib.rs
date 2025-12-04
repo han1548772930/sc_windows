@@ -10,6 +10,7 @@ pub mod message;
 pub mod ocr;
 pub mod preview_window;
 pub mod platform;
+pub mod state;
 
 pub mod interaction;
 pub mod screenshot;

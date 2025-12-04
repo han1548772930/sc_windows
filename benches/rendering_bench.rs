@@ -52,7 +52,7 @@ fn bench_bounding_rect(c: &mut Criterion) {
                 }
                 b.iter(|| {
                     element.update_bounding_rect();
-                    black_box(&element.rect)
+                    black_box(element.rect)
                 });
             },
         );
@@ -65,7 +65,7 @@ fn bench_bounding_rect(c: &mut Criterion) {
         element.points.push(POINT { x: 100, y: 100 });
         b.iter(|| {
             element.update_bounding_rect();
-            black_box(&element.rect)
+            black_box(element.rect)
         });
     });
 
