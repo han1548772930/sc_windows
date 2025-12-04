@@ -2,7 +2,7 @@
 //!
 //! 处理用户在已选择区域上进行绘图编辑时的事件
 
-use super::{AppStateHandler, StateContext, StateTransition};
+use super::{AppStateHandler, EditingContext, StateContext, StateTransition};
 use crate::message::{Command, DrawingMessage};
 use crate::types::DrawingTool;
 use windows::Win32::Foundation::RECT;
@@ -19,6 +19,23 @@ impl EditingState {
     pub fn new(selection: RECT, tool: DrawingTool) -> Self {
         Self { selection, tool }
     }
+
+    /// 创建 EditingContext 进行实际操作
+    fn with_editing_context<'a, F, R>(
+        &mut self,
+        ctx: &'a mut StateContext<'_>,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce(&mut Self, &mut EditingContext<'a>) -> R,
+    {
+        let mut editing_ctx = EditingContext::from_state_context(
+            ctx.screenshot,
+            ctx.drawing,
+            ctx.ui,
+        );
+        f(self, &mut editing_ctx)
+    }
 }
 
 impl AppStateHandler for EditingState {
@@ -32,26 +49,29 @@ impl AppStateHandler for EditingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        let mut commands = Vec::new();
+        // 使用细粒度上下文，明确表明只需 screenshot、drawing 和 ui
+        self.with_editing_context(ctx, |_state, editing_ctx| {
+            let mut commands = Vec::new();
 
-        // UI -> Drawing -> Screenshot 的处理顺序
-        let (ui_commands, ui_consumed) = ctx.ui.handle_mouse_move(x, y);
-        commands.extend(ui_commands);
+            // UI -> Drawing -> Screenshot 的处理顺序
+            let (ui_commands, ui_consumed) = editing_ctx.ui.handle_mouse_move(x, y);
+            commands.extend(ui_commands);
 
-        if !ui_consumed {
-            let selection_rect = ctx.screenshot.get_selection();
-            let (drawing_commands, drawing_consumed) =
-                ctx.drawing.handle_mouse_move(x, y, selection_rect);
-            commands.extend(drawing_commands);
+            if !ui_consumed {
+                let selection_rect = editing_ctx.screenshot.get_selection();
+                let (drawing_commands, drawing_consumed) =
+                    editing_ctx.drawing.handle_mouse_move(x, y, selection_rect);
+                commands.extend(drawing_commands);
 
-            if !drawing_consumed && !ctx.drawing.is_dragging() {
-                let (screenshot_commands, _screenshot_consumed) =
-                    ctx.screenshot.handle_mouse_move(x, y);
-                commands.extend(screenshot_commands);
+                if !drawing_consumed && !editing_ctx.drawing.is_dragging() {
+                    let (screenshot_commands, _screenshot_consumed) =
+                        editing_ctx.screenshot.handle_mouse_move(x, y);
+                    commands.extend(screenshot_commands);
+                }
             }
-        }
 
-        (commands, true, StateTransition::None)
+            (commands, true, StateTransition::None)
+        })
     }
 
     fn handle_mouse_down(
@@ -60,32 +80,34 @@ impl AppStateHandler for EditingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        let mut commands = Vec::new();
+        self.with_editing_context(ctx, |_state, editing_ctx| {
+            let mut commands = Vec::new();
 
-        let (ui_commands, ui_consumed) = ctx.ui.handle_mouse_down(x, y);
-        commands.extend(ui_commands);
+            let (ui_commands, ui_consumed) = editing_ctx.ui.handle_mouse_down(x, y);
+            commands.extend(ui_commands);
 
-        if !ui_consumed {
-            let selection_rect = ctx.screenshot.get_selection();
-            let (drawing_commands, drawing_consumed) =
-                ctx.drawing.handle_mouse_down(x, y, selection_rect);
-            commands.extend(drawing_commands);
+            if !ui_consumed {
+                let selection_rect = editing_ctx.screenshot.get_selection();
+                let (drawing_commands, drawing_consumed) =
+                    editing_ctx.drawing.handle_mouse_down(x, y, selection_rect);
+                commands.extend(drawing_commands);
 
-            if !drawing_consumed {
-                let (screenshot_commands, screenshot_consumed) =
-                    ctx.screenshot.handle_mouse_down(x, y);
-                commands.extend(screenshot_commands);
+                if !drawing_consumed {
+                    let (screenshot_commands, screenshot_consumed) =
+                        editing_ctx.screenshot.handle_mouse_down(x, y);
+                    commands.extend(screenshot_commands);
 
-                if !screenshot_consumed {
-                    commands.extend(
-                        ctx.drawing
-                            .handle_message(DrawingMessage::SelectElement(None)),
-                    );
+                    if !screenshot_consumed {
+                        commands.extend(
+                            editing_ctx.drawing
+                                .handle_message(DrawingMessage::SelectElement(None)),
+                        );
+                    }
                 }
             }
-        }
 
-        (commands, true, StateTransition::None)
+            (commands, true, StateTransition::None)
+        })
     }
 
     fn handle_mouse_up(
@@ -94,23 +116,25 @@ impl AppStateHandler for EditingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        let mut commands = Vec::new();
+        self.with_editing_context(ctx, |_state, editing_ctx| {
+            let mut commands = Vec::new();
 
-        let (ui_commands, ui_consumed) = ctx.ui.handle_mouse_up(x, y);
-        commands.extend(ui_commands);
+            let (ui_commands, ui_consumed) = editing_ctx.ui.handle_mouse_up(x, y);
+            commands.extend(ui_commands);
 
-        if !ui_consumed {
-            let (drawing_commands, drawing_consumed) = ctx.drawing.handle_mouse_up(x, y);
-            commands.extend(drawing_commands);
+            if !ui_consumed {
+                let (drawing_commands, drawing_consumed) = editing_ctx.drawing.handle_mouse_up(x, y);
+                commands.extend(drawing_commands);
 
-            if !drawing_consumed {
-                let (screenshot_commands, _screenshot_consumed) =
-                    ctx.screenshot.handle_mouse_up(x, y);
-                commands.extend(screenshot_commands);
+                if !drawing_consumed {
+                    let (screenshot_commands, _screenshot_consumed) =
+                        editing_ctx.screenshot.handle_mouse_up(x, y);
+                    commands.extend(screenshot_commands);
+                }
             }
-        }
 
-        (commands, true, StateTransition::None)
+            (commands, true, StateTransition::None)
+        })
     }
 
     fn handle_double_click(
@@ -119,26 +143,28 @@ impl AppStateHandler for EditingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, StateTransition) {
-        let mut commands = Vec::new();
+        self.with_editing_context(ctx, |_state, editing_ctx| {
+            let mut commands = Vec::new();
 
-        // UI层优先处理
-        commands.extend(ctx.ui.handle_double_click(x, y));
+            // UI层优先处理
+            commands.extend(editing_ctx.ui.handle_double_click(x, y));
 
-        if commands.is_empty() {
-            let selection_rect = ctx.screenshot.get_selection();
-            // 优先让Drawing处理（双击文本进入编辑）
-            let dcmds = ctx
-                .drawing
-                .handle_double_click(x, y, selection_rect.as_ref());
-            if dcmds.is_empty() {
-                // 若未消费，再交给Screenshot（双击确认选择保存）
-                commands.extend(ctx.screenshot.handle_double_click(x, y));
-            } else {
-                commands.extend(dcmds);
+            if commands.is_empty() {
+                let selection_rect = editing_ctx.screenshot.get_selection();
+                // 优先让Drawing处理（双击文本进入编辑）
+                let dcmds = editing_ctx
+                    .drawing
+                    .handle_double_click(x, y, selection_rect.as_ref());
+                if dcmds.is_empty() {
+                    // 若未消费，再交给Screenshot（双击确认选择保存）
+                    commands.extend(editing_ctx.screenshot.handle_double_click(x, y));
+                } else {
+                    commands.extend(dcmds);
+                }
             }
-        }
 
-        (commands, StateTransition::None)
+            (commands, StateTransition::None)
+        })
     }
 
     fn handle_key_input(

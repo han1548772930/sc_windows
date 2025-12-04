@@ -8,6 +8,7 @@ pub mod file_dialog;
 pub mod message;
 pub mod ocr;
 pub mod platform;
+pub mod rendering;
 pub mod state;
 
 pub mod interaction;

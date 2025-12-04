@@ -160,7 +160,7 @@ unsafe extern "system" fn window_proc(
             // OCR 完成、热键、定时器等需要特殊处理的消息
             val if val == WM_OCR_COMPLETED => {
                 if let Some(app) = get_app_state(hwnd) {
-                    let data_ptr = lparam.0 as *mut sc_windows::system::ocr::OcrCompletionData;
+let data_ptr = lparam.0 as *mut sc_windows::ocr::OcrCompletionData;
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
                         

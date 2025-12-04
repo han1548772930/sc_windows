@@ -95,6 +95,25 @@ pub enum DialogType {
     About,
 }
 
+// ========== 命令分类辅助类型 ==========
+
+/// 命令类别
+///
+/// 用于对命令进行分类，以便不同的处理器可以只处理自己关心的命令类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCategory {
+    /// 系统级命令（窗口控制、重绘、退出等）
+    System,
+    /// UI 相关命令（工具栏、对话框等）
+    UI,
+    /// 绘图相关命令（工具选择、撤销等）
+    Drawing,
+    /// 截图相关命令（保存、复制、OCR 等）
+    Screenshot,
+    /// 无操作
+    None,
+}
+
 /// 命令枚举，用于指示需要执行的操作
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -146,4 +165,69 @@ pub enum Command {
     Drawing(DrawingMessage),
     /// 无操作
     None,
+}
+
+impl Command {
+    /// 获取命令的类别
+    pub fn category(&self) -> CommandCategory {
+        match self {
+            // 系统级命令
+            Command::RequestRedraw
+            | Command::RequestRedrawRect(_)
+            | Command::ShowOverlay
+            | Command::HideOverlay
+            | Command::HideWindow
+            | Command::Quit
+            | Command::ShowError(_)
+            | Command::StartTimer(_, _)
+            | Command::StopTimer(_)
+            | Command::ResetToInitialState
+            | Command::ReloadSettings => CommandCategory::System,
+
+            // UI 相关命令
+            Command::UpdateToolbar
+            | Command::ShowSaveDialog
+            | Command::ShowSettings
+            | Command::UI(_) => CommandCategory::UI,
+
+            // 绘图相关命令
+            Command::SelectDrawingTool(_) | Command::Drawing(_) => CommandCategory::Drawing,
+
+            // 截图相关命令
+            Command::TakeScreenshot
+            | Command::CopyToClipboard
+            | Command::SaveSelectionToFile
+            | Command::SaveSelectionToClipboard
+            | Command::PinSelection
+            | Command::ExtractText => CommandCategory::Screenshot,
+
+            // 无操作
+            Command::None => CommandCategory::None,
+        }
+    }
+
+    /// 检查是否是系统级命令
+    pub fn is_system(&self) -> bool {
+        self.category() == CommandCategory::System
+    }
+
+    /// 检查是否是 UI 相关命令
+    pub fn is_ui(&self) -> bool {
+        self.category() == CommandCategory::UI
+    }
+
+    /// 检查是否是绘图相关命令
+    pub fn is_drawing(&self) -> bool {
+        self.category() == CommandCategory::Drawing
+    }
+
+    /// 检查是否是截图相关命令
+    pub fn is_screenshot(&self) -> bool {
+        self.category() == CommandCategory::Screenshot
+    }
+
+    /// 检查是否是无操作命令
+    pub fn is_none(&self) -> bool {
+        matches!(self, Command::None)
+    }
 }

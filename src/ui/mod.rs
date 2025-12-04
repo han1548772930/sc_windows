@@ -10,6 +10,7 @@
 
 use crate::message::{Command, UIMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
+use crate::rendering::{RenderItem, RenderList, z_order};
 
 pub mod cursor;
 pub mod preview;
@@ -111,6 +112,8 @@ impl UIManager {
 
     /// 渲染选区相关的UI元素（遮罩、边框、手柄）
     ///
+    /// 使用 RenderList 收集渲染图元，按 z_order 排序后统一绘制。
+    ///
     /// # 参数
     /// * `renderer` - 平台渲染器
     /// * `screen_size` - 屏幕尺寸 (width, height)
@@ -132,90 +135,103 @@ impl UIManager {
             return Ok(());
         }
 
-        // 如果有选择区域，绘制遮罩、边框和手柄
-        if let Some(selection_rect) = selection_rect {
-            use crate::platform::traits::{Color, Rectangle};
+        // 如果没有选择区域，直接返回
+        let Some(selection_rect) = selection_rect else {
+            return Ok(());
+        };
 
-            // 绘制选择区域遮罩
-            let screen_rect = Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: screen_size.0 as f32,
-                height: screen_size.1 as f32,
-            };
-            let selection_rect_platform = Rectangle {
-                x: selection_rect.left as f32,
-                y: selection_rect.top as f32,
-                width: (selection_rect.right - selection_rect.left) as f32,
-                height: (selection_rect.bottom - selection_rect.top) as f32,
-            };
-            let mask_color = Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.6,
-            };
+        use crate::platform::traits::{Color, Rectangle};
 
-            renderer
-                .draw_selection_mask(screen_rect, selection_rect_platform, mask_color)
-                .map_err(|e| UIError::RenderError(format!("draw selection mask failed: {e}")))?;
+        // 创建渲染列表
+        let mut render_list = RenderList::with_capacity(4);
 
-            // 绘制选择框边框
-            if has_auto_highlight {
-                let color = Color {
+        // 准备矩形数据
+        let screen_rect = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: screen_size.0 as f32,
+            height: screen_size.1 as f32,
+        };
+        let selection_rect_platform = Rectangle {
+            x: selection_rect.left as f32,
+            y: selection_rect.top as f32,
+            width: (selection_rect.right - selection_rect.left) as f32,
+            height: (selection_rect.bottom - selection_rect.top) as f32,
+        };
+
+        // 1. 提交选择区域遮罩
+        let mask_color = Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.6,
+        };
+        render_list.submit(RenderItem::SelectionMask {
+            screen_rect,
+            selection_rect: selection_rect_platform,
+            mask_color,
+            z_order: z_order::MASK,
+        });
+
+        // 2. 提交选择框边框
+        let (border_color, border_width) = if has_auto_highlight {
+            (
+                Color {
                     r: 1.0,
                     g: 0.2,
                     b: 0.2,
                     a: 1.0,
-                };
-                renderer
-                    .draw_selection_border(selection_rect_platform, color, 3.0, None)
-                    .map_err(|e| {
-                        UIError::RenderError(format!("draw auto-highlight border failed: {e}"))
-                    })?;
-            } else {
-                let c = &crate::constants::COLOR_SELECTION_BORDER;
-                let color = Color {
+                },
+                3.0,
+            )
+        } else {
+            let c = &crate::constants::COLOR_SELECTION_BORDER;
+            (
+                Color {
                     r: c.r,
                     g: c.g,
                     b: c.b,
                     a: c.a,
-                };
-                renderer
-                    .draw_selection_border(selection_rect_platform, color, 2.0, None)
-                    .map_err(|e| {
-                        UIError::RenderError(format!("draw selection border failed: {e}"))
-                    })?;
-            }
+                },
+                2.0,
+            )
+        };
+        render_list.submit(RenderItem::SelectionBorder {
+            rect: selection_rect_platform,
+            color: border_color,
+            width: border_width,
+            dash_pattern: None,
+            z_order: z_order::SELECTION_BORDER,
+        });
 
-            // 绘制选择框手柄（如果需要显示）
-            if show_handles {
-                let fill_color = Color {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                };
-                let border_color = Color {
-                    r: 0.0,
-                    g: 0.47,
-                    b: 0.84,
-                    a: 1.0,
-                };
-
-                renderer
-                    .draw_selection_handles(
-                        selection_rect_platform,
-                        crate::constants::HANDLE_SIZE,
-                        fill_color,
-                        border_color,
-                        1.0,
-                    )
-                    .map_err(|e| {
-                        UIError::RenderError(format!("draw selection handles failed: {e}"))
-                    })?;
-            }
+        // 3. 提交选择框手柄（如果需要显示）
+        if show_handles {
+            let fill_color = Color {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
+            let handle_border_color = Color {
+                r: 0.0,
+                g: 0.47,
+                b: 0.84,
+                a: 1.0,
+            };
+            render_list.submit(RenderItem::SelectionHandles {
+                rect: selection_rect_platform,
+                handle_size: crate::constants::HANDLE_SIZE,
+                fill_color,
+                border_color: handle_border_color,
+                border_width: 1.0,
+                z_order: z_order::SELECTION_HANDLES,
+            });
         }
+
+        // 执行渲染列表（按 z_order 排序后统一绘制）
+        render_list
+            .execute(renderer)
+            .map_err(|e| UIError::RenderError(format!("render list execute failed: {e}")))?;
 
         Ok(())
     }

@@ -668,3 +668,14 @@ impl ScreenshotManager {
         self.selection.get_handle_at_position(x, y)
     }
 }
+
+impl ScreenshotManager {
+    /// 获取选区图像数据（用于前置条件检查）
+    pub fn get_selection_image(&self) -> Option<Vec<u8>> {
+        if self.has_selection() && self.has_screenshot() {
+            self.current_screenshot.as_ref().map(|s| s.data.clone())
+        } else {
+            None
+        }
+    }
+}

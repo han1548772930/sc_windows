@@ -35,6 +35,80 @@ pub struct StateContext<'a> {
     pub system: &'a mut SystemManager,
 }
 
+// ========== 细粒度上下文类型 ==========
+
+/// 空闲状态上下文
+/// 
+/// IdleState 只需要访问系统管理器（托盘消息等）
+pub struct IdleContext<'a> {
+    pub system: &'a mut SystemManager,
+}
+
+impl<'a> From<&'a mut StateContext<'a>> for IdleContext<'a> {
+    fn from(ctx: &'a mut StateContext<'a>) -> Self {
+        IdleContext {
+            system: ctx.system,
+        }
+    }
+}
+
+/// 框选状态上下文
+/// 
+/// SelectingState 只需要访问截图和 UI 管理器
+pub struct SelectingContext<'a> {
+    pub screenshot: &'a mut ScreenshotManager,
+    pub ui: &'a mut UIManager,
+}
+
+impl<'a> SelectingContext<'a> {
+    /// 从 StateContext 创建 SelectingContext
+    pub fn from_state_context(screenshot: &'a mut ScreenshotManager, ui: &'a mut UIManager) -> Self {
+        SelectingContext { screenshot, ui }
+    }
+}
+
+/// 编辑状态上下文
+/// 
+/// EditingState 需要访问截图、绘图和 UI 管理器
+pub struct EditingContext<'a> {
+    pub screenshot: &'a mut ScreenshotManager,
+    pub drawing: &'a mut DrawingManager,
+    pub ui: &'a mut UIManager,
+}
+
+impl<'a> EditingContext<'a> {
+    /// 从 StateContext 创建 EditingContext
+    pub fn from_state_context(
+        screenshot: &'a mut ScreenshotManager,
+        drawing: &'a mut DrawingManager,
+        ui: &'a mut UIManager,
+    ) -> Self {
+        EditingContext {
+            screenshot,
+            drawing,
+            ui,
+        }
+    }
+}
+
+/// 处理中状态上下文
+/// 
+/// ProcessingState 需要访问截图和系统管理器（OCR 等）
+pub struct ProcessingContext<'a> {
+    pub screenshot: &'a mut ScreenshotManager,
+    pub system: &'a mut SystemManager,
+}
+
+impl<'a> ProcessingContext<'a> {
+    /// 从 StateContext 创建 ProcessingContext
+    pub fn from_state_context(
+        screenshot: &'a mut ScreenshotManager,
+        system: &'a mut SystemManager,
+    ) -> Self {
+        ProcessingContext { screenshot, system }
+    }
+}
+
 /// 状态转换请求
 /// 
 /// 状态处理器返回此枚举来请求状态转换

@@ -1,3 +1,7 @@
+//! PaddleOCR 引擎封装
+//!
+//! 提供 OCR 引擎的启动、停止、识别等功能。
+
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use paddleocr::{ImageData, Ppocr};
@@ -11,27 +15,10 @@ use std::os::windows::process::CommandExt;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 
-// 简化版本：只使用本地路径访问
+use super::types::{BoundingBox, OcrResult};
 
 // 当前活跃的OCR引擎（按需启动和关闭）
 static CURRENT_OCR_ENGINE: OnceLock<Mutex<Option<Ppocr>>> = OnceLock::new();
-
-/// OCR 结果结构体，包含识别的文本和坐标信息
-#[derive(Debug, Clone)]
-pub struct OcrResult {
-    pub text: String,
-    pub confidence: f32,
-    pub bounding_box: BoundingBox,
-}
-
-/// 边界框结构体，表示文本在图像中的位置
-#[derive(Debug, Clone)]
-pub struct BoundingBox {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
 
 /// PaddleOCR 引擎，使用全局单例避免重复启动进程
 pub struct PaddleOcrEngine;

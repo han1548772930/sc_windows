@@ -1,5 +1,4 @@
 use crate::command_executor::CommandExecutor;
-use crate::settings::ConfigManager;
 use crate::drawing::DrawingManager;
 use crate::error::{AppError, AppResult};
 use crate::event_handler::{
@@ -7,7 +6,9 @@ use crate::event_handler::{
 };
 use crate::message::{Command, Message, ScreenshotMessage};
 use crate::platform::{PlatformError, PlatformRenderer};
+use crate::rendering::DirtyRectTracker;
 use crate::screenshot::ScreenshotManager;
+use crate::settings::ConfigManager;
 use crate::state::{AppStateHandler, StateContext, StateTransition, create_state};
 use crate::system::SystemManager;
 use crate::types::{AppState, DrawingTool, ProcessingOperation};
@@ -33,6 +34,8 @@ pub struct App {
     platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
     /// 缓存的屏幕尺寸 (宽度, 高度)
     screen_size: (i32, i32),
+    /// 脏矩形追踪器（用于渲染优化）
+    dirty_tracker: DirtyRectTracker,
 }
 
 impl App {
@@ -41,18 +44,21 @@ impl App {
     ) -> AppResult<Self> {
         // 初始化配置管理器（仅加载一次配置文件）
         let config = ConfigManager::new();
-        
+
         // 获取共享的配置引用，供子模块使用
         let shared_settings = config.get_shared();
-        
+
         let screenshot = ScreenshotManager::new()?;
-        
+
         // 缓存屏幕尺寸，避免重复调用系统API
         let screen_size = crate::platform::windows::system::get_screen_size();
 
         let state = AppState::Idle;
         let current_state = create_state(&state);
-        
+
+        // 初始化脏矩形追踪器
+        let dirty_tracker = DirtyRectTracker::new(screen_size.0 as f32, screen_size.1 as f32);
+
         Ok(Self {
             state,
             current_state,
@@ -63,9 +69,10 @@ impl App {
             system: SystemManager::new(shared_settings)?,
             platform,
             screen_size,
+            dirty_tracker,
         })
     }
-    
+
     /// 获取缓存的屏幕尺寸
     pub fn get_screen_size(&self) -> (i32, i32) {
         self.screen_size
@@ -104,6 +111,9 @@ impl App {
     ///
     /// 将应用转换到新状态，并执行相应的状态进入/退出逻辑。
     pub fn transition_to(&mut self, new_state: AppState) {
+        // 状态转换时标记全屏重绘
+        self.dirty_tracker.mark_full_redraw();
+
         // 可选: 添加调试输出
         #[cfg(debug_assertions)]
         eprintln!("State transition: {:?} -> {:?}", self.state, new_state);
@@ -165,6 +175,27 @@ impl App {
         self.state.is_idle()
     }
 
+    /// 检查是否有有效的选区图像
+    pub fn has_valid_selection(&self) -> bool {
+        self.screenshot.get_selection_image().is_some()
+    }
+
+    /// 标记局部脏区域（用于光标闪烁等局部更新场景）
+    pub fn mark_dirty_rect(&mut self, rect: &windows::Win32::Foundation::RECT) {
+        use crate::platform::Rectangle;
+        self.dirty_tracker.mark_dirty(Rectangle {
+            x: rect.left as f32,
+            y: rect.top as f32,
+            width: (rect.right - rect.left) as f32,
+            height: (rect.bottom - rect.top) as f32,
+        });
+    }
+
+    /// 标记全屏重绘
+    pub fn mark_full_redraw(&mut self) {
+        self.dirty_tracker.mark_full_redraw();
+    }
+
     /// 绘制窗口内容
     pub fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
         use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
@@ -182,7 +213,24 @@ impl App {
     }
 
     /// 渲染所有组件
+    ///
+    /// 使用 DirtyRectTracker 追踪脏区域，为后续局部渲染优化做准备。
     pub fn render(&mut self) -> AppResult<()> {
+        use crate::rendering::DirtyType;
+
+        // 检查脏区域类型（当前用于调试/日志，后续可用于优化）
+        let dirty_type = self.dirty_tracker.dirty_type();
+        
+        #[cfg(debug_assertions)]
+        if dirty_type == DirtyType::Partial {
+            if let Some(rect) = self.dirty_tracker.get_combined_dirty_rect() {
+                eprintln!(
+                    "Partial redraw: ({}, {}) {}x{}",
+                    rect.x, rect.y, rect.width, rect.height
+                );
+            }
+        }
+
         self.platform
             .begin_frame()
             .map_err(|e| AppError::Render(format!("Failed to begin frame: {e:?}")))?;
@@ -233,6 +281,9 @@ impl App {
             .end_frame()
             .map_err(|e| AppError::Render(format!("Failed to end frame: {e:?}")))?;
 
+        // 渲染完成后清除脏区域
+        self.dirty_tracker.clear();
+
         Ok(())
     }
 
@@ -243,16 +294,17 @@ impl App {
                 let mut commands = self.screenshot.handle_message(msg.clone());
 
                 if let ScreenshotMessage::StartCapture = msg
-                    && commands.contains(&Command::ShowOverlay) {
-                        let _ = self
-                            .screenshot
-                            .create_d2d_bitmap_from_gdi(&mut *self.platform);
+                    && commands.contains(&Command::ShowOverlay)
+                {
+                    let _ = self
+                        .screenshot
+                        .create_d2d_bitmap_from_gdi(&mut *self.platform);
 
-                        self.drawing.reset_state();
-                        self.update_toolbar_state();
-                        commands.push(Command::UpdateToolbar);
-                        commands.push(Command::RequestRedraw);
-                    }
+                    self.drawing.reset_state();
+                    self.update_toolbar_state();
+                    commands.push(Command::UpdateToolbar);
+                    commands.push(Command::RequestRedraw);
+                }
 
                 commands
             }
@@ -292,12 +344,12 @@ impl App {
     pub fn reload_settings(&mut self) -> Vec<Command> {
         // 重新加载配置
         self.config.reload();
-        
+
         self.system.reload_settings();
         self.drawing.reload_drawing_properties();
         vec![Command::UpdateToolbar, Command::RequestRedraw]
     }
-    
+
     /// 获取配置管理器引用
     pub fn config(&self) -> &ConfigManager {
         &self.config
@@ -340,7 +392,7 @@ impl App {
             };
             self.current_state.handle_key_input(key, &mut ctx)
         };
-        
+
         // 应用状态转换
         self.apply_transition(transition);
         commands
@@ -354,7 +406,7 @@ impl App {
         let message = crate::message::DrawingMessage::SelectTool(tool);
         self.drawing.handle_message(message)
     }
-
+    
     /// 创建D2D位图
     pub fn create_d2d_bitmap_from_gdi(&mut self) -> AppResult<()> {
         self.screenshot
@@ -374,7 +426,7 @@ impl App {
             };
             self.current_state.handle_mouse_move(x, y, &mut ctx)
         };
-        
+
         // 应用状态转换
         self.apply_transition(transition);
 
@@ -396,13 +448,14 @@ impl App {
                 None
             };
 
-            let selected_element_info = if let Some(sel_idx) = self.drawing.get_selected_element_index() {
-                self.drawing
-                    .get_element_ref(sel_idx)
-                    .map(|el| (el.clone(), sel_idx))
-            } else {
-                None
-            };
+            let selected_element_info =
+                if let Some(sel_idx) = self.drawing.get_selected_element_index() {
+                    self.drawing
+                        .get_element_ref(sel_idx)
+                        .map(|el| (el.clone(), sel_idx))
+                } else {
+                    None
+                };
 
             let selection_rect = self.screenshot.get_selection();
             let current_tool = self.drawing.get_current_tool();
@@ -439,7 +492,7 @@ impl App {
             };
             self.current_state.handle_mouse_down(x, y, &mut ctx)
         };
-        
+
         // 应用状态转换
         self.apply_transition(transition);
         commands
@@ -457,7 +510,7 @@ impl App {
             };
             self.current_state.handle_mouse_up(x, y, &mut ctx)
         };
-        
+
         // 应用状态转换
         self.apply_transition(transition);
         commands
@@ -475,7 +528,7 @@ impl App {
             };
             self.current_state.handle_double_click(x, y, &mut ctx)
         };
-        
+
         // 应用状态转换
         self.apply_transition(transition);
         commands
@@ -561,28 +614,26 @@ impl App {
             return Err(AppError::Screenshot("No D2D bitmap available".to_string()));
         };
         let source_bitmap = source_bitmap.clone();
-        
+
         // 克隆selection_rect以便在闭包中使用
         let sel_rect = *selection_rect;
 
         // 使用Direct2D渲染器进行合成
-        if let Some(d2d_renderer) = self
-            .platform
-            .as_any_mut()
-            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
+        if let Some(d2d_renderer) =
+            self.platform
+                .as_any_mut()
+                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
         {
             // 使用闭包来渲染元素
             let drawing_ref = &self.drawing;
-            
-            let bmp_data = d2d_renderer.render_selection_to_bmp(
-                &source_bitmap,
-                &sel_rect,
-                |render_target, renderer| {
+
+            let bmp_data = d2d_renderer
+                .render_selection_to_bmp(&source_bitmap, &sel_rect, |render_target, renderer| {
                     drawing_ref
                         .render_elements_to_target(render_target, renderer, &sel_rect)
                         .map_err(|e| crate::platform::PlatformError::RenderError(format!("{e}")))
-                },
-            ).map_err(|e| AppError::Render(format!("Failed to compose image: {e:?}")))?;
+                })
+                .map_err(|e| AppError::Render(format!("Failed to compose image: {e:?}")))?;
 
             Ok(bmp_data)
         } else {
@@ -711,7 +762,48 @@ impl App {
         // 使用 SystemManager 中缓存的引擎可用状态，避免阻塞 UI
         self.system.ocr_is_available()
     }
-    
+
+    /// 处理平台无关的输入事件
+    ///
+    /// 这是新的抽象层 API，接受平台无关的 InputEvent
+    pub fn handle_input_event(
+        &mut self,
+        event: crate::platform::InputEvent,
+        _hwnd: windows::Win32::Foundation::HWND,
+    ) -> Vec<Command> {
+        use crate::platform::{InputEvent, MouseButton};
+
+        match event {
+            InputEvent::MouseMove { x, y } => self.handle_mouse_move(x, y),
+
+            InputEvent::MouseDown { x, y, button: MouseButton::Left } => {
+                self.handle_mouse_down(x, y)
+            }
+
+            InputEvent::MouseUp { x, y, button: MouseButton::Left } => {
+                self.handle_mouse_up(x, y)
+            }
+
+            InputEvent::DoubleClick { x, y, button: MouseButton::Left } => {
+                self.handle_double_click(x, y)
+            }
+
+            InputEvent::KeyDown { key, .. } => self.handle_key_input(key.0),
+
+            InputEvent::TextInput { character } => self.handle_text_input(character),
+
+            InputEvent::Timer { id } => self.handle_cursor_timer(id),
+
+            // 其他鼠标按键暂不处理
+            InputEvent::MouseDown { .. }
+            | InputEvent::MouseUp { .. }
+            | InputEvent::DoubleClick { .. } => vec![],
+
+            // KeyUp 和 MouseWheel 暂不处理
+            InputEvent::KeyUp { .. } | InputEvent::MouseWheel { .. } => vec![],
+        }
+    }
+
     /// 统一处理窗口消息
     /// 返回 Some(LRESULT) 表示消息已处理，None 表示需要默认处理
     pub fn handle_window_message(
@@ -722,10 +814,19 @@ impl App {
         lparam: windows::Win32::Foundation::LPARAM,
     ) -> Option<windows::Win32::Foundation::LRESULT> {
         use crate::constants::*;
+        use crate::platform::EventConverter;
         use crate::utils::win_api;
         use windows::Win32::Foundation::LRESULT;
         use windows::Win32::UI::WindowsAndMessaging::*;
 
+        // 先尝试转换为平台无关的输入事件
+        if let Some(input_event) = EventConverter::convert(msg, wparam, lparam) {
+            let commands = self.handle_input_event(input_event, hwnd);
+            self.execute_command_chain(commands, hwnd);
+            return Some(LRESULT(0));
+        }
+
+        // 非输入事件的窗口消息
         match msg {
             WM_CLOSE => {
                 if !win_api::is_window_visible(hwnd) {
@@ -744,51 +845,7 @@ impl App {
                 Some(LRESULT(0))
             }
 
-            WM_MOUSEMOVE => {
-                let (x, y) = crate::utils::extract_mouse_coords(lparam);
-                let commands = self.handle_mouse_move(x, y);
-                self.execute_command_chain(commands, hwnd);
-                Some(LRESULT(0))
-            }
-
-            WM_LBUTTONDOWN => {
-                let (x, y) = crate::utils::extract_mouse_coords(lparam);
-                let commands = self.handle_mouse_down(x, y);
-                self.execute_command_chain(commands, hwnd);
-                Some(LRESULT(0))
-            }
-
-            WM_LBUTTONUP => {
-                let (x, y) = crate::utils::extract_mouse_coords(lparam);
-                let commands = self.handle_mouse_up(x, y);
-                self.execute_command_chain(commands, hwnd);
-                Some(LRESULT(0))
-            }
-
-            WM_LBUTTONDBLCLK => {
-                let (x, y) = crate::utils::extract_mouse_coords(lparam);
-                let commands = self.handle_double_click(x, y);
-                self.execute_command_chain(commands, hwnd);
-                Some(LRESULT(0))
-            }
-
-            WM_CHAR => {
-                if let Some(character) = char::from_u32(wparam.0 as u32) {
-                    if !character.is_control() || character == ' ' || character == '\t' {
-                        let commands = self.handle_text_input(character);
-                        self.execute_command_chain(commands, hwnd);
-                    }
-                }
-                Some(LRESULT(0))
-            }
-
             WM_SETCURSOR => Some(LRESULT(1)),
-
-            WM_KEYDOWN => {
-                let commands = self.handle_key_input(wparam.0 as u32);
-                self.execute_command_chain(commands, hwnd);
-                Some(LRESULT(0))
-            }
 
             val if val == WM_TRAY_MESSAGE => {
                 let commands = self.handle_tray_message(wparam.0 as u32, lparam.0 as u32);
@@ -833,19 +890,15 @@ impl App {
         selection_rect: windows::Win32::Foundation::RECT,
     ) -> (bool, bool, String) {
         let has_results = !ocr_results.is_empty();
-        let is_ocr_failed = ocr_results.len() == 1
-            && ocr_results[0].text == "OCR识别失败";
-        
+        let is_ocr_failed = ocr_results.len() == 1 && ocr_results[0].text == "OCR识别失败";
+
         // 显示OCR结果窗口
-        if let Err(e) = crate::ui::PreviewWindow::show(
-            image_data,
-            ocr_results.clone(),
-            selection_rect,
-            false,
-        ) {
+        if let Err(e) =
+            crate::ui::PreviewWindow::show(image_data, ocr_results.clone(), selection_rect, false)
+        {
             eprintln!("Failed to show OCR result window: {:?}", e);
         }
-        
+
         // 提取文本
         let text: String = if has_results {
             ocr_results
@@ -856,7 +909,7 @@ impl App {
         } else {
             String::new()
         };
-        
+
         (has_results, is_ocr_failed, text)
     }
 }

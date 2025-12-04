@@ -283,3 +283,43 @@ pub trait RendererExt: PlatformRenderer {
 }
 
 impl<T: PlatformRenderer + ?Sized> RendererExt for T {}
+
+// ========== 资源管理抽象 ==========
+
+/// 图标资源 ID
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IconId(pub u64);
+
+impl IconId {
+    /// 空图标 ID
+    pub const NONE: IconId = IconId(0);
+}
+
+/// 资源管理器 trait
+/// 
+/// 提供平台无关的资源管理接口，使业务层无需直接持有 HICON、HBRUSH 等平台句柄。
+pub trait ResourceManager {
+    /// 加载图标资源
+    fn load_icon(&mut self, name: &str) -> IconId;
+
+    /// 释放图标资源
+    fn release_icon(&mut self, id: IconId);
+
+    /// 检查图标是否有效
+    fn is_icon_valid(&self, id: IconId) -> bool;
+}
+
+/// 默认的空资源管理器实现（用于测试或不需要资源管理的场景）
+pub struct NullResourceManager;
+
+impl ResourceManager for NullResourceManager {
+    fn load_icon(&mut self, _name: &str) -> IconId {
+        IconId::NONE
+    }
+
+    fn release_icon(&mut self, _id: IconId) {}
+
+    fn is_icon_valid(&self, id: IconId) -> bool {
+        id != IconId::NONE
+    }
+}

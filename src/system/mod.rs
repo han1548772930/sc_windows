@@ -14,12 +14,11 @@ use crate::settings::Settings;
 use std::sync::{Arc, RwLock};
 
 pub mod hotkeys;
-pub mod ocr;
 pub mod tray;
 pub mod window_detection;
 
 use hotkeys::HotkeyManager;
-use ocr::OcrManager;
+use crate::ocr::OcrManager;
 use tray::TrayManager;
 use window_detection::WindowDetectionManager;
 

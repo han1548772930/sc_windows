@@ -1,17 +1,18 @@
-use super::SystemError;
+//! OCR 管理器
+//!
+//! 负责 OCR 引擎的状态管理和业务逻辑处理。
+
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::WM_USER;
+
+use super::engine::PaddleOcrEngine;
+use super::types::{BoundingBox, OcrCompletionData, OcrResult};
+use crate::system::SystemError;
 
 /// OCR管理器
 pub struct OcrManager {
     /// OCR引擎是否可用
     engine_available: bool,
-}
-
-// OCR结果数据传输结构
-pub struct OcrCompletionData {
-    pub image_data: Vec<u8>,
-    pub ocr_results: Vec<crate::ocr::OcrResult>,
-    pub selection_rect: windows::Win32::Foundation::RECT,
 }
 
 impl OcrManager {
@@ -26,7 +27,7 @@ impl OcrManager {
     pub fn ensure_engine_started(&mut self) -> Result<(), SystemError> {
         if !self.engine_available {
             // 使用统一的OCR引擎管理接口
-            crate::ocr::PaddleOcrEngine::ensure_engine_started();
+            PaddleOcrEngine::ensure_engine_started();
             self.engine_available = true;
         }
         Ok(())
@@ -36,7 +37,7 @@ impl OcrManager {
     pub fn stop_engine(&mut self) {
         if self.engine_available {
             // 使用统一的OCR引擎停止接口（异步停止）
-            crate::ocr::PaddleOcrEngine::stop_engine(false);
+            PaddleOcrEngine::stop_engine(false);
             self.engine_available = false;
         }
     }
@@ -45,7 +46,7 @@ impl OcrManager {
     pub fn stop_engine_immediate(&mut self) {
         if self.engine_available {
             // 使用统一的OCR引擎停止接口（同步停止）
-            crate::ocr::PaddleOcrEngine::stop_engine(true);
+            PaddleOcrEngine::stop_engine(true);
             self.engine_available = false;
         }
     }
@@ -55,18 +56,18 @@ impl OcrManager {
     // - stop_engine_async: 与 stop_engine 重复，已合并
 
     /// 启动异步状态检查
-    pub fn start_async_status_check(&mut self, hwnd: windows::Win32::Foundation::HWND) {
+    pub fn start_async_status_check(&mut self, hwnd: HWND) {
         let hwnd_ptr = hwnd.0 as usize;
 
         // 启动异步检查
-        crate::ocr::PaddleOcrEngine::check_engine_status_async(
+        PaddleOcrEngine::check_engine_status_async(
             move |exe_exists, engine_ready, _status| {
                 // 在后台线程中检查完成后，发送消息到主线程更新状态
                 let available = exe_exists && engine_ready;
                 unsafe {
                     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
                     // 重新构造HWND
-                    let hwnd = windows::Win32::Foundation::HWND(hwnd_ptr as *mut std::ffi::c_void);
+                    let hwnd = HWND(hwnd_ptr as *mut std::ffi::c_void);
 
                     // 使用自定义消息通知主线程更新OCR状态
                     // WM_USER + 10 用于OCR状态更新
@@ -105,8 +106,8 @@ impl OcrManager {
     /// 5. 通知主窗口流程结束
     pub fn recognize_text_from_selection(
         &mut self,
-        selection_rect: windows::Win32::Foundation::RECT,
-        hwnd: windows::Win32::Foundation::HWND,
+        selection_rect: RECT,
+        hwnd: HWND,
         screenshot_manager: &mut crate::screenshot::ScreenshotManager,
     ) -> Result<(), SystemError> {
         use windows::Win32::Foundation::*;
@@ -145,7 +146,7 @@ impl OcrManager {
         // 异步执行耗时的OCR操作，避免阻塞UI线程
         std::thread::spawn(move || {
             // 重构 HWND
-            let hwnd = windows::Win32::Foundation::HWND(hwnd_ptr as *mut std::ffi::c_void);
+            let hwnd = HWND(hwnd_ptr as *mut std::ffi::c_void);
 
             // 如果没有缓存图像，给予系统足够时间重绘被遮挡的桌面区域
             if cached_image.is_none() {
@@ -173,7 +174,7 @@ impl OcrManager {
                     return;
                 };
 
-                match crate::ocr::crop_bmp(data, &selection_rect) {
+                match super::engine::crop_bmp(data, &selection_rect) {
                     Ok(cropped) => cropped,
                     Err(e) => {
                         eprintln!("裁剪图像失败: {:?}", e);
@@ -186,14 +187,14 @@ impl OcrManager {
             };
 
             // 分行识别文本 (耗时操作)
-            let line_results = match crate::ocr::recognize_text_by_lines(&result, selection_rect) {
+            let line_results = match super::engine::recognize_text_by_lines(&result, selection_rect) {
                 Ok(results) => results,
                 Err(_) => {
                     // 即使识别失败，也要显示结果窗口
-                    vec![crate::ocr::OcrResult {
+                    vec![OcrResult {
                         text: "OCR识别失败".to_string(),
                         confidence: 0.0,
-                        bounding_box: crate::ocr::BoundingBox {
+                        bounding_box: BoundingBox {
                             x: 0,
                             y: 0,
                             width: 200,

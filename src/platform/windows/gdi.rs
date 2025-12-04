@@ -4,9 +4,11 @@
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, GetDC, HBITMAP, ReleaseDC,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, GetDC, HBITMAP, ReleaseDC,
     SRCCOPY, SelectObject,
 };
+
+use super::resources::ManagedDC;
 
 /// 捕获屏幕区域到 HBITMAP
 ///
@@ -46,14 +48,15 @@ pub unsafe fn capture_screen_region_to_hbitmap(
     // 3. SelectObject 将位图选入 DC，返回旧对象以便恢复
     // 4. BitBlt 复制屏幕内容到内存位图
     let screen_dc = unsafe { GetDC(Some(HWND(std::ptr::null_mut()))) };
-    let mem_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
+    // 使用 RAII 封装管理 mem_dc，离开作用域时自动调用 DeleteDC
+    let mem_dc = ManagedDC::new(unsafe { CreateCompatibleDC(Some(screen_dc)) });
     let bitmap = unsafe { CreateCompatibleBitmap(screen_dc, width, height) };
-    let old_bitmap = unsafe { SelectObject(mem_dc, bitmap.into()) };
+    let old_bitmap = unsafe { SelectObject(mem_dc.handle(), bitmap.into()) };
 
     // SAFETY: BitBlt 从屏幕 DC 复制到内存 DC，两个 DC 都有效。
     let _ = unsafe {
         BitBlt(
-            mem_dc,
+            mem_dc.handle(),
             0,
             0,
             width,
@@ -65,13 +68,12 @@ pub unsafe fn capture_screen_region_to_hbitmap(
         )
     };
 
-    // SAFETY: 清理资源：
+    // 清理资源：
     // 1. 恢复原始位图选择
-    // 2. 删除内存 DC（我们创建的）
-    // 3. 释放屏幕 DC（使用 ReleaseDC 而非 DeleteDC）
+    // 2. 释放屏幕 DC（使用 ReleaseDC 而非 DeleteDC）
+    // 注：mem_dc 使用 RAII 封装，会在离开作用域时自动 DeleteDC
     unsafe {
-        SelectObject(mem_dc, old_bitmap);
-        let _ = DeleteDC(mem_dc);
+        SelectObject(mem_dc.handle(), old_bitmap);
         let _ = ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
     }
 
