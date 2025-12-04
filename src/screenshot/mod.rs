@@ -67,6 +67,16 @@ pub struct ScreenshotData {
 }
 
 impl ScreenshotManager {
+    /// 便捷：外部直接设置选择矩形
+    pub fn update_selection(&mut self, rect: windows::Win32::Foundation::RECT) {
+        self.selection.update(rect);
+    }
+
+    /// 检查是否有截图数据（D2D位图或原始数据）
+    pub fn has_screenshot(&self) -> bool {
+        self.screenshot_bitmap.is_some() || self.current_screenshot.is_some()
+    }
+
     /// 创建新的截图管理器
     pub fn new() -> Result<Self, ScreenshotError> {
         let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();

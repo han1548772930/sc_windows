@@ -54,7 +54,6 @@ pub fn is_drag_threshold_exceeded(
     dx > crate::constants::DRAG_THRESHOLD || dy > crate::constants::DRAG_THRESHOLD
 }
 
-
 // ==================== 坐标和边界处理 ====================
 
 /// 将坐标限制在矩形范围内

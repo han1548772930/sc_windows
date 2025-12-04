@@ -78,57 +78,24 @@ impl DrawingManager {
                 let mut cached_layout = element.text_layout.borrow_mut();
                 
                 if cached_layout.is_none() {
-                    // Create Text Format
-                     let font_size = element.font_size.max(12.0);
-                     let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
-                     let font_weight = if element.font_weight > 400 {
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD
-                    } else {
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL
-                    };
-                    let font_style = if element.font_italic {
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_ITALIC
-                    } else {
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL
-                    };
-                    
-                    if let Ok(text_format) = dwrite_factory.CreateTextFormat(
-                        windows::core::PCWSTR(font_name_wide.as_ptr()),
-                        None,
-                        font_weight,
-                        font_style,
-                        windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
-                        font_size,
-                        windows::core::w!(""),
+                    // 使用辅助函数创建文本格式
+                    if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
+                        dwrite_factory,
+                        &element.font_name,
+                        element.font_size,
+                        element.font_weight,
+                        element.font_italic,
                     ) {
-                         let _ = text_format.SetTextAlignment(
-                            windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_LEADING,
-                        );
-                        let _ = text_format.SetParagraphAlignment(
-                            windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
-                        );
-                        
-                        let wide_text: Vec<u16> = element.text.encode_utf16().collect();
-                        
-                        if let Ok(layout) = dwrite_factory.CreateTextLayout(
-                            &wide_text,
+                        // 使用辅助函数创建带样式的文本布局
+                        if let Ok(layout) = crate::utils::d2d_helpers::create_text_layout_with_style(
+                            dwrite_factory,
                             &text_format,
+                            &element.text,
                             text_content_rect.right - text_content_rect.left,
                             text_content_rect.bottom - text_content_rect.top,
+                            element.font_underline,
+                            element.font_strikeout,
                         ) {
-                            if element.font_underline && !wide_text.is_empty() {
-                                let _ = layout.SetUnderline(true, windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                    startPosition: 0,
-                                    length: wide_text.len() as u32,
-                                });
-                            }
-                            if element.font_strikeout && !wide_text.is_empty() {
-                                let _ = layout.SetStrikethrough(true, windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                    startPosition: 0,
-                                    length: wide_text.len() as u32,
-                                });
-                            }
-                            
                             *cached_layout = Some(layout);
                         }
                     }
@@ -216,63 +183,24 @@ impl DrawingManager {
                     bottom: text_rect.bottom - crate::constants::TEXT_PADDING,
                 };
 
-                // 创建文本格式
-                let font_size = element.font_size.max(12.0);
-                let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
-                let font_weight = if element.font_weight > 400 {
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_BOLD
-                } else {
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT_NORMAL
-                };
-                let font_style = if element.font_italic {
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_ITALIC
-                } else {
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STYLE_NORMAL
-                };
-
-                if let Ok(text_format) = dwrite_factory.CreateTextFormat(
-                    windows::core::PCWSTR(font_name_wide.as_ptr()),
-                    None,
-                    font_weight,
-                    font_style,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!(""),
+                // 使用辅助函数创建文本格式
+                if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
+                    dwrite_factory,
+                    &element.font_name,
+                    element.font_size,
+                    element.font_weight,
+                    element.font_italic,
                 ) {
-                    let _ = text_format.SetTextAlignment(
-                        windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_LEADING,
-                    );
-                    let _ = text_format.SetParagraphAlignment(
-                        windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
-                    );
-
-                    let wide_text: Vec<u16> = element.text.encode_utf16().collect();
-
-                    if let Ok(layout) = dwrite_factory.CreateTextLayout(
-                        &wide_text,
+                    // 使用辅助函数创建带样式的文本布局
+                    if let Ok(layout) = crate::utils::d2d_helpers::create_text_layout_with_style(
+                        dwrite_factory,
                         &text_format,
+                        &element.text,
                         text_content_rect.right - text_content_rect.left,
                         text_content_rect.bottom - text_content_rect.top,
+                        element.font_underline,
+                        element.font_strikeout,
                     ) {
-                        if element.font_underline && !wide_text.is_empty() {
-                            let _ = layout.SetUnderline(
-                                true,
-                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                    startPosition: 0,
-                                    length: wide_text.len() as u32,
-                                },
-                            );
-                        }
-                        if element.font_strikeout && !wide_text.is_empty() {
-                            let _ = layout.SetStrikethrough(
-                                true,
-                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_RANGE {
-                                    startPosition: 0,
-                                    length: wide_text.len() as u32,
-                                },
-                            );
-                        }
-
                         render_target.DrawTextLayout(
                             crate::utils::d2d_helpers::d2d_point_f(
                                 text_content_rect.left,
@@ -759,7 +687,6 @@ impl DrawingManager {
     pub(super) fn update_text_element_size(&mut self, element_index: usize) {
         use crate::constants::{MIN_TEXT_HEIGHT, MIN_TEXT_WIDTH, TEXT_PADDING};
         use windows::Win32::Graphics::DirectWrite::*;
-        use windows::core::w;
 
         if let Some(element) = self.elements.get_element_mut(element_index) {
             // Invalidate text layout cache as text or size changed
@@ -788,25 +715,12 @@ impl DrawingManager {
                 if let Ok(factory) =
                     DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED)
                 {
-                    let font_name_wide = crate::utils::to_wide_chars(&element.font_name);
-                    let weight = if element.font_weight > 400 {
-                        DWRITE_FONT_WEIGHT_BOLD
-                    } else {
-                        DWRITE_FONT_WEIGHT_NORMAL
-                    };
-                    let style = if element.font_italic {
-                        DWRITE_FONT_STYLE_ITALIC
-                    } else {
-                        DWRITE_FONT_STYLE_NORMAL
-                    };
-                    if let Ok(text_format) = factory.CreateTextFormat(
-                        windows::core::PCWSTR(font_name_wide.as_ptr()),
-                        None,
-                        weight,
-                        style,
-                        DWRITE_FONT_STRETCH_NORMAL,
+                    if let Ok(text_format) = crate::utils::d2d_helpers::create_text_format_from_element(
+                        &factory,
+                        &element.font_name,
                         font_size,
-                        w!(""),
+                        element.font_weight,
+                        element.font_italic,
                     ) {
                         for line in &lines {
                             let wide: Vec<u16> = line.encode_utf16().collect();

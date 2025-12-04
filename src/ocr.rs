@@ -161,12 +161,6 @@ impl PaddleOcrEngine {
         Err(anyhow::anyhow!("OCR引擎未就绪，请等待引擎启动完成"))
     }
 
-    /// 预启动OCR引擎（已废弃，改为按需启动）
-    #[deprecated(note = "使用start_ocr_engine()代替")]
-    pub fn prestart_engine() {
-        // 不再预启动，改为按需启动
-    }
-
     /// 检查OCR引擎是否已经准备就绪
     pub fn is_engine_ready() -> bool {
         if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()

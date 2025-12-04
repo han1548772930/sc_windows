@@ -412,3 +412,88 @@ impl<'a> Drop for DrawBatch<'a> {
 }
 
 use windows_numerics::Matrix3x2;
+
+// ==================== 文本格式创建辅助 ====================
+
+/// 从元素属性创建 DirectWrite 文本格式
+///
+/// 统一封装字体格式创建逻辑，避免多处代码重复。
+pub unsafe fn create_text_format_from_element(
+    dwrite_factory: &IDWriteFactory,
+    font_name: &str,
+    font_size: f32,
+    font_weight: i32,
+    font_italic: bool,
+) -> Result<IDWriteTextFormat> {
+    let font_size = font_size.max(12.0);
+    let font_name_wide = crate::utils::to_wide_chars(font_name);
+    
+    let weight = if font_weight > 400 {
+        DWRITE_FONT_WEIGHT_BOLD
+    } else {
+        DWRITE_FONT_WEIGHT_NORMAL
+    };
+    
+    let style = if font_italic {
+        DWRITE_FONT_STYLE_ITALIC
+    } else {
+        DWRITE_FONT_STYLE_NORMAL
+    };
+    
+    // SAFETY: dwrite_factory 是有效的 IDWriteFactory 对象
+    unsafe {
+        let text_format = dwrite_factory.CreateTextFormat(
+            PCWSTR(font_name_wide.as_ptr()),
+            None,
+            weight,
+            style,
+            DWRITE_FONT_STRETCH_NORMAL,
+            font_size,
+            w!(""),
+        )?;
+        
+        text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        
+        Ok(text_format)
+    }
+}
+
+/// 创建带下划线/删除线的文本布局
+pub unsafe fn create_text_layout_with_style(
+    dwrite_factory: &IDWriteFactory,
+    text_format: &IDWriteTextFormat,
+    text: &str,
+    width: f32,
+    height: f32,
+    underline: bool,
+    strikeout: bool,
+) -> Result<IDWriteTextLayout> {
+    let wide_text: Vec<u16> = text.encode_utf16().collect();
+    
+    // SAFETY: dwrite_factory 和 text_format 是有效的 DirectWrite 对象
+    unsafe {
+        let layout = dwrite_factory.CreateTextLayout(
+            &wide_text,
+            text_format,
+            width,
+            height,
+        )?;
+        
+        if !wide_text.is_empty() {
+            let range = DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: wide_text.len() as u32,
+            };
+            
+            if underline {
+                let _ = layout.SetUnderline(true, range);
+            }
+            if strikeout {
+                let _ = layout.SetStrikethrough(true, range);
+            }
+        }
+        
+        Ok(layout)
+    }
+}

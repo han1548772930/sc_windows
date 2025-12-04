@@ -86,6 +86,12 @@ pub struct DrawingManager {
 }
 
 impl DrawingManager {
+    /// 设置当前绘图工具（同步 ToolManager 与本地状态）
+    pub fn set_current_tool(&mut self, tool: DrawingTool) {
+        self.current_tool = tool;
+        self.tools.set_current_tool(tool);
+    }
+
     /// 创建新的绘图管理器
     ///
     /// # 参数
