@@ -198,7 +198,7 @@ impl ToolbarManager {
             ToolbarButton::ExtractText => vec![Command::ExtractText],
             ToolbarButton::Languages => {
                 eprintln!("暂时不做");
-                todo!();
+                vec![Command::None]
             }
             ToolbarButton::Pin => {
                 // 实现固定功能
