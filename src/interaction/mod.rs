@@ -13,8 +13,8 @@
 use crate::drawing::DragMode;
 use windows::Win32::Foundation::RECT;
 
-/// 交互目标接口（阶段1最小集合）
-/// 由具体对象（如选择框、绘图元素）实现，将已有的交互方法适配进来。
+/// 交互目标接口
+/// 由具体对象（如选择框、绘图元素）实现。
 pub trait InteractionTarget {
     /// 命中测试：返回拖拽模式（None 表示未命中）
     fn hit_test(&self, x: i32, y: i32) -> DragMode;
@@ -27,13 +27,13 @@ pub trait InteractionTarget {
     /// 当前是否处于交互中
     fn is_interacting(&self) -> bool;
 
-    /// 可选：暴露矩形，便于通用行为（本阶段不强制使用）
+    /// 可选：暴露矩形，便于通用行为
     fn rect(&self) -> Option<RECT> {
         None
     }
 }
 
-/// 交互控制器（阶段1：无内部状态，薄封装，仅负责编排调用）
+/// 交互控制器，负责编排交互流程
 #[derive(Default)]
 pub struct InteractionController;
 

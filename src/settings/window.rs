@@ -277,16 +277,16 @@ impl SettingsWindow {
 
             RegisterClassW(&window_class);
 
-            // 创建支持弹性布局的设置窗口
+            // 创建固定大小的设置窗口
             let hwnd = CreateWindowExW(
                 WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR(to_wide_chars("🎨 截图工具 - 设置").as_ptr()),
-                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME,
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // 移除 WS_THICKFRAME
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                450, // 初始窗口宽度
-                400, // 初始窗口高度
+                420, // 窗口宽度
+                440, // 窗口高度（包含标题栏）
                 Some(parent_hwnd),
                 None,
                 Some(instance.into()),
@@ -491,26 +491,6 @@ impl SettingsWindow {
                     DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
 
-                WM_SIZE => {
-                    // 处理窗口大小变化，重新布局控件
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindow;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        window.layout_controls();
-                    }
-                    LRESULT(0)
-                }
-
-                WM_GETMINMAXINFO => {
-                    // 设置最小窗口大小
-                    let min_max_info = lparam.0 as *mut MINMAXINFO;
-                    if !min_max_info.is_null() {
-                        (*min_max_info).ptMinTrackSize.x = 400; // 最小宽度
-                        (*min_max_info).ptMinTrackSize.y = 350; // 最小高度
-                    }
-                    LRESULT(0)
-                }
-
                 WM_DESTROY => {
                     SETTINGS_WINDOW.store(0, Ordering::Release);
                     LRESULT(0)
@@ -556,7 +536,7 @@ impl SettingsWindow {
         }
     }
 
-    /// 专业的Windows标准布局 - 参考标准控件演示
+    /// 专业的Windows标准布局 - 规整对齐
     fn layout_controls(&mut self) {
         unsafe {
             let mut client_rect = RECT::default();
@@ -565,275 +545,112 @@ impl SettingsWindow {
             let window_width = client_rect.right - client_rect.left;
             let window_height = client_rect.bottom - client_rect.top;
 
-            // 标准Windows布局参数
-            let margin = 15;
-            let item_spacing = 30;
-            let _group_spacing = 20;
-            let label_width = 80;
-            let input_width = 80;
-            let button_width = 90;
-            let button_height = 25;
-            let edit_height = 21;
+            // 统一布局参数
+            let margin = 20;              // 外边距
+            let group_indent = 15;        // 分组内缩进
+            let row_height = 28;          // 行高
+            let group_title_height = 22;  // 分组标题高度
+            let group_spacing = 8;        // 分组间距
+            let label_width = 90;         // 统一标签宽度
+            let control_start_x = margin + group_indent + label_width + 10; // 控件起始X
+            let button_height = 24;
+            let edit_height = 22;
             let label_height = 18;
+            let bottom_button_width = 80;
 
-            let mut current_y = margin;
+            let mut y = margin;
 
-
-            // 绘图设置分组标题
-            if let Some(group_title) = self.find_control_by_text("绘图设置") {
-                let _ = SetWindowPos(
-                    group_title,
-                    None,
-                    margin,
-                    current_y,
-                    200,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // ═══════════════════════════════════════════════════
+            // 绘图设置
+            // ═══════════════════════════════════════════════════
+            if let Some(title) = self.find_control_by_text("绘图设置") {
+                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
             }
-            current_y += label_height + 10;
+            y += group_title_height + 4;
 
-            // 线条粗细标签和输入框 (第一行)
-            if let Some(thickness_label) = self.find_control_by_text("线条粗细:") {
-                let _ = SetWindowPos(
-                    thickness_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // 线条粗细
+            if let Some(label) = self.find_control_by_text("线条粗细:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
-            let _ = SetWindowPos(
-                self.line_thickness_edit,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                input_width,
-                edit_height,
-                SWP_NOZORDER,
-            );
+            let _ = SetWindowPos(self.line_thickness_edit, None, control_start_x, y, 60, edit_height, SWP_NOZORDER);
+            y += row_height;
 
-            current_y += item_spacing;
-
-            // 字体设置标签和按钮 (第二行)
-            if let Some(font_label) = self.find_control_by_text("字体设置:") {
-                let _ = SetWindowPos(
-                    font_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // 字体设置
+            if let Some(label) = self.find_control_by_text("字体设置:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
+            let _ = SetWindowPos(self.font_choose_button, None, control_start_x, y, 100, button_height, SWP_NOZORDER);
+            y += row_height + group_spacing;
 
-            // 字体选择按钮 (同一行，在标签右侧)
-            let _ = SetWindowPos(
-                self.font_choose_button,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                120, // 按钮宽度
-                button_height,
-                SWP_NOZORDER,
-            );
-
-            current_y += item_spacing;
-
-
-            // 颜色设置分组标题
-            if let Some(color_group_title) = self.find_control_by_text("颜色设置") {
-                let _ = SetWindowPos(
-                    color_group_title,
-                    None,
-                    margin,
-                    current_y,
-                    200,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // ═══════════════════════════════════════════════════
+            // 颜色设置
+            // ═══════════════════════════════════════════════════
+            if let Some(title) = self.find_control_by_text("颜色设置") {
+                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
             }
-            current_y += label_height + 10;
+            y += group_title_height + 4;
 
-            // 绘图颜色标签和按钮 (第一行)
-            if let Some(drawing_color_label) = self.find_control_by_text("绘图颜色:") {
-                let _ = SetWindowPos(
-                    drawing_color_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // 绘图颜色
+            if let Some(label) = self.find_control_by_text("绘图颜色:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
-            let _ = SetWindowPos(
-                self.drawing_color_button,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                button_width,
-                button_height,
-                SWP_NOZORDER,
-            );
-            let _ = SetWindowPos(
-                self.drawing_color_preview,
-                None,
-                margin + 10 + label_width + 5 + button_width + 8,
-                current_y,
-                30,
-                label_height,
-                SWP_NOZORDER,
-            );
+            let _ = SetWindowPos(self.drawing_color_button, None, control_start_x, y, 80, button_height, SWP_NOZORDER);
+            let _ = SetWindowPos(self.drawing_color_preview, None, control_start_x + 88, y + 2, 24, 20, SWP_NOZORDER);
+            y += row_height + group_spacing;
 
-            current_y += item_spacing;
-
-
-            // 热键设置分组标题
-            if let Some(hotkey_group_title) = self.find_control_by_text("热键设置") {
-                let _ = SetWindowPos(
-                    hotkey_group_title,
-                    None,
-                    margin,
-                    current_y,
-                    200,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // ═══════════════════════════════════════════════════
+            // 热键设置
+            // ═══════════════════════════════════════════════════
+            if let Some(title) = self.find_control_by_text("热键设置") {
+                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
             }
-            current_y += label_height + 10;
+            y += group_title_height + 4;
 
-            // 热键标签和输入框
-            if let Some(hotkey_label) = self.find_control_by_text("截图热键:") {
-                let _ = SetWindowPos(
-                    hotkey_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // 截图热键
+            if let Some(label) = self.find_control_by_text("截图热键:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
-            let hotkey_width = window_width - margin * 2 - 20 - label_width - 10;
-            let _ = SetWindowPos(
-                self.hotkey_edit,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                hotkey_width,
-                edit_height,
-                SWP_NOZORDER,
-            );
+            let hotkey_width = window_width - control_start_x - margin;
+            let _ = SetWindowPos(self.hotkey_edit, None, control_start_x, y, hotkey_width, edit_height, SWP_NOZORDER);
+            y += row_height + group_spacing;
 
-            current_y += item_spacing;
-
-
-            // 配置路径设置分组标题
-            if let Some(config_path_group_title) = self.find_control_by_text("配置文件路径") {
-                let _ = SetWindowPos(
-                    config_path_group_title,
-                    None,
-                    margin,
-                    current_y,
-                    200,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // ═══════════════════════════════════════════════════
+            // 配置文件
+            // ═══════════════════════════════════════════════════
+            if let Some(title) = self.find_control_by_text("配置文件路径") {
+                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
             }
-            current_y += label_height + 10;
+            y += group_title_height + 4;
 
-            // 配置路径标签、输入框和浏览按钮
-            if let Some(config_path_label) = self.find_control_by_text("保存路径:") {
-                let _ = SetWindowPos(
-                    config_path_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width,
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // 保存路径
+            if let Some(label) = self.find_control_by_text("保存路径:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
+            let browse_width = 70;
+            let path_width = window_width - control_start_x - margin - browse_width - 8;
+            let _ = SetWindowPos(self.config_path_edit, None, control_start_x, y, path_width, edit_height, SWP_NOZORDER);
+            let _ = SetWindowPos(self.config_path_browse_button, None, control_start_x + path_width + 8, y, browse_width, button_height, SWP_NOZORDER);
+            y += row_height + group_spacing;
 
-            let browse_button_width = 80;
-            let config_path_width =
-                window_width - margin * 2 - 20 - label_width - 10 - browse_button_width - 5;
-            let _ = SetWindowPos(
-                self.config_path_edit,
-                None,
-                margin + 10 + label_width + 5,
-                current_y - 2,
-                config_path_width,
-                edit_height,
-                SWP_NOZORDER,
-            );
-
-            let _ = SetWindowPos(
-                self.config_path_browse_button,
-                None,
-                margin + 10 + label_width + 5 + config_path_width + 5,
-                current_y - 2,
-                browse_button_width,
-                button_height,
-                SWP_NOZORDER,
-            );
-
-            current_y += item_spacing;
-
-
-            // OCR语言标签
-            if let Some(ocr_label) = self.find_control_by_text("OCR识别语言:") {
-                let _ = SetWindowPos(
-                    ocr_label,
-                    None,
-                    margin + 10,
-                    current_y,
-                    label_width + 20, // 稍微宽一点以容纳中文
-                    label_height,
-                    SWP_NOZORDER,
-                );
+            // ═══════════════════════════════════════════════════
+            // OCR 设置
+            // ═══════════════════════════════════════════════════
+            // OCR语言（不需要分组标题，直接放在配置文件组后面）
+            if let Some(label) = self.find_control_by_text("OCR识别语言:") {
+                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
             }
+            let _ = SetWindowPos(self.ocr_language_combo, None, control_start_x, y, 140, 200, SWP_NOZORDER);
 
-            // OCR语言下拉框
-            let _ = SetWindowPos(
-                self.ocr_language_combo,
-                None,
-                margin + 10 + label_width + 25,
-                current_y - 2,
-                150, // ComboBox宽度
-                200, // ComboBox高度（包含下拉部分）
-                SWP_NOZORDER,
-            );
+            // ═══════════════════════════════════════════════════
+            // 底部按钮（居中）
+            // ═══════════════════════════════════════════════════
+            let button_spacing = 15;
+            let buttons_total_width = bottom_button_width * 2 + button_spacing;
+            let buttons_x = (window_width - buttons_total_width) / 2;
+            let buttons_y = window_height - button_height - margin;
 
-            let _current_y = current_y + item_spacing;
-
-            let button_spacing = 10;
-            let buttons_total_width = button_width * 2 + button_spacing;
-            let buttons_start_x = (window_width - buttons_total_width) / 2;
-
-            let _ = SetWindowPos(
-                self.ok_button,
-                None,
-                buttons_start_x,
-                window_height - button_height - margin,
-                button_width,
-                button_height,
-                SWP_NOZORDER,
-            );
-
-            let _ = SetWindowPos(
-                self.cancel_button,
-                None,
-                buttons_start_x + button_width + button_spacing,
-                window_height - button_height - margin,
-                button_width,
-                button_height,
-                SWP_NOZORDER,
-            );
+            let _ = SetWindowPos(self.ok_button, None, buttons_x, buttons_y, bottom_button_width, button_height, SWP_NOZORDER);
+            let _ = SetWindowPos(self.cancel_button, None, buttons_x + bottom_button_width + button_spacing, buttons_y, bottom_button_width, button_height, SWP_NOZORDER);
 
             // 强制重绘窗口
             let _ = InvalidateRect(Some(self.hwnd), None, TRUE.into());
@@ -1719,4 +1536,17 @@ impl SettingsWindow {
 pub fn show_settings_window() -> Result<()> {
     // 直接使用传统的 Win32 设置窗口
     SettingsWindow::show(HWND::default())
+}
+
+/// 关闭设置窗口（如果已打开）
+pub fn close_settings_window() {
+    let hwnd_value = SETTINGS_WINDOW.load(Ordering::Acquire);
+    if hwnd_value != 0 {
+        let hwnd = HWND(hwnd_value as *mut _);
+        unsafe {
+            if IsWindow(Some(hwnd)).as_bool() {
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
 }

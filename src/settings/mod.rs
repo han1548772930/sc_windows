@@ -14,4 +14,4 @@ mod window;
 // Re-export main types
 pub use core::Settings;
 pub use manager::ConfigManager;
-pub use window::{show_settings_window, SettingsWindow};
+pub use window::{close_settings_window, show_settings_window, SettingsWindow};

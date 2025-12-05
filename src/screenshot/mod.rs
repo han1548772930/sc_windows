@@ -44,7 +44,7 @@ use selection::SelectionState;
 pub struct ScreenshotManager {
     /// 选择状态
     selection: SelectionState,
-    /// 交互控制器（阶段1，仅用于选择框）
+    /// 交互控制器（目前主要用于选择框交互）
     selection_interaction: InteractionController,
     /// 当前截图数据
     current_screenshot: Option<ScreenshotData>,

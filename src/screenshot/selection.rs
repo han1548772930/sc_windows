@@ -457,7 +457,7 @@ mod tests {
     }
 }
 
-// --- InteractionTarget 适配实现（阶段1 PoC）---
+// --- InteractionTarget 接口实现 ---
 impl InteractionTarget for SelectionState {
     fn hit_test(&self, x: i32, y: i32) -> DragMode {
         self.get_handle_at_position(x, y)

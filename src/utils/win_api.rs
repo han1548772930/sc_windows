@@ -1,6 +1,8 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::BOOL;
 
 /// 安全地隐藏窗口
 #[inline]
@@ -119,7 +121,12 @@ pub fn is_window_visible(hwnd: HWND) -> bool {
 
 /// 发送自定义消息到窗口
 #[inline]
-pub fn post_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> windows::core::Result<()> {
+pub fn post_message(
+    hwnd: HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> windows::core::Result<()> {
     unsafe {
         PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam))?;
     }
@@ -129,9 +136,7 @@ pub fn post_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> windo
 /// 发送同步消息到窗口
 #[inline]
 pub fn send_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESULT {
-    unsafe {
-        SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam)))
-    }
+    unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam))) }
 }
 
 /// 获取窗口矩形
@@ -177,5 +182,32 @@ pub fn set_foreground_window(hwnd: HWND) -> bool {
     unsafe { SetForegroundWindow(hwnd).as_bool() }
 }
 
-// ==================== 单元测试 ====================
+/// 优雅地关闭当前进程的所有窗口
+pub fn close_all_app_windows() {
+    unsafe {
+        let pid = GetCurrentProcessId();
+        // 枚举所有顶级窗口
+        let _ = EnumWindows(Some(enum_window_callback), LPARAM(pid as isize));
+    }
+}
 
+/// EnumWindows 的回调函数
+unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe {
+        let target_pid = lparam.0 as u32;
+        let mut window_pid = 0;
+
+        // 获取当前枚举到的窗口的进程ID
+        GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
+
+        // 如果该窗口属于当前进程
+        if window_pid == target_pid {
+            // 发送关闭消息。使用 PostMessage 而不是 SendMessage，避免阻塞。
+            // WM_CLOSE 会让窗口有机会执行清理（处理 WM_DESTROY）。
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+
+        // 返回 TRUE 继续枚举下一个窗口
+        BOOL::from(true)
+    }
+}

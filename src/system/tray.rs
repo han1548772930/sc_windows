@@ -6,6 +6,7 @@ use super::SystemError;
 use crate::message::Command;
 use crate::platform::windows::SafeHwnd;
 use crate::settings::show_settings_window;
+use crate::utils::win_api::close_all_app_windows;
 use crate::utils::to_wide_chars;
 
 /// 系统托盘管理器
@@ -142,9 +143,8 @@ impl TrayManager {
                     let _ = show_settings_window();
                 }
                 1003 => {
-                    // 退出
-                    let hwnd = self.hwnd.get();
-                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                    // 退出 - 优雅关闭所有属于本进程的窗口
+                    close_all_app_windows();
                 }
                 _ => {}
             }

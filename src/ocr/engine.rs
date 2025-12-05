@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::os::windows::process::CommandExt;
 
 use anyhow::Result;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use paddleocr::{ImageData, Ppocr};
 use serde_json::Value;
 use windows::Win32::Foundation::*;
