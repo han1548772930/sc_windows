@@ -1,5 +1,7 @@
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
+use crate::settings::Settings;
+
 pub const WINDOW_CLASS_NAME: &str = "sc_windows_main";
 pub const MIN_BOX_SIZE: i32 = 50;
 pub const TEXT_BOX_WIDTH: i32 = 100;
@@ -98,7 +100,7 @@ pub const TEXT_LINE_HEIGHT_SCALE: f32 = 1.35;
 
 /// 从设置文件加载颜色，如果加载失败则使用默认值
 pub fn get_colors_from_settings() -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
-    let settings = crate::settings::Settings::load();
+    let settings = Settings::load();
 
     let drawing_color = D2D1_COLOR_F {
         r: settings.drawing_color_red as f32 / 255.0,

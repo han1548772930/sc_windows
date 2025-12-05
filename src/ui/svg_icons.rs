@@ -1,8 +1,9 @@
-use crate::types::ToolbarButton;
+use super::ToolbarButton;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
+use crate::utils::{render_svg_to_pixels, PixelFormat, SvgRenderOptions};
 
 #[derive(Debug)]
 pub struct SvgIconManager {
@@ -86,31 +87,18 @@ impl SvgIconManager {
             Some(data) => data,
             None => return Ok(None),
         };
-        let mut svg_str = String::from_utf8_lossy(svg_data).to_string();
+        let svg_str = String::from_utf8_lossy(svg_data);
 
-        if let Some((r, g, b)) = color {
-            let color_hex = format!("#{r:02x}{g:02x}{b:02x}");
-            svg_str = svg_str.replace(
-                "stroke=\"currentColor\"",
-                &format!("stroke=\"{color_hex}\""),
-            );
-            svg_str = svg_str.replace("fill=\"currentColor\"", &format!("fill=\"{color_hex}\""));
-        }
+        // 使用统一的 SVG 渲染工具
+        let options = SvgRenderOptions {
+            size,
+            scale: 1.0,
+            color_override: color,
+            output_format: PixelFormat::Bgra,
+        };
+        let (bgra_data, render_size, _) = render_svg_to_pixels(&svg_str, &options)?;
 
-        let opt = usvg::Options::default();
-        let tree = usvg::Tree::from_str(&svg_str, &opt)?;
-
-        let mut pixmap = tiny_skia::Pixmap::new(size, size)
-            .ok_or("Failed to create pixmap")?;
-
-        let transform = tiny_skia::Transform::from_scale(
-            size as f32 / tree.size().width(),
-            size as f32 / tree.size().height(),
-        );
-
-        resvg::render(&tree, transform, &mut pixmap.as_mut());
-
-        let bitmap = self.create_d2d_bitmap_from_pixmap(render_target, &pixmap, size)?;
+        let bitmap = Self::create_d2d_bitmap(render_target, &bgra_data, render_size)?;
         self.rendered_icons
             .borrow_mut()
             .insert(cache_key, bitmap.clone());
@@ -118,10 +106,9 @@ impl SvgIconManager {
         Ok(Some(bitmap))
     }
 
-    fn create_d2d_bitmap_from_pixmap(
-        &self,
+    fn create_d2d_bitmap(
         render_target: &ID2D1RenderTarget,
-        pixmap: &tiny_skia::Pixmap,
+        bgra_data: &[u8],
         size: u32,
     ) -> Result<ID2D1Bitmap, Box<dyn std::error::Error>> {
         unsafe {
@@ -138,16 +125,6 @@ impl SvgIconManager {
                 width: size,
                 height: size,
             };
-
-            let mut bgra_data = Vec::with_capacity(pixmap.data().len());
-            for chunk in pixmap.data().chunks(4) {
-                if chunk.len() == 4 {
-                    bgra_data.push(chunk[2]); // B
-                    bgra_data.push(chunk[1]); // G
-                    bgra_data.push(chunk[0]); // R
-                    bgra_data.push(chunk[3]); // A
-                }
-            }
 
             let bitmap = render_target.CreateBitmap(
                 size_u,

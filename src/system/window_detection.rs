@@ -1,10 +1,11 @@
-use super::SystemError;
-
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowRect, GetWindowTextW,
-    IsWindowVisible,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetDlgCtrlID, GetParent, GetWindowRect,
+    GetWindowTextW, IsIconic, IsWindowVisible,
 };
+
+use super::SystemError;
+use crate::platform::windows::system::get_screen_size;
 
 /// 窗口信息
 #[derive(Debug, Clone)]
@@ -73,6 +74,8 @@ pub struct WindowDetector {
     current_highlighted_window: Option<usize>,
     child_controls: Vec<ChildControlInfo>,
     current_highlighted_control: Option<usize>,
+    /// 上次检测的窗口句柄（用于节流子控件刷新）
+    last_detected_hwnd: Option<isize>,
 }
 
 /// 窗口检测管理器
@@ -97,6 +100,7 @@ impl WindowDetector {
             current_highlighted_window: None,
             child_controls: Vec::new(),
             current_highlighted_control: None,
+            last_detected_hwnd: None,
         }
     }
 
@@ -186,6 +190,8 @@ impl WindowDetector {
 
     /// 综合检测：根据鼠标位置同时检测窗口和子控件
     /// 返回 (窗口信息, 子控件信息)
+    /// 
+    /// 优化：只有当窗口变化时才刷新子控件列表，避免频繁调用 EnumChildWindows
     pub fn detect_at_point(
         &mut self,
         x: i32,
@@ -194,13 +200,21 @@ impl WindowDetector {
         // 首先检测窗口
         let window = self.get_window_at_point(x, y);
 
-        // 每次都刷新子控件列表（移除缓存优化，确保可靠性）
         let control = if let Some(ref window_info) = window {
-            // 刷新子控件列表
-            let _ = self.refresh_child_controls(window_info.hwnd);
+            let current_hwnd = window_info.hwnd.0 as isize;
+            
+            // 节流优化：只有当窗口变化时才刷新子控件列表
+            if self.last_detected_hwnd != Some(current_hwnd) {
+                self.last_detected_hwnd = Some(current_hwnd);
+                let _ = self.refresh_child_controls(window_info.hwnd);
+            }
+            
             // 在子控件列表中查找
             self.get_child_control_at_point(x, y).cloned()
         } else {
+            // 窗口为空，清除缓存
+            self.last_detected_hwnd = None;
+            self.child_controls.clear();
             None
         };
 
@@ -302,7 +316,7 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
         }
 
         // 修正全屏窗口的矩形坐标，确保不超出屏幕边界
-        let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
+        let (screen_width, screen_height) = get_screen_size();
 
         // 限制窗口矩形在屏幕范围内
         rect.left = rect.left.max(0);
@@ -330,7 +344,6 @@ unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> windo
 
         // 检查窗口是否可见和最小化状态
         let is_visible = IsWindowVisible(hwnd).as_bool();
-        use windows::Win32::UI::WindowsAndMessaging::IsIconic;
         let is_minimized = IsIconic(hwnd).as_bool();
 
         // 创建窗口信息
@@ -387,7 +400,6 @@ unsafe extern "system" fn enum_child_windows_proc(
         };
 
         // 获取控件ID
-        use windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID;
         let control_id = GetDlgCtrlID(hwnd);
 
         // 检查控件是否可见

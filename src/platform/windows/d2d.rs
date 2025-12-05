@@ -1,4 +1,3 @@
-use crate::platform::traits;
 use crate::platform::traits::*;
 use std::collections::HashMap;
 
@@ -693,10 +692,9 @@ impl Direct2DRenderer {
     }
 }
 
-impl PlatformRenderer for Direct2DRenderer {
-    type Error = PlatformError;
-
-    fn begin_frame(&mut self) -> std::result::Result<(), Self::Error> {
+// 以下方法原属 PlatformRenderer trait，现已直接实现在 Direct2DRenderer 上
+impl Direct2DRenderer {
+    pub fn begin_frame(&mut self) -> std::result::Result<(), PlatformError> {
         self.frame_count += 1;
         // BeginDraw
         if let Some(ref render_target) = self.render_target {
@@ -707,7 +705,7 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn end_frame(&mut self) -> std::result::Result<(), Self::Error> {
+    pub fn end_frame(&mut self) -> std::result::Result<(), PlatformError> {
         // EndDraw
         if let Some(ref render_target) = self.render_target {
             unsafe {
@@ -720,7 +718,7 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn clear(&mut self, color: Color) -> std::result::Result<(), Self::Error> {
+    pub fn clear(&mut self, color: Color) -> std::result::Result<(), PlatformError> {
         // Clear
         if let Some(ref render_target) = self.render_target {
             let d2d_color = D2D1_COLOR_F {
@@ -736,11 +734,11 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_rectangle(
+    pub fn draw_rectangle(
         &mut self,
         rect: Rectangle,
         style: &DrawStyle,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
         // 实现Direct2D的矩形绘制
         // 先创建所有需要的画刷，避免借用冲突
         let fill_brush = if let Some(fill_color) = style.fill_color {
@@ -782,12 +780,12 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_rounded_rectangle(
+    pub fn draw_rounded_rectangle(
         &mut self,
         rect: Rectangle,
         radius: f32,
         style: &DrawStyle,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
         // 实现Direct2D的圆角矩形绘制
         // 先创建需要的画刷，避免借用冲突
         let fill_brush = if let Some(fill_color) = style.fill_color {
@@ -831,12 +829,12 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_circle(
+    pub fn draw_circle(
         &mut self,
         center: Point,
         radius: f32,
         style: &DrawStyle,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
         // DrawEllipse
         // 先创建需要的画刷，避免借用冲突
         let fill_brush = if let Some(fill_color) = style.fill_color {
@@ -878,12 +876,12 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_line(
+    pub fn draw_line(
         &mut self,
         start: Point,
         end: Point,
         style: &DrawStyle,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
         // DrawLine
         // 先取画刷，避免与render_target借用冲突
         let brush = self.get_or_create_brush(style.stroke_color)?;
@@ -900,30 +898,17 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_dashed_rectangle(
+    pub fn draw_dashed_rectangle(
         &mut self,
         rect: Rectangle,
         style: &DrawStyle,
         dash_pattern: &[f32],
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
+        // 使用缓存画刷
+        let stroke_brush = self.get_or_create_brush(style.stroke_color)?;
+        
         if let (Some(render_target), Some(d2d_factory)) = (&self.render_target, &self.d2d_factory) {
             unsafe {
-                // 笔刷
-                let stroke_brush = {
-                    let d2d_color = D2D1_COLOR_F {
-                        r: style.stroke_color.r,
-                        g: style.stroke_color.g,
-                        b: style.stroke_color.b,
-                        a: style.stroke_color.a,
-                    };
-                    render_target
-                        .CreateSolidColorBrush(&d2d_color, None)
-                        .map_err(|e| {
-                            PlatformError::RenderError(format!(
-                                "CreateSolidColorBrush failed: {e:?}"
-                            ))
-                        })?
-                };
 
                 // 虚线样式
                 let mut dashes: Vec<f32> = dash_pattern.to_vec();
@@ -962,12 +947,12 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn draw_text(
+    pub fn draw_text(
         &mut self,
         text: &str,
         position: Point,
         style: &TextStyle,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
         // 实现Direct2D的DrawText
         if self.render_target.is_none() || self.dwrite_factory.is_none() {
             return Ok(());
@@ -1009,11 +994,11 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn measure_text(
+    pub fn measure_text(
         &self,
         text: &str,
         style: &TextStyle,
-    ) -> std::result::Result<(f32, f32), Self::Error> {
+    ) -> std::result::Result<(f32, f32), PlatformError> {
         // 使用 DirectWrite 进行精确文本测量
         if text.is_empty() {
             return Ok((0.0, style.font_size));
@@ -1046,7 +1031,7 @@ impl PlatformRenderer for Direct2DRenderer {
     }
 
     /// 设置裁剪区域
-    fn push_clip_rect(&mut self, rect: Rectangle) -> std::result::Result<(), Self::Error> {
+    pub fn push_clip_rect(&mut self, rect: Rectangle) -> std::result::Result<(), PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
                 let clip_rect = D2D_RECT_F {
@@ -1065,7 +1050,7 @@ impl PlatformRenderer for Direct2DRenderer {
     }
 
     /// 恢复裁剪区域
-    fn pop_clip_rect(&mut self) -> std::result::Result<(), Self::Error> {
+    pub fn pop_clip_rect(&mut self) -> std::result::Result<(), PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
                 render_target.PopAxisAlignedClip();
@@ -1074,46 +1059,22 @@ impl PlatformRenderer for Direct2DRenderer {
         Ok(())
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    /// 从GDI位图创建平台位图（平台无关接口实现）
-    fn create_bitmap_from_gdi(
-        &mut self,
-        gdi_dc: windows::Win32::Graphics::Gdi::HDC,
-        width: i32,
-        height: i32,
-    ) -> std::result::Result<(), traits::PlatformError> {
-        // 调用现有的实现方法
-        let _bitmap = self.create_d2d_bitmap_from_gdi(gdi_dc, width, height)?;
-        // 位图已经创建并可以在后续渲染中使用
-        Ok(())
-    }
+    // 已删除不再需要的 as_any/as_any_mut 和 create_bitmap_from_gdi 方法
+    // 这些是 PlatformRenderer trait 的遗留方法，在直接使用 Direct2DRenderer 时不再需要
 
     // ---------- 高层绘图接口实现 ----------
 
-    fn draw_selection_mask(
+    pub fn draw_selection_mask(
         &mut self,
         screen_rect: Rectangle,
         selection_rect: Rectangle,
         mask_color: Color,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
+        // 使用缓存画刷
+        let mask_brush = self.get_or_create_brush(mask_color)?;
+        
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建遮罩画刷
-                let d2d_color = D2D1_COLOR_F {
-                    r: mask_color.r,
-                    g: mask_color.g,
-                    b: mask_color.b,
-                    a: mask_color.a,
-                };
-
-                if let Ok(mask_brush) = render_target.CreateSolidColorBrush(&d2d_color, None) {
                     // 绘制四个矩形覆盖选区外区域
                     let left = selection_rect.x;
                     let top = selection_rect.y;
@@ -1163,30 +1124,23 @@ impl PlatformRenderer for Direct2DRenderer {
                         };
                         render_target.FillRectangle(&rect, &mask_brush);
                     }
-                }
             }
         }
         Ok(())
     }
 
-    fn draw_selection_border(
+    pub fn draw_selection_border(
         &mut self,
         rect: Rectangle,
         color: Color,
         width: f32,
         dash_pattern: Option<&[f32]>,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
+        // 使用缓存画刷
+        let border_brush = self.get_or_create_brush(color)?;
+        
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建边框画刷
-                let d2d_color = D2D1_COLOR_F {
-                    r: color.r,
-                    g: color.g,
-                    b: color.b,
-                    a: color.a,
-                };
-
-                if let Ok(border_brush) = render_target.CreateSolidColorBrush(&d2d_color, None) {
                     let d2d_rect = D2D_RECT_F {
                         left: rect.x,
                         top: rect.y,
@@ -1227,40 +1181,25 @@ impl PlatformRenderer for Direct2DRenderer {
                         // 实线边框
                         render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
                     }
-                }
             }
         }
         Ok(())
     }
 
-    fn draw_selection_handles(
+    pub fn draw_selection_handles(
         &mut self,
         rect: Rectangle,
         handle_size: f32,
         fill_color: Color,
         border_color: Color,
         border_width: f32,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
+        // 使用缓存画刷
+        let fill_brush = self.get_or_create_brush(fill_color)?;
+        let border_brush = self.get_or_create_brush(border_color)?;
+        
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建填充和边框画刷
-                let fill_d2d_color = D2D1_COLOR_F {
-                    r: fill_color.r,
-                    g: fill_color.g,
-                    b: fill_color.b,
-                    a: fill_color.a,
-                };
-                let border_d2d_color = D2D1_COLOR_F {
-                    r: border_color.r,
-                    g: border_color.g,
-                    b: border_color.b,
-                    a: border_color.a,
-                };
-
-                if let (Ok(fill_brush), Ok(border_brush)) = (
-                    render_target.CreateSolidColorBrush(&fill_d2d_color, None),
-                    render_target.CreateSolidColorBrush(&border_d2d_color, None),
-                ) {
                     let half = handle_size / 2.0;
                     let cx = rect.x + rect.width / 2.0;
                     let cy = rect.y + rect.height / 2.0;
@@ -1298,40 +1237,25 @@ impl PlatformRenderer for Direct2DRenderer {
                             );
                         }
                     }
-                }
             }
         }
         Ok(())
     }
 
-    fn draw_element_handles(
+    pub fn draw_element_handles(
         &mut self,
         rect: Rectangle,
         handle_radius: f32,
         fill_color: Color,
         border_color: Color,
         border_width: f32,
-    ) -> std::result::Result<(), Self::Error> {
+    ) -> std::result::Result<(), PlatformError> {
+        // 使用缓存画刷
+        let fill_brush = self.get_or_create_brush(fill_color)?;
+        let border_brush = self.get_or_create_brush(border_color)?;
+        
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建填充和边框画刷
-                let fill_d2d_color = D2D1_COLOR_F {
-                    r: fill_color.r,
-                    g: fill_color.g,
-                    b: fill_color.b,
-                    a: fill_color.a,
-                };
-                let border_d2d_color = D2D1_COLOR_F {
-                    r: border_color.r,
-                    g: border_color.g,
-                    b: border_color.b,
-                    a: border_color.a,
-                };
-
-                if let (Ok(fill_brush), Ok(border_brush)) = (
-                    render_target.CreateSolidColorBrush(&fill_d2d_color, None),
-                    render_target.CreateSolidColorBrush(&border_d2d_color, None),
-                ) {
                     let cx = rect.x + rect.width / 2.0;
                     let cy = rect.y + rect.height / 2.0;
 
@@ -1367,15 +1291,12 @@ impl PlatformRenderer for Direct2DRenderer {
                             );
                         }
                     }
-                }
             }
         }
         Ok(())
     }
-}
 
-impl Direct2DRenderer {
-    /// 测量多行文本尺寸（用于计算滚动高度）
+    /// 测量多行文本尺寸
     pub fn measure_text_layout_size(
         &self,
         text: &str,
@@ -1594,9 +1515,15 @@ impl Direct2DRenderer {
     /// 3. 清空背景（透明）
     /// 4. 执行闭包绘制静态元素
     /// 5. EndDraw
-    pub fn update_static_layer<F>(&mut self, draw_fn: F) -> std::result::Result<(), PlatformError>
+    ///
+    /// 支持传递额外的上下文数据给闭包（如 GeometryCache 引用），避免不必要的 clone。
+    pub fn update_static_layer_with_context<F, C>(
+        &mut self,
+        context: C,
+        draw_fn: F,
+    ) -> std::result::Result<(), PlatformError>
     where
-        F: FnOnce(&ID2D1RenderTarget, &mut Self) -> std::result::Result<(), PlatformError>,
+        F: FnOnce(&ID2D1RenderTarget, &mut Self, C) -> std::result::Result<(), PlatformError>,
     {
         // 确保 layer_target 存在
         if self.layer_target.is_none() {
@@ -1607,14 +1534,10 @@ impl Direct2DRenderer {
             PlatformError::ResourceError("Failed to get or create layer target".to_string())
         })?;
 
-        // 为了避免借用冲突，先 clone layer_target
         let layer_target_clone = layer_target.clone();
 
         unsafe {
-            // BeginDraw
             layer_target_clone.BeginDraw();
-
-            // 清空背景（完全透明）
             let clear_color = D2D1_COLOR_F {
                 r: 0.0,
                 g: 0.0,
@@ -1624,12 +1547,9 @@ impl Direct2DRenderer {
             layer_target_clone.Clear(Some(&clear_color));
         }
 
-        // 执行绘制闭包
-        // 注意：这里传递 layer_target 作为渲染目标
         let layer_target_interface: &ID2D1RenderTarget = &layer_target_clone;
-        let result = draw_fn(layer_target_interface, self);
+        let result = draw_fn(layer_target_interface, self, context);
 
-        // 无论绘制成功与否，都要 EndDraw
         unsafe {
             let end_result = layer_target_clone.EndDraw(None, None);
             if let Err(e) = end_result {

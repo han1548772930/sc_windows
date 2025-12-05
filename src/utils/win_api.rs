@@ -117,12 +117,6 @@ pub fn is_window_visible(hwnd: HWND) -> bool {
     unsafe { IsWindowVisible(hwnd).as_bool() }
 }
 
-/// 获取屏幕尺寸 - 重新导出platform模块的实现
-#[inline]
-pub fn get_screen_size() -> (i32, i32) {
-    crate::platform::windows::system::get_screen_size()
-}
-
 /// 发送自定义消息到窗口
 #[inline]
 pub fn post_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> windows::core::Result<()> {
@@ -185,14 +179,3 @@ pub fn set_foreground_window(hwnd: HWND) -> bool {
 
 // ==================== 单元测试 ====================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_screen_size() {
-        let (width, height) = get_screen_size();
-        assert!(width > 0, "屏幕宽度应该大于0");
-        assert!(height > 0, "屏幕高度应该大于0");
-    }
-}

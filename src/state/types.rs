@@ -13,14 +13,7 @@ pub enum AppState {
     /// 空闲状态 - 窗口隐藏，等待热键触发
     Idle,
     /// 框选状态 - 正在框选屏幕区域
-    Selecting {
-        /// 框选起点
-        start_x: i32,
-        start_y: i32,
-        /// 当前位置
-        current_x: i32,
-        current_y: i32,
-    },
+    Selecting,
     /// 编辑状态 - 已选择区域，可以进行绘图编辑
     Editing {
         /// 选择区域
@@ -60,7 +53,7 @@ impl AppState {
 
     /// 检查是否处于框选状态
     pub fn is_selecting(&self) -> bool {
-        matches!(self, AppState::Selecting { .. })
+        matches!(self, AppState::Selecting)
     }
 
     /// 检查是否处于编辑状态

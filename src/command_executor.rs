@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
+
+use windows::Win32::Foundation::HWND;
+
 use crate::app::App;
 use crate::message::{Command, DrawingMessage, Message};
+use crate::ocr::PaddleOcrEngine;
 use crate::settings::SettingsWindow;
 use crate::utils::{command_helpers, win_api};
-use std::collections::VecDeque;
-use windows::Win32::Foundation::HWND;
 
 /// 命令队列
 /// 
@@ -152,9 +155,8 @@ impl CommandExecutor for App {
             }
             Command::ShowOverlay => {
                 // 显示覆盖层（截图成功）
-                // 覆盖层显示时再次异步预热OCR引擎，避免后续再次使用时冷启动卡顿
-                crate::ocr::PaddleOcrEngine::start_ocr_engine_async();
-                self.start_async_ocr_check(hwnd);
+                // 覆盖层显示时异步预热OCR引擎，完成后自动发送状态更新消息
+                PaddleOcrEngine::start_ocr_engine_async_with_hwnd(hwnd);
                 vec![]
             }
             Command::HideOverlay | Command::HideWindow => {

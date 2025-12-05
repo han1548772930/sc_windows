@@ -1,18 +1,25 @@
+use std::collections::HashSet;
+
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+
 use crate::command_executor::CommandExecutor;
-use crate::drawing::DrawingManager;
+use crate::constants::*;
+use crate::drawing::{DrawingError, DrawingManager, DrawingTool};
 use crate::error::{AppError, AppResult};
-use crate::event_handler::{
-    KeyboardEventHandler, MouseEventHandler, SystemEventHandler, WindowEventHandler,
-};
-use crate::message::{Command, Message, ScreenshotMessage};
-use crate::platform::{PlatformError, PlatformRenderer};
-use crate::rendering::DirtyRectTracker;
-use crate::screenshot::ScreenshotManager;
+use crate::message::{Command, DrawingMessage, Message, ScreenshotMessage};
+use crate::ocr::OcrResult;
+use crate::platform::windows::d2d::Direct2DRenderer;
+use crate::platform::{Color, EventConverter, InputEvent, MouseButton, PlatformError, Rectangle};
+use crate::rendering::{DirtyRectTracker, DirtyType};
+use crate::screenshot::{ScreenshotError, ScreenshotManager, save::copy_bmp_data_to_clipboard};
 use crate::settings::ConfigManager;
-use crate::state::{AppStateHandler, StateContext, StateTransition, create_state};
-use crate::system::SystemManager;
-use crate::types::{AppState, DrawingTool, ProcessingOperation};
-use crate::ui::UIManager;
+use crate::state::{AppState, AppStateHandler, ProcessingOperation, StateContext, StateTransition, create_state};
+use crate::system::{SystemError, SystemManager};
+use crate::ui::{cursor::CursorManager, file_dialog, PreviewWindow, ToolbarButton, UIError, UIManager};
+use crate::platform::windows::system::get_screen_size;
+use crate::utils::win_api;
 
 /// 应用程序主结构体
 pub struct App {
@@ -30,8 +37,8 @@ pub struct App {
     ui: UIManager,
     /// 系统管理器
     system: SystemManager,
-    /// 平台渲染器
-    platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
+    /// Direct2D 渲染器
+    platform: Direct2DRenderer,
     /// 缓存的屏幕尺寸 (宽度, 高度)
     screen_size: (i32, i32),
     /// 脏矩形追踪器（用于渲染优化）
@@ -39,9 +46,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        platform: Box<dyn PlatformRenderer<Error = PlatformError> + Send + Sync>,
-    ) -> AppResult<Self> {
+    pub fn new(platform: Direct2DRenderer) -> AppResult<Self> {
         // 初始化配置管理器（仅加载一次配置文件）
         let config = ConfigManager::new();
 
@@ -51,7 +56,7 @@ impl App {
         let screenshot = ScreenshotManager::new()?;
 
         // 缓存屏幕尺寸，避免重复调用系统API
-        let screen_size = crate::platform::windows::system::get_screen_size();
+        let screen_size = get_screen_size();
 
         let state = AppState::Idle;
         let current_state = create_state(&state);
@@ -95,12 +100,7 @@ impl App {
         let new_state = match transition {
             StateTransition::None => return,
             StateTransition::ToIdle => AppState::Idle,
-            StateTransition::ToSelecting { start_x, start_y } => AppState::Selecting {
-                start_x,
-                start_y,
-                current_x: start_x,
-                current_y: start_y,
-            },
+            StateTransition::ToSelecting => AppState::Selecting,
             StateTransition::ToEditing { selection, tool } => AppState::Editing { selection, tool },
             StateTransition::ToProcessing { operation } => AppState::Processing { operation },
         };
@@ -146,7 +146,7 @@ impl App {
     }
 
     /// 进入编辑状态（便捷方法）
-    pub fn enter_editing_state(&mut self, selection: windows::Win32::Foundation::RECT) {
+    pub fn enter_editing_state(&mut self, selection: RECT) {
         self.transition_to(AppState::Editing {
             selection,
             tool: DrawingTool::None,
@@ -181,8 +181,7 @@ impl App {
     }
 
     /// 标记局部脏区域（用于光标闪烁等局部更新场景）
-    pub fn mark_dirty_rect(&mut self, rect: &windows::Win32::Foundation::RECT) {
-        use crate::platform::Rectangle;
+    pub fn mark_dirty_rect(&mut self, rect: &RECT) {
         self.dirty_tracker.mark_dirty(Rectangle {
             x: rect.left as f32,
             y: rect.top as f32,
@@ -198,8 +197,6 @@ impl App {
 
     /// 绘制窗口内容
     pub fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
-        use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
-
         unsafe {
             let mut ps = PAINTSTRUCT::default();
             BeginPaint(hwnd, &mut ps);
@@ -216,8 +213,6 @@ impl App {
     ///
     /// 使用 DirtyRectTracker 追踪脏区域，为后续局部渲染优化做准备。
     pub fn render(&mut self) -> AppResult<()> {
-        use crate::rendering::DirtyType;
-
         // 检查脏区域类型（当前用于调试/日志，后续可用于优化）
         let dirty_type = self.dirty_tracker.dirty_type();
         
@@ -236,7 +231,7 @@ impl App {
             .map_err(|e| AppError::Render(format!("Failed to begin frame: {e:?}")))?;
 
         self.platform
-            .clear(crate::platform::Color {
+            .clear(Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
@@ -245,13 +240,13 @@ impl App {
             .map_err(|e| AppError::Render(format!("Failed to clear: {e:?}")))?;
 
         self.screenshot
-            .render(&mut *self.platform)
+            .render(&mut self.platform)
             .map_err(|e| AppError::Render(format!("Failed to render screenshot: {e:?}")))?;
 
         let selection_rect = self.screenshot.get_selection();
 
         self.drawing
-            .render(&mut *self.platform, selection_rect.as_ref())
+            .render(&mut self.platform, selection_rect.as_ref())
             .map_err(|e| AppError::Render(format!("Failed to render drawing: {e:?}")))?;
 
         let screen_size = (
@@ -264,7 +259,7 @@ impl App {
 
         self.ui
             .render_selection_ui(
-                &mut *self.platform,
+                &mut self.platform,
                 screen_size,
                 selection_rect.as_ref(),
                 show_handles,
@@ -274,7 +269,7 @@ impl App {
             .map_err(|e| AppError::Render(format!("Failed to render selection UI: {e:?}")))?;
 
         self.ui
-            .render(&mut *self.platform)
+            .render(&mut self.platform)
             .map_err(|e| AppError::Render(format!("Failed to render UI: {e:?}")))?;
 
         self.platform
@@ -298,7 +293,7 @@ impl App {
                 {
                     let _ = self
                         .screenshot
-                        .create_d2d_bitmap_from_gdi(&mut *self.platform);
+                        .create_d2d_bitmap_from_gdi(&mut self.platform);
 
                     self.drawing.reset_state();
                     self.update_toolbar_state();
@@ -363,19 +358,17 @@ impl App {
         self.system.reregister_hotkey(hwnd)
     }
 
-    /// 更新OCR引擎状态
-    pub fn update_ocr_engine_status(
+    /// OCR引擎状态变更回调
+    pub fn on_ocr_engine_status_changed(
         &mut self,
         available: bool,
         hwnd: windows::Win32::Foundation::HWND,
     ) {
-        self.system.update_ocr_engine_status(available, hwnd);
+        self.system.on_ocr_engine_status_changed(available, hwnd);
     }
 
     /// 处理键盘输入
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
-        use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-
         // ESC键在任何状态下都可以退出（保持在App层处理）
         if key == VK_ESCAPE.0 as u32 {
             self.reset_to_initial_state();
@@ -401,16 +394,16 @@ impl App {
     /// 选择绘图工具
     pub fn select_drawing_tool(
         &mut self,
-        tool: crate::types::DrawingTool,
-    ) -> Vec<crate::message::Command> {
-        let message = crate::message::DrawingMessage::SelectTool(tool);
+        tool: DrawingTool,
+    ) -> Vec<Command> {
+        let message = DrawingMessage::SelectTool(tool);
         self.drawing.handle_message(message)
     }
     
     /// 创建D2D位图
     pub fn create_d2d_bitmap_from_gdi(&mut self) -> AppResult<()> {
         self.screenshot
-            .create_d2d_bitmap_from_gdi(&mut *self.platform)
+            .create_d2d_bitmap_from_gdi(&mut self.platform)
             .map_err(|e| AppError::Render(format!("Failed to create D2D bitmap: {e:?}")))
     }
 
@@ -461,7 +454,7 @@ impl App {
             let current_tool = self.drawing.get_current_tool();
             let selection_handle_mode = self.screenshot.get_handle_at_position(x, y);
 
-            crate::ui::cursor::CursorManager::determine_cursor(
+            CursorManager::determine_cursor(
                 x,
                 y,
                 hovered_button,
@@ -476,7 +469,7 @@ impl App {
             )
         };
 
-        crate::ui::cursor::CursorManager::set_cursor(cursor_id);
+        CursorManager::set_cursor(cursor_id);
         commands
     }
 
@@ -554,8 +547,6 @@ impl App {
 
     /// 执行截图
     pub fn take_screenshot(&mut self, hwnd: windows::Win32::Foundation::HWND) -> AppResult<()> {
-        use crate::utils::win_api;
-
         // 重置状态并开始截图
         self.screenshot.reset_state();
 
@@ -578,10 +569,6 @@ impl App {
 
     /// 更新工具栏状态以反映当前选中的绘图工具
     pub fn update_toolbar_state(&mut self) {
-        use crate::types::DrawingTool;
-        use crate::types::ToolbarButton;
-        use std::collections::HashSet;
-
         // 工具栏始终显示当前绘图工具
         let current_tool = self.drawing.get_current_tool();
 
@@ -607,7 +594,7 @@ impl App {
     /// 合成选择区域图像和绘图元素，返回BMP数据
     fn compose_selection_with_drawings(
         &mut self,
-        selection_rect: &windows::Win32::Foundation::RECT,
+        selection_rect: &RECT,
     ) -> AppResult<Vec<u8>> {
         // 获取D2D位图
         let Some(source_bitmap) = self.screenshot.get_d2d_bitmap() else {
@@ -618,27 +605,18 @@ impl App {
         // 克隆selection_rect以便在闭包中使用
         let sel_rect = *selection_rect;
 
-        // 使用Direct2D渲染器进行合成
-        if let Some(d2d_renderer) =
-            self.platform
-                .as_any_mut()
-                .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
-        {
-            // 使用闭包来渲染元素
-            let drawing_ref = &self.drawing;
+        // 使用闭包来渲染元素
+        let drawing_ref = &self.drawing;
 
-            let bmp_data = d2d_renderer
-                .render_selection_to_bmp(&source_bitmap, &sel_rect, |render_target, renderer| {
-                    drawing_ref
-                        .render_elements_to_target(render_target, renderer, &sel_rect)
-                        .map_err(|e| crate::platform::PlatformError::RenderError(format!("{e}")))
-                })
-                .map_err(|e| AppError::Render(format!("Failed to compose image: {e:?}")))?;
+        let bmp_data = self.platform
+            .render_selection_to_bmp(&source_bitmap, &sel_rect, |render_target, renderer| {
+                drawing_ref
+                    .render_elements_to_target(render_target, renderer, &sel_rect)
+                    .map_err(|e| PlatformError::RenderError(format!("{e}")))
+            })
+            .map_err(|e| AppError::Render(format!("Failed to compose image: {e:?}")))?;
 
-            Ok(bmp_data)
-        } else {
-            Err(AppError::Render("Failed to get D2D renderer".to_string()))
-        }
+        Ok(bmp_data)
     }
 
     /// 保存选择区域到剪贴板（包含绘图元素）
@@ -661,7 +639,7 @@ impl App {
         let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
         // 将 BMP 数据复制到剪贴板
-        crate::screenshot::save::copy_bmp_data_to_clipboard(&bmp_data)
+        copy_bmp_data_to_clipboard(&bmp_data)
             .map_err(|e| AppError::Screenshot(format!("Failed to copy to clipboard: {e:?}")))
     }
 
@@ -686,7 +664,7 @@ impl App {
         }
 
         // 显示文件保存对话框
-        let Some(file_path) = crate::file_dialog::show_image_save_dialog(hwnd, "screenshot.png")
+        let Some(file_path) = file_dialog::show_image_save_dialog(hwnd, "screenshot.png")
         else {
             return Ok(false); // 用户取消了对话框
         };
@@ -737,14 +715,14 @@ impl App {
         let bmp_data = self.compose_selection_with_drawings(&selection_rect)?;
 
         // 创建固钉窗口
-        if let Err(e) = crate::ui::PreviewWindow::show(bmp_data, vec![], selection_rect, true) {
+        if let Err(e) = PreviewWindow::show(bmp_data, vec![], selection_rect, true) {
             return Err(AppError::WinApi(format!(
                 "Failed to show pin window: {e:?}"
             )));
         }
 
         // 隐藏原始截屏窗口
-        let _ = crate::utils::win_api::hide_window(hwnd);
+        let _ = win_api::hide_window(hwnd);
 
         // 重置原始窗口状态，准备下次截屏
         self.reset_to_initial_state();
@@ -768,11 +746,9 @@ impl App {
     /// 这是新的抽象层 API，接受平台无关的 InputEvent
     pub fn handle_input_event(
         &mut self,
-        event: crate::platform::InputEvent,
+        event: InputEvent,
         _hwnd: windows::Win32::Foundation::HWND,
     ) -> Vec<Command> {
-        use crate::platform::{InputEvent, MouseButton};
-
         match event {
             InputEvent::MouseMove { x, y } => self.handle_mouse_move(x, y),
 
@@ -813,9 +789,6 @@ impl App {
         wparam: windows::Win32::Foundation::WPARAM,
         lparam: windows::Win32::Foundation::LPARAM,
     ) -> Option<windows::Win32::Foundation::LRESULT> {
-        use crate::constants::*;
-        use crate::platform::EventConverter;
-        use crate::utils::win_api;
         use windows::Win32::Foundation::LRESULT;
         use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -868,10 +841,10 @@ impl App {
 
             val if val == WM_OCR_STATUS_UPDATE => {
                 let available = wparam.0 != 0;
-                self.update_ocr_engine_status(available, hwnd);
+                self.on_ocr_engine_status_changed(available, hwnd);
                 let commands = vec![
-                    crate::message::Command::UpdateToolbar,
-                    crate::message::Command::RequestRedraw,
+                    Command::UpdateToolbar,
+                    Command::RequestRedraw,
                 ];
                 self.execute_command_chain(commands, hwnd);
                 Some(LRESULT(0))
@@ -885,16 +858,16 @@ impl App {
     /// 返回: (has_results, is_ocr_failed, ocr_text)
     pub fn handle_ocr_completed(
         &mut self,
-        ocr_results: Vec<crate::ocr::OcrResult>,
+        ocr_results: Vec<OcrResult>,
         image_data: Vec<u8>,
-        selection_rect: windows::Win32::Foundation::RECT,
+        selection_rect: RECT,
     ) -> (bool, bool, String) {
         let has_results = !ocr_results.is_empty();
         let is_ocr_failed = ocr_results.len() == 1 && ocr_results[0].text == "OCR识别失败";
 
         // 显示OCR结果窗口
         if let Err(e) =
-            crate::ui::PreviewWindow::show(image_data, ocr_results.clone(), selection_rect, false)
+            PreviewWindow::show(image_data, ocr_results.clone(), selection_rect, false)
         {
             eprintln!("Failed to show OCR result window: {:?}", e);
         }
@@ -914,75 +887,27 @@ impl App {
     }
 }
 
-// 实现EventHandler traits
-impl MouseEventHandler for App {
-    fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
-        self.handle_mouse_move(x, y)
-    }
 
-    fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
-        self.handle_mouse_down(x, y)
-    }
-
-    fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
-        self.handle_mouse_up(x, y)
-    }
-
-    fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
-        self.handle_double_click(x, y)
-    }
-}
-
-impl KeyboardEventHandler for App {
-    fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
-        self.handle_key_input(key)
-    }
-
-    fn handle_text_input(&mut self, character: char) -> Vec<Command> {
-        self.handle_text_input(character)
-    }
-}
-
-impl SystemEventHandler for App {
-    fn handle_tray_message(&mut self, wparam: u32, lparam: u32) -> Vec<Command> {
-        self.handle_tray_message(wparam, lparam)
-    }
-
-    fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
-        self.handle_cursor_timer(timer_id)
-    }
-}
-
-impl WindowEventHandler for App {
-    fn paint(&mut self, hwnd: windows::Win32::Foundation::HWND) -> Result<(), AppError> {
-        self.paint(hwnd)
-    }
-
-    fn reset_to_initial_state(&mut self) {
-        self.reset_to_initial_state()
-    }
-}
-
-impl From<crate::screenshot::ScreenshotError> for AppError {
-    fn from(err: crate::screenshot::ScreenshotError) -> Self {
+impl From<ScreenshotError> for AppError {
+    fn from(err: ScreenshotError) -> Self {
         AppError::Screenshot(err.to_string())
     }
 }
 
-impl From<crate::drawing::DrawingError> for AppError {
-    fn from(err: crate::drawing::DrawingError) -> Self {
+impl From<DrawingError> for AppError {
+    fn from(err: DrawingError) -> Self {
         AppError::Drawing(err.to_string())
     }
 }
 
-impl From<crate::ui::UIError> for AppError {
-    fn from(err: crate::ui::UIError) -> Self {
+impl From<UIError> for AppError {
+    fn from(err: UIError) -> Self {
         AppError::UI(err.to_string())
     }
 }
 
-impl From<crate::system::SystemError> for AppError {
-    fn from(err: crate::system::SystemError) -> Self {
+impl From<SystemError> for AppError {
+    fn from(err: SystemError) -> Self {
         AppError::System(err.to_string())
     }
 }

@@ -12,12 +12,28 @@
 //! - 支持窗口自动检测和高亮
 //! - 支持 GDI 和 DXGI 两种捕获方式
 
-use crate::interaction::InteractionController;
-use crate::message::{Command, ScreenshotMessage};
-use crate::platform::windows::SafeHwnd;
-use crate::platform::{PlatformError, PlatformRenderer};
+use std::ptr::null_mut;
+use std::thread;
+use std::time::Duration;
+
+use windows::Win32::Foundation::{FALSE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
-use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR;
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, GetDC, HBITMAP, InvalidateRect, ReleaseDC, SelectObject, UpdateWindow,
+};
+
+use crate::drawing::DragMode;
+use crate::interaction::InteractionController;
+use crate::message::{Command, ScreenshotMessage, UIMessage};
+use crate::platform::windows::d2d::Direct2DRenderer;
+use crate::platform::windows::gdi::capture_screen_region_to_hbitmap;
+use crate::platform::windows::resources::{ManagedBitmap, ManagedDC};
+use crate::platform::windows::system::get_screen_size;
+use crate::platform::windows::SafeHwnd;
+use crate::system::{SystemError, window_detection::WindowDetectionManager};
+use crate::utils::{clamp_rect_to_screen, image_processing, is_drag_threshold_exceeded};
 
 pub mod save;
 pub mod selection;
@@ -48,7 +64,7 @@ pub struct ScreenshotManager {
     show_selection_handles: bool,
 
     /// 窗口检测器
-    window_detector: crate::system::window_detection::WindowDetectionManager,
+    window_detector: WindowDetectionManager,
     /// 自动高亮是否启用
     auto_highlight_enabled: bool,
 
@@ -68,7 +84,7 @@ pub struct ScreenshotData {
 
 impl ScreenshotManager {
     /// 便捷：外部直接设置选择矩形
-    pub fn update_selection(&mut self, rect: windows::Win32::Foundation::RECT) {
+    pub fn update_selection(&mut self, rect: RECT) {
         self.selection.update(rect);
     }
 
@@ -79,21 +95,21 @@ impl ScreenshotManager {
 
     /// 创建新的截图管理器
     pub fn new() -> Result<Self, ScreenshotError> {
-        let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
+        let (screen_width, screen_height) = get_screen_size();
 
         Ok(Self {
             selection: SelectionState::new(),
             current_screenshot: None,
             selection_interaction: InteractionController::new(),
 
-            // 初始化从WindowState迁移的字段
+            // 初始化从 WindowState 迁移的字段
             screenshot_bitmap: None,
             screen_width,
             screen_height,
             hide_ui_for_capture: false,
             show_selection_handles: true,
             window_detector: {
-                let mut detector = crate::system::window_detection::WindowDetectionManager::new()?;
+                let mut detector = WindowDetectionManager::new()?;
                 detector.start_detection()?; // 启用窗口检测
                 detector
             },
@@ -176,34 +192,29 @@ impl ScreenshotManager {
     /// 渲染截图内容
     pub fn render(
         &mut self,
-        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
+        d2d_renderer: &mut Direct2DRenderer,
     ) -> Result<(), ScreenshotError> {
-        if let Some(d2d_renderer) = renderer
-            .as_any_mut()
-            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
-        ) {
-            unsafe {
-                if let Some(render_target) = &d2d_renderer.render_target {
-                    // 绘制截图背景（如果有D2D位图）
-                    if let Some(screenshot_bitmap) = &self.screenshot_bitmap {
-                        let dest_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                            left: 0.0,
-                            top: 0.0,
-                            right: d2d_renderer.get_screen_width() as f32,
-                            bottom: d2d_renderer.get_screen_height() as f32,
-                        };
-                        render_target.DrawBitmap(
-                            screenshot_bitmap,
-                            Some(&dest_rect),
-                            1.0,
-                            windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                            None,
-                        );
-                    }
-
-                    // UI渲染（遮罩、边框、手柄）现在由UIManager负责
-                    // ScreenshotManager只负责截图背景绘制
+        unsafe {
+            if let Some(render_target) = &d2d_renderer.render_target {
+                // 绘制截图背景（如果有D2D位图）
+                if let Some(screenshot_bitmap) = &self.screenshot_bitmap {
+                    let dest_rect = D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: d2d_renderer.get_screen_width() as f32,
+                        bottom: d2d_renderer.get_screen_height() as f32,
+                    };
+                    render_target.DrawBitmap(
+                        screenshot_bitmap,
+                        Some(&dest_rect),
+                        1.0,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        None,
+                    );
                 }
+
+                // UI渲染（遮罩、边框、手柄）现在由UIManager负责
+                // ScreenshotManager只负责截图背景绘制
             }
         }
         Ok(())
@@ -212,7 +223,7 @@ impl ScreenshotManager {
     /// 按需捕获屏幕并返回GDI位图句柄
     /// 调用方负责释放返回的HBITMAP
     pub fn capture_screen_to_gdi_bitmap(&self) -> Result<HBITMAP, ScreenshotError> {
-        let screen_rect = windows::Win32::Foundation::RECT {
+        let screen_rect = RECT {
             left: 0,
             top: 0,
             right: self.screen_width,
@@ -220,7 +231,7 @@ impl ScreenshotManager {
         };
 
         unsafe {
-            crate::platform::windows::gdi::capture_screen_region_to_hbitmap(screen_rect)
+            capture_screen_region_to_hbitmap(screen_rect)
                 .map_err(|e| ScreenshotError::CaptureError(format!("GDI capture failed: {e:?}")))
         }
     }
@@ -236,7 +247,7 @@ impl ScreenshotManager {
         // 工具状态由Drawing模块管理
 
         // 重置屏幕尺寸（如果之前被pin功能修改过）
-        let (w, h) = crate::platform::windows::system::get_screen_size();
+        let (w, h) = get_screen_size();
         self.screen_width = w;
         self.screen_height = h;
 
@@ -251,7 +262,7 @@ impl ScreenshotManager {
     }
 
     /// 设置当前窗口句柄（用于排除自己的窗口）
-    pub fn set_current_window(&mut self, hwnd: windows::Win32::Foundation::HWND) {
+    pub fn set_current_window(&mut self, hwnd: HWND) {
         self.current_window.set(Some(hwnd));
     }
 
@@ -262,18 +273,18 @@ impl ScreenshotManager {
         let exclude_hwnd = self
             .current_window
             .get()
-            .unwrap_or(windows::Win32::Foundation::HWND(std::ptr::null_mut()));
+            .unwrap_or(HWND(null_mut()));
         self.capture_screen_with_hwnd(exclude_hwnd)
     }
 
     /// 重新截取当前屏幕（带窗口句柄，用于排除自己的窗口）
     pub fn capture_screen_with_hwnd(
         &mut self,
-        _exclude_hwnd: windows::Win32::Foundation::HWND,
+        _exclude_hwnd: HWND,
     ) -> std::result::Result<(), ScreenshotError> {
         // 获取当前屏幕尺寸（可能在pin后发生了变化）
         let (current_screen_width, current_screen_height) =
-            crate::platform::windows::system::get_screen_size();
+            get_screen_size();
 
         // 更新屏幕尺寸
         self.screen_width = current_screen_width;
@@ -295,61 +306,42 @@ impl ScreenshotManager {
         Ok(())
     }
 
-    /// 从GDI位图创建D2D位图
+    /// 从DDI位图创建D2D位图
     pub fn create_d2d_bitmap_from_gdi(
         &mut self,
-        renderer: &mut dyn crate::platform::PlatformRenderer<Error = crate::platform::PlatformError>,
+        d2d_renderer: &mut Direct2DRenderer,
     ) -> std::result::Result<(), ScreenshotError> {
         // 按需捕获屏幕到GDI位图
         let gdi_bitmap = self.capture_screen_to_gdi_bitmap()?;
 
-            // 使用 downcast 获取 Direct2DRenderer
-        if let Some(d2d_renderer) = renderer
-            .as_any_mut()
-            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>(
-        ) {
-            // 创建临时DC来使用GDI位图，使用 RAII 封装自动管理资源
-            use crate::platform::windows::resources::{ManagedBitmap, ManagedDC};
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::Graphics::Gdi::{
-                CreateCompatibleDC, GetDC, ReleaseDC, SelectObject,
-            };
+        // 使用 RAII 封装管理 GDI 位图
+        let managed_bitmap = ManagedBitmap::new(gdi_bitmap);
 
-            // 使用 RAII 封装管理 GDI 位图
-            let managed_bitmap = ManagedBitmap::new(gdi_bitmap);
+        unsafe {
+            let screen_dc = GetDC(Some(HWND(null_mut())));
+            let temp_dc = ManagedDC::new(CreateCompatibleDC(Some(screen_dc)));
+            SelectObject(temp_dc.handle(), managed_bitmap.handle().into());
 
-            unsafe {
-                let screen_dc = GetDC(Some(HWND(std::ptr::null_mut())));
-                let temp_dc = ManagedDC::new(CreateCompatibleDC(Some(screen_dc)));
-                SelectObject(temp_dc.handle(), managed_bitmap.handle().into());
+            // 创建D2D位图并存储
+            let d2d_bitmap = d2d_renderer
+                .create_d2d_bitmap_from_gdi(temp_dc.handle(), self.screen_width, self.screen_height)
+                .map_err(|e| {
+                    ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {e:?}"))
+                })?;
 
-                // 创建D2D位图并存储
-                let d2d_bitmap = d2d_renderer
-                    .create_d2d_bitmap_from_gdi(temp_dc.handle(), self.screen_width, self.screen_height)
-                    .map_err(|e| {
-                        ScreenshotError::RenderError(format!("Failed to create D2D bitmap: {e:?}"))
-                    })?;
+            // 提取位图数据供OCR使用（避免重复截图）
+            if let Ok(bmp_data) = image_processing::bitmap_to_bmp_data(temp_dc.handle(), managed_bitmap.handle(), self.screen_width, self.screen_height)
+                 && let Some(ref mut screenshot) = self.current_screenshot {
+                    screenshot.data = bmp_data;
+                }
 
-                // 提取位图数据供OCR使用（避免重复截图）
-                if let Ok(bmp_data) = crate::ocr::bitmap_to_bmp_data(temp_dc.handle(), managed_bitmap.handle(), self.screen_width, self.screen_height)
-                     && let Some(ref mut screenshot) = self.current_screenshot {
-                        screenshot.data = bmp_data;
-                    }
+            // 释放 screen_dc（通过 GetDC 获取的需要用 ReleaseDC）
+            ReleaseDC(Some(HWND(null_mut())), screen_dc);
+            // temp_dc 和 managed_bitmap 会在离开作用域时自动释放
 
-                // 释放 screen_dc（通过 GetDC 获取的需要用 ReleaseDC）
-                ReleaseDC(Some(HWND(std::ptr::null_mut())), screen_dc);
-                // temp_dc 和 managed_bitmap 会在离开作用域时自动释放
-
-                // 存储 D2D 位图
-                self.screenshot_bitmap = Some(d2d_bitmap);
-                Ok(())
-            }
-        } else {
-            // gdi_bitmap 使用 RAII 封装自动释放
-            let _managed = crate::platform::windows::resources::ManagedBitmap::new(gdi_bitmap);
-            Err(ScreenshotError::RenderError(
-                "Cannot access D2D renderer".to_string(),
-            ))
+            // 存储 D2D 位图
+            self.screenshot_bitmap = Some(d2d_bitmap);
+            Ok(())
         }
     }
 
@@ -367,7 +359,7 @@ impl ScreenshotManager {
         if self.selection.is_mouse_pressed() && self.auto_highlight_enabled {
             let drag_start = self.selection.get_interaction_start_pos();
 
-            if crate::utils::is_drag_threshold_exceeded(drag_start.x, drag_start.y, x, y) {
+            if is_drag_threshold_exceeded(drag_start.x, drag_start.y, x, y) {
                 // 开始拖拽，禁用自动高亮
                 self.auto_highlight_enabled = false;
 
@@ -384,7 +376,7 @@ impl ScreenshotManager {
             // 正在创建新选择框
             self.selection.update_end_point(x, y);
             (vec![Command::RequestRedraw], true)
-        } else if self.selection.is_dragging() {
+        } else if self.selection.is_interacting() {
             // 正在拖拽选择框或调整大小（统一交互控制器）
             if self
                 .selection_interaction
@@ -395,7 +387,7 @@ impl ScreenshotManager {
                 // 拖拽已有选择框时，更新工具栏位置
                 if let Some(selection_rect) = self.selection.get_selection() {
                     commands.push(Command::UI(
-                        crate::message::UIMessage::UpdateToolbarPosition(selection_rect),
+                        UIMessage::UpdateToolbarPosition(selection_rect),
                     ));
                 }
 
@@ -411,7 +403,7 @@ impl ScreenshotManager {
 
                 if let Some(control) = control_info {
                     // 优先显示子控件高亮，并限制在屏幕范围内
-                    let limited_rect = crate::utils::clamp_rect_to_screen(
+                    let limited_rect = clamp_rect_to_screen(
                         control.rect,
                         self.screen_width,
                         self.screen_height,
@@ -421,7 +413,7 @@ impl ScreenshotManager {
                     (vec![Command::RequestRedraw], true)
                 } else if let Some(window) = window_info {
                     // 如果没有子控件，显示窗口高亮，并限制在屏幕范围内
-                    let limited_rect = crate::utils::clamp_rect_to_screen(
+                    let limited_rect = clamp_rect_to_screen(
                         window.rect,
                         self.screen_width,
                         self.screen_height,
@@ -513,7 +505,7 @@ impl ScreenshotManager {
         // 检查是否是单击（没有拖拽）
         let start_pos = self.selection.get_interaction_start_pos();
         let is_click = self.selection.is_mouse_pressed()
-            && !crate::utils::is_drag_threshold_exceeded(start_pos.x, start_pos.y, x, y);
+            && !is_drag_threshold_exceeded(start_pos.x, start_pos.y, x, y);
 
         // 处理选择框创建和拖拽结束
         if self.selection.is_selecting() {
@@ -524,9 +516,9 @@ impl ScreenshotManager {
             // 如果选择框创建成功且有效，显示工具栏（仅对手动拖拽创建的选择框）
             if !is_click
                 && let Some(rect) = self.selection.get_selection() {
-                    commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
+                    commands.push(Command::UI(UIMessage::ShowToolbar(rect)));
                 }
-        } else if self.selection.is_dragging() {
+        } else if self.selection.is_interacting() {
             // 结束拖拽操作（统一交互控制器）
             let _ = self
                 .selection_interaction
@@ -536,7 +528,7 @@ impl ScreenshotManager {
             // 更新工具栏位置（如果有选择框）
             if let Some(rect) = self.selection.get_selection() {
                 commands.push(Command::UI(
-                    crate::message::UIMessage::UpdateToolbarPosition(rect),
+                    UIMessage::UpdateToolbarPosition(rect),
                 ));
             }
         }
@@ -545,7 +537,7 @@ impl ScreenshotManager {
         if is_click && self.selection.has_selection() {
             // 单击确认：无论是自动高亮还是手动框选后的单击，都显示工具栏
             if let Some(rect) = self.selection.get_selection() {
-                commands.push(Command::UI(crate::message::UIMessage::ShowToolbar(rect)));
+                commands.push(Command::UI(UIMessage::ShowToolbar(rect)));
             }
             // 单击确认后进入已选择状态，禁用自动高亮
             self.auto_highlight_enabled = false;
@@ -567,7 +559,7 @@ impl ScreenshotManager {
     }
 
     /// 获取D2D位图
-    pub fn get_d2d_bitmap(&self) -> Option<&windows::Win32::Graphics::Direct2D::ID2D1Bitmap> {
+    pub fn get_d2d_bitmap(&self) -> Option<&ID2D1Bitmap> {
         self.screenshot_bitmap.as_ref()
     }
 
@@ -577,7 +569,7 @@ impl ScreenshotManager {
     }
 
     /// 获取当前选择区域
-    pub fn get_selection(&self) -> Option<windows::Win32::Foundation::RECT> {
+    pub fn get_selection(&self) -> Option<RECT> {
         self.selection.get_selection()
     }
 
@@ -587,27 +579,21 @@ impl ScreenshotManager {
     }
 
     /// 临时隐藏UI元素进行截图
-    pub fn hide_ui_for_capture(&mut self, hwnd: windows::Win32::Foundation::HWND) {
+    pub fn hide_ui_for_capture(&mut self, hwnd: HWND) {
         self.hide_ui_for_capture = true;
         unsafe {
-            use windows::Win32::Foundation::FALSE;
-            use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
-
             // 强制重绘以隐藏UI元素
             let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
             let _ = UpdateWindow(hwnd);
             // 等待重绘完成
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50));
         }
     }
 
     /// 恢复UI元素显示
-    pub fn show_ui_after_capture(&mut self, hwnd: windows::Win32::Foundation::HWND) {
+    pub fn show_ui_after_capture(&mut self, hwnd: HWND) {
         self.hide_ui_for_capture = false;
         unsafe {
-            use windows::Win32::Foundation::FALSE;
-            use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
-
             // 强制重绘以显示UI元素
             let _ = InvalidateRect(Some(hwnd), None, FALSE.into());
             let _ = UpdateWindow(hwnd);
@@ -639,11 +625,11 @@ pub enum ScreenshotError {
     /// 渲染失败
     RenderError(String),
     /// 系统错误
-    SystemError(crate::system::SystemError),
+    SystemError(SystemError),
 }
 
-impl From<crate::system::SystemError> for ScreenshotError {
-    fn from(error: crate::system::SystemError) -> Self {
+impl From<SystemError> for ScreenshotError {
+    fn from(error: SystemError) -> Self {
         ScreenshotError::SystemError(error)
     }
 }
@@ -664,7 +650,7 @@ impl std::error::Error for ScreenshotError {}
 
 impl ScreenshotManager {
     /// 代理选择状态的手柄命中检测（方便App层统一处理光标）
-    pub fn get_handle_at_position(&self, x: i32, y: i32) -> crate::types::DragMode {
+    pub fn get_handle_at_position(&self, x: i32, y: i32) -> DragMode {
         self.selection.get_handle_at_position(x, y)
     }
 }

@@ -119,7 +119,7 @@ pub enum StateTransition {
     /// 转换到空闲状态
     ToIdle,
     /// 转换到框选状态
-    ToSelecting { start_x: i32, start_y: i32 },
+    ToSelecting,
     /// 转换到编辑状态
     ToEditing { selection: RECT, tool: DrawingTool },
     /// 转换到处理中状态
@@ -129,6 +129,7 @@ pub enum StateTransition {
 /// 应用状态处理器 trait
 /// 
 /// 每个应用状态都实现此 trait，封装该状态下的事件处理逻辑。
+/// 提供默认的"无操作"实现，简化不需要处理某些事件的状态实现。
 pub trait AppStateHandler: Send {
     /// 获取状态名称（用于调试）
     fn name(&self) -> &'static str;
@@ -136,76 +137,82 @@ pub trait AppStateHandler: Send {
     /// 处理鼠标移动事件
     /// 
     /// 返回 (命令列表, 是否消费事件, 状态转换请求)
+    /// 默认实现: 不处理，不消费事件
     fn handle_mouse_move(
         &mut self,
-        x: i32,
-        y: i32,
-        ctx: &mut StateContext<'_>,
-    ) -> (Vec<Command>, bool, StateTransition);
+        _x: i32,
+        _y: i32,
+        _ctx: &mut StateContext<'_>,
+    ) -> (Vec<Command>, bool, StateTransition) {
+        (vec![], false, StateTransition::None)
+    }
 
     /// 处理鼠标按下事件
+    /// 默认实现: 不处理，不消费事件
     fn handle_mouse_down(
         &mut self,
-        x: i32,
-        y: i32,
-        ctx: &mut StateContext<'_>,
-    ) -> (Vec<Command>, bool, StateTransition);
+        _x: i32,
+        _y: i32,
+        _ctx: &mut StateContext<'_>,
+    ) -> (Vec<Command>, bool, StateTransition) {
+        (vec![], false, StateTransition::None)
+    }
 
     /// 处理鼠标释放事件
+    /// 默认实现: 不处理，不消费事件
     fn handle_mouse_up(
         &mut self,
-        x: i32,
-        y: i32,
-        ctx: &mut StateContext<'_>,
-    ) -> (Vec<Command>, bool, StateTransition);
+        _x: i32,
+        _y: i32,
+        _ctx: &mut StateContext<'_>,
+    ) -> (Vec<Command>, bool, StateTransition) {
+        (vec![], false, StateTransition::None)
+    }
 
     /// 处理双击事件
+    /// 默认实现: 不处理双击
     fn handle_double_click(
         &mut self,
-        x: i32,
-        y: i32,
-        ctx: &mut StateContext<'_>,
+        _x: i32,
+        _y: i32,
+        _ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, StateTransition) {
-        // 默认实现：不处理双击
-        let _ = (x, y, ctx);
         (vec![], StateTransition::None)
     }
 
     /// 处理键盘输入
+    /// 默认实现: 不处理键盘输入
     fn handle_key_input(
         &mut self,
-        key: u32,
-        ctx: &mut StateContext<'_>,
-    ) -> (Vec<Command>, StateTransition);
+        _key: u32,
+        _ctx: &mut StateContext<'_>,
+    ) -> (Vec<Command>, StateTransition) {
+        (vec![], StateTransition::None)
+    }
 
     /// 处理文本输入
+    /// 默认实现: 不处理文本输入
     fn handle_text_input(
         &mut self,
-        character: char,
-        ctx: &mut StateContext<'_>,
+        _character: char,
+        _ctx: &mut StateContext<'_>,
     ) -> Vec<Command> {
-        // 默认实现：不处理文本输入
-        let _ = (character, ctx);
         vec![]
     }
 
     /// 进入此状态时调用
-    fn on_enter(&mut self, ctx: &mut StateContext<'_>) {
-        let _ = ctx;
-    }
+    fn on_enter(&mut self, _ctx: &mut StateContext<'_>) {}
 
     /// 退出此状态时调用
-    fn on_exit(&mut self, ctx: &mut StateContext<'_>) {
-        let _ = ctx;
-    }
+    fn on_exit(&mut self, _ctx: &mut StateContext<'_>) {}
 }
 
 /// 创建状态处理器的工厂函数
 pub fn create_state(state: &AppState) -> Box<dyn AppStateHandler> {
     match state {
         AppState::Idle => Box::new(IdleState::new()),
-        AppState::Selecting { start_x, start_y, current_x, current_y } => {
-            Box::new(SelectingState::new(*start_x, *start_y, *current_x, *current_y))
+        AppState::Selecting => {
+            Box::new(SelectingState::new())
         }
         AppState::Editing { selection, tool } => {
             Box::new(EditingState::new(*selection, *tool))

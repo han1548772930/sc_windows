@@ -1,6 +1,9 @@
-use crate::types::{DragMode, DrawingTool, ToolbarButton};
-use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::RECT;
+use windows::Win32::UI::WindowsAndMessaging::*;
+
+use super::ToolbarButton;
+use crate::drawing::{DragMode, DrawingElement, DrawingManager, DrawingTool};
 
 /// 光标上下文 - 封装所有光标判断所需的状态
 #[derive(Debug)]
@@ -10,10 +13,10 @@ pub struct CursorContext {
     pub hovered_button: ToolbarButton,
     pub is_button_disabled: bool,
     pub is_text_editing: bool,
-    pub editing_element_info: Option<(crate::types::DrawingElement, usize)>,
+    pub editing_element_info: Option<(DrawingElement, usize)>,
     pub current_tool: DrawingTool,
-    pub selection_rect: Option<windows::Win32::Foundation::RECT>,
-    pub selected_element_info: Option<(crate::types::DrawingElement, usize)>,
+    pub selection_rect: Option<RECT>,
+    pub selected_element_info: Option<(DrawingElement, usize)>,
     pub selection_handle_mode: DragMode,
 }
 
@@ -24,10 +27,10 @@ impl CursorContext {
         hovered_button: ToolbarButton,
         is_button_disabled: bool,
         is_text_editing: bool,
-        editing_element_info: Option<(crate::types::DrawingElement, usize)>,
+        editing_element_info: Option<(DrawingElement, usize)>,
         current_tool: DrawingTool,
-        selection_rect: Option<windows::Win32::Foundation::RECT>,
-        selected_element_info: Option<(crate::types::DrawingElement, usize)>,
+        selection_rect: Option<RECT>,
+        selected_element_info: Option<(DrawingElement, usize)>,
         selection_handle_mode: DragMode,
     ) -> Self {
         Self {
@@ -56,12 +59,12 @@ impl CursorManager {
         hovered_button: ToolbarButton,
         is_button_disabled: bool,
         is_text_editing: bool,
-        editing_element_info: Option<(crate::types::DrawingElement, usize)>,
+        editing_element_info: Option<(DrawingElement, usize)>,
         current_tool: DrawingTool,
-        selection_rect: Option<windows::Win32::Foundation::RECT>,
-        selected_element_info: Option<(crate::types::DrawingElement, usize)>,
+        selection_rect: Option<RECT>,
+        selected_element_info: Option<(DrawingElement, usize)>,
         selection_handle_mode: DragMode,
-        drawing_manager: &crate::drawing::DrawingManager,
+        drawing_manager: &DrawingManager,
     ) -> PCWSTR {
         // 1) 按钮悬停优先
         if hovered_button != ToolbarButton::None && !is_button_disabled {
@@ -115,9 +118,10 @@ impl CursorManager {
                     if element.tool == DrawingTool::Text {
                         if is_text_editing
                             && let Some((_, edit_idx)) = editing_element_info
-                                && edit_idx == element_index {
-                                    return IDC_SIZEALL;
-                                }
+                            && edit_idx == element_index
+                        {
+                            return IDC_SIZEALL;
+                        }
                         return IDC_ARROW;
                     } else {
                         return IDC_SIZEALL;

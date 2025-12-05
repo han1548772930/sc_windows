@@ -10,14 +10,15 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::renderer::PreviewRenderer;
+use super::types::{SvgIcon, MARGINS};
 use crate::constants::{
     BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, ICON_START_X,
     TITLE_BAR_HEIGHT,
 };
 use crate::ocr::OcrResult;
-
-use super::renderer::PreviewRenderer;
-use super::types::{SvgIcon, MARGINS};
+use crate::platform::windows::system::get_screen_size;
+use crate::screenshot::save::copy_text_to_clipboard;
 
 /// 预览显示窗口 (支持 OCR 结果和 Pin 模式)
 pub struct PreviewWindow {
@@ -295,7 +296,7 @@ impl PreviewWindow {
             };
 
             // 4. 计算位置
-            let (screen_width, screen_height) = crate::platform::windows::system::get_screen_size();
+            let (screen_width, screen_height) = get_screen_size();
             let mut window_x = selection_rect.right + 20;
             let mut window_y = selection_rect.top;
 
@@ -1028,9 +1029,7 @@ impl PreviewWindow {
                                         }
 
                                         if !selected_text.is_empty() {
-                                            let _ = crate::screenshot::save::copy_text_to_clipboard(
-                                                &selected_text,
-                                            );
+                                            let _ = copy_text_to_clipboard(&selected_text);
                                         }
                                     }
                                     return LRESULT(0);

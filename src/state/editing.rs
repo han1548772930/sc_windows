@@ -4,7 +4,7 @@
 
 use super::{AppStateHandler, EditingContext, StateContext, StateTransition};
 use crate::message::{Command, DrawingMessage};
-use crate::types::DrawingTool;
+use crate::drawing::DrawingTool;
 use windows::Win32::Foundation::RECT;
 
 /// 编辑状态

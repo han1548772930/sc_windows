@@ -1,9 +1,12 @@
+use windows::core::*;
+use windows::Win32::Foundation::*;
+use windows::Win32::UI::{Shell::*, WindowsAndMessaging::*};
+
 use super::SystemError;
 use crate::message::Command;
 use crate::platform::windows::SafeHwnd;
-use windows::Win32::Foundation::*;
-use windows::Win32::UI::{Shell::*, WindowsAndMessaging::*};
-use windows::core::*;
+use crate::settings::show_settings_window;
+use crate::utils::to_wide_chars;
 
 /// 系统托盘管理器
 #[derive(Debug)]
@@ -43,7 +46,7 @@ impl TrayManager {
         }
 
         unsafe {
-            let tooltip_wide = crate::utils::to_wide_chars(tooltip);
+            let tooltip_wide = to_wide_chars(tooltip);
             let mut tooltip_array = [0u16; 128];
             let copy_len = (tooltip_wide.len() - 1).min(tooltip_array.len() - 1);
             tooltip_array[..copy_len].copy_from_slice(&tooltip_wide[..copy_len]);
@@ -136,7 +139,7 @@ impl TrayManager {
                 }
                 1002 => {
                     // 设置
-                    let _ = crate::settings::show_settings_window();
+                    let _ = show_settings_window();
                 }
                 1003 => {
                     // 退出
@@ -205,7 +208,7 @@ fn load_embedded_icon(icon_data: &[u8]) -> std::result::Result<HICON, SystemErro
         })?;
 
         // 直接加载ICO文件
-        let path_wide = crate::utils::to_wide_chars(&temp_path.to_string_lossy());
+        let path_wide = to_wide_chars(&temp_path.to_string_lossy());
         let result = LoadImageW(
             None,
             PCWSTR(path_wide.as_ptr()),

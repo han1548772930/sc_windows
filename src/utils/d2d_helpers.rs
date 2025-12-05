@@ -1,8 +1,10 @@
+use windows::core::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::core::*;
 use windows_numerics::*;
+
+use super::to_wide_chars;
 
 // ==================== Direct2D基础辅助 ====================
 
@@ -268,7 +270,7 @@ pub unsafe fn create_text_format_from_element(
     font_italic: bool,
 ) -> Result<IDWriteTextFormat> {
     let font_size = font_size.max(12.0);
-    let font_name_wide = crate::utils::to_wide_chars(font_name);
+    let font_name_wide = to_wide_chars(font_name);
     
     let weight = if font_weight > 400 {
         DWRITE_FONT_WEIGHT_BOLD

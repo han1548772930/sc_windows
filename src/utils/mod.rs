@@ -13,16 +13,22 @@
 
 use std::{ffi::OsStr, iter::once, os::windows::ffi::OsStrExt};
 
+use crate::constants::DRAG_THRESHOLD;
+
 pub mod command_helpers;
 pub mod d2d_helpers;
+pub mod image_processing;
 pub mod interaction;
 pub mod profiler;
+pub mod svg;
 pub mod win_api;
 
 // 重新导出常用函数
 pub use command_helpers::{execute_and_hide, execute_save_operation, execute_with_error_handling};
 pub use d2d_helpers::*;
+pub use image_processing::{bitmap_to_bmp_data, crop_bmp};
 pub use interaction::*;
+pub use svg::{render_svg_to_pixels, render_svg_from_file, apply_color_to_pixels, PixelFormat, SvgRenderOptions};
 
 // ==================== 字符串转换 ====================
 
@@ -51,7 +57,7 @@ pub fn is_drag_threshold_exceeded(
 ) -> bool {
     let dx = (current_x - start_x).abs();
     let dy = (current_y - start_y).abs();
-    dx > crate::constants::DRAG_THRESHOLD || dy > crate::constants::DRAG_THRESHOLD
+    dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD
 }
 
 // ==================== 坐标和边界处理 ====================

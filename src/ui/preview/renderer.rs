@@ -5,15 +5,17 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 
-use crate::platform::traits::PlatformRenderer;
-use crate::platform::windows::Direct2DRenderer;
-use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, ICON_HOVER_BG_COLOR_D2D,
-    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE,
-    TITLE_BAR_BG_COLOR_D2D, TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
-};
-
 use super::types::{D2DIconBitmaps, IconCache, SvgIcon};
+use crate::constants::{
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, CONTENT_BG_COLOR_D2D,
+    ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE,
+    PIN_ACTIVE_COLOR, TITLE_BAR_BG_COLOR_D2D, TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D,
+    TITLE_BAR_HEIGHT,
+};
+use crate::platform::traits::{Color, DrawStyle, Point, Rectangle, TextStyle};
+use crate::platform::windows::system::get_screen_size;
+use crate::platform::windows::Direct2DRenderer;
+use crate::utils::{render_svg_to_pixels, apply_color_to_pixels, PixelFormat, SvgRenderOptions};
 
 /// 预览窗口渲染器
 pub struct PreviewRenderer {
@@ -132,8 +134,8 @@ impl PreviewRenderer {
                 })?;
 
             let (active_normal, active_hover) = if *name == "pin" {
-                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
-                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(crate::constants::PIN_ACTIVE_COLOR))?;
+                let an_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(PIN_ACTIVE_COLOR))?;
+                let ah_pixels = Self::load_svg_pixels(name, ICON_SIZE, Some(PIN_ACTIVE_COLOR))?;
 
                 let an_bmp = self
                     .d2d_renderer
@@ -170,44 +172,43 @@ impl PreviewRenderer {
         Ok(())
     }
 
-    /// 加载 SVG 并渲染为像素数据 (RGBA)
+    /// 嵌入式 SVG 图标内容（避免运行时文件系统依赖）
+    fn get_embedded_svg(name: &str) -> Option<&'static str> {
+        match name {
+            "pin" => Some(include_str!("../../../icons/pin.svg")),
+            "window-close" => Some(include_str!("../../../icons/window-close.svg")),
+            "window-maximize" => Some(include_str!("../../../icons/window-maximize.svg")),
+            "window-minimize" => Some(include_str!("../../../icons/window-minimize.svg")),
+            "window-restore" => Some(include_str!("../../../icons/window-restore.svg")),
+            _ => None,
+        }
+    }
+
+    /// 加载SVG并渲染为像素数据(RGBA)
     fn load_svg_pixels(
         filename: &str,
         size: i32,
         color_override: Option<(u8, u8, u8)>,
     ) -> Result<Vec<u8>> {
-        let svg_path = format!("icons/{}.svg", filename);
-        let svg_data = std::fs::read_to_string(&svg_path)?;
-        let tree = usvg::Tree::from_str(&svg_data, &usvg::Options::default())?;
-
-        let scale = 2.0;
-        let render_size = (size as f32 * scale) as u32;
-        let mut pixmap = tiny_skia::Pixmap::new(render_size, render_size)
-            .ok_or_else(|| anyhow::anyhow!("Failed to create pixmap"))?;
-
-        pixmap.fill(tiny_skia::Color::TRANSPARENT);
-
-        let svg_size = tree.size();
-        let render_ts = tiny_skia::Transform::from_scale(
-            size as f32 * scale / svg_size.width(),
-            size as f32 * scale / svg_size.height(),
-        );
-
-        resvg::render(&tree, render_ts, &mut pixmap.as_mut());
-
-        if let Some((r, g, b)) = color_override {
-            let pixels = pixmap.data_mut();
-            for i in (0..pixels.len()).step_by(4) {
-                let alpha = pixels[i + 3];
-                if alpha > 0 {
-                    pixels[i] = r;
-                    pixels[i + 1] = g;
-                    pixels[i + 2] = b;
-                }
-            }
+        // 使用嵌入式 SVG 内容，而非文件系统读取
+        let svg_content = Self::get_embedded_svg(filename)
+            .ok_or_else(|| anyhow::anyhow!("Unknown embedded icon: {}", filename))?;
+        
+        // 使用统一的 SVG 渲染工具
+        let options = SvgRenderOptions {
+            size: size as u32,
+            scale: 2.0,
+            color_override: None, // 先渲染原色
+            output_format: PixelFormat::Rgba,
+        };
+        let (mut pixels, _, _) = render_svg_to_pixels(svg_content, &options)?;
+        
+        // 如果需要颜色覆盖，在像素级别应用
+        if let Some(color) = color_override {
+            apply_color_to_pixels(&mut pixels, color, PixelFormat::Rgba);
         }
 
-        Ok(pixmap.data().to_vec())
+        Ok(pixels)
     }
 
     /// 将文本按指定宽度分行
@@ -238,7 +239,7 @@ impl PreviewRenderer {
 
     pub fn clear(&mut self, r: f32, g: f32, b: f32, a: f32) -> Result<()> {
         self.d2d_renderer
-            .clear(crate::platform::Color { r, g, b, a })
+            .clear(Color { r, g, b, a })
             .map_err(|e| anyhow::anyhow!("Clear Error: {:?}", e))
     }
 
@@ -249,7 +250,6 @@ impl PreviewRenderer {
         icons: &[SvgIcon],
         is_pinned: bool,
     ) -> Result<()> {
-        use crate::platform::traits::{Color, DrawStyle, Rectangle};
 
         // 绘制标题栏背景
         let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
@@ -393,10 +393,10 @@ impl PreviewRenderer {
         self.begin_frame()?;
 
         self.clear(
-            crate::constants::CONTENT_BG_COLOR_D2D.r,
-            crate::constants::CONTENT_BG_COLOR_D2D.g,
-            crate::constants::CONTENT_BG_COLOR_D2D.b,
-            crate::constants::CONTENT_BG_COLOR_D2D.a,
+            CONTENT_BG_COLOR_D2D.r,
+            CONTENT_BG_COLOR_D2D.g,
+            CONTENT_BG_COLOR_D2D.b,
+            CONTENT_BG_COLOR_D2D.a,
         )?;
 
         // 1. 绘制标题栏
@@ -416,8 +416,7 @@ impl PreviewRenderer {
                 let available_height = (text_rect.bottom - text_rect.top) as f32;
                 let start_y = TITLE_BAR_HEIGHT as f32 + 10.0;
 
-                let max_height =
-                    (crate::platform::windows::system::get_screen_size().1 as f32) - start_y - 20.0;
+                let max_height = (get_screen_size().1 as f32) - start_y - 20.0;
                 let effective_available_height = available_height.min(max_height);
 
                 let scale_x = available_width / original_width;
@@ -464,13 +463,13 @@ impl PreviewRenderer {
         line_height: i32,
         selection: Option<((usize, usize), (usize, usize))>,
     ) -> Result<()> {
-        let text_color = crate::platform::traits::Color {
+        let text_color = Color {
             r: 0.0,
             g: 0.0,
             b: 0.0,
             a: 1.0,
         };
-        let text_style = crate::platform::traits::TextStyle {
+        let text_style = TextStyle {
             font_size: 18.0,
             color: text_color,
             font_family: "Microsoft YaHei".to_string(),
@@ -494,14 +493,14 @@ impl PreviewRenderer {
                 break;
             }
 
-            let pos = crate::platform::traits::Point {
+            let pos = Point {
                 x: text_rect.left as f32,
                 y: line_y,
             };
 
             // 绘制选择高亮
             if i >= start_sel.0 && i <= end_sel.0 {
-                let mut sel_rect = crate::platform::traits::Rectangle {
+                let mut sel_rect = Rectangle {
                     x: pos.x,
                     y: pos.y,
                     width: 0.0,
@@ -535,13 +534,13 @@ impl PreviewRenderer {
                     sel_rect.x += prefix_width;
                     sel_rect.width = sel_width;
 
-                    let highlight_color = crate::platform::traits::Color {
+                    let highlight_color = Color {
                         r: 0.78,
                         g: 0.97,
                         b: 0.77,
                         a: 1.0,
                     };
-                    let highlight_style = crate::platform::traits::DrawStyle {
+                    let highlight_style = DrawStyle {
                         stroke_color: highlight_color,
                         fill_color: Some(highlight_color),
                         stroke_width: 0.0,

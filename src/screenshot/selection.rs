@@ -1,6 +1,9 @@
-use crate::constants::MIN_BOX_SIZE;
-use crate::types::DragMode;
 use windows::Win32::Foundation::{POINT, RECT};
+
+use crate::constants::MIN_BOX_SIZE;
+use crate::drawing::DragMode;
+use crate::interaction::InteractionTarget;
+use crate::utils::{detect_handle_at_position_unified, is_rect_valid, update_rect_by_drag, HandleConfig};
 
 /// 选择框交互模式（仅限选择框操作）
 #[derive(Debug, Clone, PartialEq)]
@@ -142,8 +145,7 @@ impl SelectionState {
                 let height = rect.bottom - rect.top;
 
                 // 如果选择框太小，清除选择
-                if width < crate::constants::MIN_BOX_SIZE || height < crate::constants::MIN_BOX_SIZE
-                {
+            if width < MIN_BOX_SIZE || height < MIN_BOX_SIZE {
                     self.selection_rect = None;
                 }
             }
@@ -269,13 +271,7 @@ impl SelectionState {
         };
 
         // 使用统一的手柄检测函数
-        crate::utils::detect_handle_at_position_unified(
-            x,
-            y,
-            &rect,
-            crate::utils::HandleConfig::Full,
-            true,
-        )
+        detect_handle_at_position_unified(x, y, &rect, HandleConfig::Full, true)
     }
 
     /// 开始选择框交互操作
@@ -307,11 +303,10 @@ impl SelectionState {
         };
 
         // 使用共用的拖拽更新函数
-        let new_rect =
-            crate::utils::update_rect_by_drag(drag_mode, dx, dy, self.interaction_start_rect);
+        let new_rect = update_rect_by_drag(drag_mode, dx, dy, self.interaction_start_rect);
 
         // 检查最小尺寸
-        if crate::utils::is_rect_valid(&new_rect, MIN_BOX_SIZE) {
+        if is_rect_valid(&new_rect, MIN_BOX_SIZE) {
             self.selection_rect = Some(new_rect);
             return true;
         }
@@ -333,11 +328,6 @@ impl SelectionState {
     /// 是否正在进行选择框交互
     pub fn is_interacting(&self) -> bool {
         self.mouse_pressed && self.selection_interaction_mode != SelectionInteractionMode::None
-    }
-
-    /// 兼容性方法：是否正在拖拽（重命名为is_interacting）
-    pub fn is_dragging(&self) -> bool {
-        self.is_interacting()
     }
 }
 
@@ -468,7 +458,7 @@ mod tests {
 }
 
 // --- InteractionTarget 适配实现（阶段1 PoC）---
-impl crate::interaction::InteractionTarget for SelectionState {
+impl InteractionTarget for SelectionState {
     fn hit_test(&self, x: i32, y: i32) -> DragMode {
         self.get_handle_at_position(x, y)
     }

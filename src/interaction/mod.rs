@@ -10,7 +10,7 @@
 //! 采用 trait object 设计，将交互逻辑与具体对象解耦，
 //! 便于统一处理选区边框、绘图元素等的拖拽和调整操作。
 
-use crate::types::DragMode;
+use crate::drawing::DragMode;
 use windows::Win32::Foundation::RECT;
 
 /// 交互目标接口（阶段1最小集合）

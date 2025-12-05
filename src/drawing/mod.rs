@@ -14,10 +14,13 @@
 //! - 箭头
 //! - 文本标注
 
+use std::sync::{Arc, RwLock};
+
+use windows::Win32::Foundation::{POINT, RECT};
+
 use crate::message::{Command, DrawingMessage};
 use crate::rendering::{LayerCache, LayerType};
 use crate::settings::Settings;
-use std::sync::{Arc, RwLock};
 
 pub mod cache;
 pub mod elements;
@@ -48,11 +51,11 @@ pub struct DrawingManager {
     pub(super) selected_element: Option<usize>,
     pub(super) interaction_mode: ElementInteractionMode,
     pub(super) mouse_pressed: bool,
-    pub(super) interaction_start_pos: windows::Win32::Foundation::POINT,
-    pub(super) interaction_start_rect: windows::Win32::Foundation::RECT,
+    pub(super) interaction_start_pos: POINT,
+    pub(super) interaction_start_rect: RECT,
     pub(super) interaction_start_font_size: f32,
     /// 交互开始时元素的点集合（用于命令模式记录）
-    pub(super) interaction_start_points: Vec<windows::Win32::Foundation::POINT>,
+    pub(super) interaction_start_points: Vec<POINT>,
     pub(super) text_editing: bool,
     pub(super) editing_element_index: Option<usize>,
     pub(super) text_cursor_pos: usize,
@@ -87,8 +90,8 @@ impl DrawingManager {
 
             interaction_mode: ElementInteractionMode::None,
             mouse_pressed: false,
-            interaction_start_pos: windows::Win32::Foundation::POINT { x: 0, y: 0 },
-            interaction_start_rect: windows::Win32::Foundation::RECT {
+            interaction_start_pos: POINT { x: 0, y: 0 },
+            interaction_start_rect: RECT {
                 left: 0,
                 top: 0,
                 right: 0,
@@ -137,7 +140,7 @@ impl DrawingManager {
                 }
                 if self.selected_element.is_some() {
                     self.layer_cache
-                        .invalidate(crate::rendering::LayerType::StaticElements);
+                        .invalidate(LayerType::StaticElements);
                 }
                 self.current_tool = tool;
                 self.tools.set_current_tool(tool);
@@ -152,7 +155,7 @@ impl DrawingManager {
                     let mut element = DrawingElement::new(self.current_tool);
                     element
                         .points
-                        .push(windows::Win32::Foundation::POINT { x, y });
+                        .push(POINT { x, y });
                     self.current_element = Some(element);
                     vec![Command::RequestRedraw]
                 } else {
@@ -165,17 +168,16 @@ impl DrawingManager {
                         DrawingTool::Pen => {
                             element
                                 .points
-                                .push(windows::Win32::Foundation::POINT { x, y });
-                            // Invalidate geometry cache
-                            element.path_geometry.replace(None);
+                                .push(POINT { x, y });
+                            // 正在绘制的元素还没有索引，缓存失效在 FinishDrawing 时处理
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.len() >= 2 {
-                                element.points[1] = windows::Win32::Foundation::POINT { x, y };
+                                element.points[1] = POINT { x, y };
                             } else {
                                 element
                                     .points
-                                    .push(windows::Win32::Foundation::POINT { x, y });
+                                    .push(POINT { x, y });
                             }
                         }
                         _ => {}
@@ -241,6 +243,9 @@ impl DrawingManager {
             }
             DrawingMessage::DeleteElement(index) => {
                 // 命令模式：记录删除操作
+                // 先获取元素的 id 用于清理缓存（在删除前获取）
+                let element_id = self.elements.get_elements().get(index).map(|e| e.id);
+                
                 if let Some(element) = self.elements.get_elements().get(index).cloned() {
                     let action = history::DrawingAction::RemoveElement { element, index };
                     self.history.record_action(
@@ -254,7 +259,10 @@ impl DrawingManager {
                     self.selected_element = None;
                     // 删除元素后需要重建静态层缓存
                     self.layer_cache.invalidate(LayerType::StaticElements);
-                    self.geometry_cache.remove(index); // 删除对应元素的缓存
+                    // 使用 element.id 作为缓存 key（而非 index）
+                    if let Some(id) = element_id {
+                        self.geometry_cache.remove(id as usize);
+                    }
                     vec![Command::UpdateToolbar, Command::RequestRedraw]
                 } else {
                     vec![]

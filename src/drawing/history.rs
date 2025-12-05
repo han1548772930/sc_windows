@@ -1,5 +1,5 @@
 use super::elements::ElementManager;
-use crate::types::DrawingElement;
+use super::types::DrawingElement;
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 

@@ -150,7 +150,7 @@ fn bench_utils(c: &mut Criterion) {
 fn bench_history_manager(c: &mut Criterion) {
     use sc_windows::drawing::elements::ElementManager;
     use sc_windows::drawing::history::{DrawingAction, HistoryManager};
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
     let mut group = c.benchmark_group("HistoryManager");
@@ -228,7 +228,7 @@ fn bench_history_manager(c: &mut Criterion) {
 /// 测试元素管理器性能
 fn bench_element_manager(c: &mut Criterion) {
     use sc_windows::drawing::elements::ElementManager;
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
     let mut group = c.benchmark_group("ElementManager");

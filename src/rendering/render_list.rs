@@ -3,7 +3,8 @@
 //! 各模块提交渲染图元到统一的列表中，由渲染器统一排序和批处理绘制。
 //! 这比各模块直接调用绘图 API 更高效且通用。
 
-use crate::platform::{BitmapId, Color, DrawStyle, PlatformError, PlatformRenderer, Point, Rectangle, TextStyle};
+use crate::platform::{BitmapId, Color, DrawStyle, PlatformError, Point, Rectangle, TextStyle};
+use crate::platform::windows::Direct2DRenderer;
 
 /// 渲染图元
 /// 
@@ -212,9 +213,9 @@ impl RenderList {
     /// 执行渲染
     /// 
     /// 按 Z-Order 顺序将所有图元绘制到渲染器。
-    pub fn execute<R: PlatformRenderer<Error = PlatformError> + ?Sized>(
+    pub fn execute(
         &mut self,
-        renderer: &mut R,
+        renderer: &mut Direct2DRenderer,
     ) -> Result<(), PlatformError> {
         // 先排序
         self.sort_by_z_order();
@@ -228,8 +229,8 @@ impl RenderList {
     }
 
     /// 渲染单个图元
-    fn render_item<R: PlatformRenderer<Error = PlatformError> + ?Sized>(
-        renderer: &mut R,
+    fn render_item(
+        renderer: &mut Direct2DRenderer,
         item: &RenderItem,
     ) -> Result<(), PlatformError> {
         match item {
@@ -281,10 +282,10 @@ impl RenderList {
                 renderer.pop_clip_rect()?;
             }
             
-            // Bitmap 需要特殊处理，因为 PlatformRenderer trait 没有直接的 draw_bitmap 方法
-            // 这里暂时跳过，后续可以扩展 PlatformRenderer trait
+            // Bitmap 需要特殊处理，Direct2DRenderer 有专门的 draw_d2d_bitmap 方法
+            // 这里暂时跳过，因为 RenderItem::Bitmap 使用 BitmapId 而非直接的 ID2D1Bitmap
             RenderItem::Bitmap { .. } => {
-                // TODO: 实现位图绘制
+                // TODO: 实现位图绘制（需要位图 ID 到 ID2D1Bitmap 的映射）
             }
         }
 

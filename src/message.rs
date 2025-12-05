@@ -1,4 +1,5 @@
-use crate::types::{DrawingTool, ToolbarButton};
+use crate::drawing::{DrawingTool, DrawingElement};
+use crate::ui::ToolbarButton;
 use windows::Win32::Foundation::RECT;
 
 /// 全局消息枚举，用于组件间通信
@@ -41,7 +42,7 @@ pub enum DrawingMessage {
     /// 完成绘制
     FinishDrawing,
     /// 添加元素
-    AddElement(Box<crate::types::DrawingElement>),
+    AddElement(Box<DrawingElement>),
     /// 撤销
     Undo,
     /// 重做

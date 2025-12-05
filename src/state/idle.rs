@@ -45,11 +45,7 @@ impl AppStateHandler for IdleState {
         // 从空闲进入框选状态
         let (cmds, consumed) = ctx.screenshot.handle_mouse_down(x, y);
         if consumed || ctx.screenshot.has_screenshot() {
-            let transition = StateTransition::ToSelecting {
-                start_x: x,
-                start_y: y,
-            };
-            (cmds, true, transition)
+            (cmds, true, StateTransition::ToSelecting)
         } else {
             (cmds, consumed, StateTransition::None)
         }

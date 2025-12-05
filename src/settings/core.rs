@@ -42,15 +42,7 @@ pub struct Settings {
     #[serde(default = "default_ocr_language")]
     pub ocr_language: String,
 
-    // 颜色设置 - 保留旧字段以向后兼容
-    #[serde(default = "default_color_red")]
-    pub color_red: u8,
-    #[serde(default = "default_color_green")]
-    pub color_green: u8,
-    #[serde(default = "default_color_blue")]
-    pub color_blue: u8,
-
-    // 新的分离颜色设置
+    // 绘图颜色设置
     #[serde(default = "default_drawing_color_red")]
     pub drawing_color_red: u8,
     #[serde(default = "default_drawing_color_green")]
@@ -80,9 +72,6 @@ impl Default for Settings {
             auto_copy: false,
             show_cursor: false,
             delay_ms: 0,
-            color_red: 255,
-            color_green: 0,
-            color_blue: 0,
             drawing_color_red: 255,
             drawing_color_green: 0,
             drawing_color_blue: 0,
@@ -148,10 +137,8 @@ impl Settings {
         let path = Self::get_settings_path();
 
         if let Ok(content) = fs::read_to_string(&path)
-            && let Ok(mut settings) = serde_json::from_str::<Settings>(&content)
+            && let Ok(settings) = serde_json::from_str::<Settings>(&content)
         {
-            // 数据迁移：如果新字段使用默认值，但旧字段有自定义值，则迁移
-            settings.migrate_from_legacy();
             return settings;
         }
 
@@ -159,22 +146,6 @@ impl Settings {
         let default_settings = Self::default();
         let _ = default_settings.save();
         default_settings
-    }
-
-    /// 从旧版本设置迁移数据
-    fn migrate_from_legacy(&mut self) {
-        // 如果绘图颜色是默认值，但旧颜色不是默认值，则迁移
-        if self.drawing_color_red == default_drawing_color_red()
-            && self.drawing_color_green == default_drawing_color_green()
-            && self.drawing_color_blue == default_drawing_color_blue()
-            && (self.color_red != default_color_red()
-                || self.color_green != default_color_green()
-                || self.color_blue != default_color_blue())
-        {
-            self.drawing_color_red = self.color_red;
-            self.drawing_color_green = self.color_green;
-            self.drawing_color_blue = self.color_blue;
-        }
     }
 
     /// 保存设置到文件

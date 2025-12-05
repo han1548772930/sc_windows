@@ -4,28 +4,23 @@
 
 use super::{AppStateHandler, SelectingContext, StateContext, StateTransition};
 use crate::message::Command;
-use crate::types::DrawingTool;
+use crate::drawing::DrawingTool;
 
 /// 框选状态
-pub struct SelectingState {
-    /// 框选起点 X
-    pub start_x: i32,
-    /// 框选起点 Y
-    pub start_y: i32,
-    /// 当前位置 X
-    pub current_x: i32,
-    /// 当前位置 Y
-    pub current_y: i32,
-}
+///
+/// 此状态处理器只负责事件流处理，坐标数据由 `SelectionState` 统一管理。
+pub struct SelectingState;
 
 impl SelectingState {
-    pub fn new(start_x: i32, start_y: i32, current_x: i32, current_y: i32) -> Self {
-        Self {
-            start_x,
-            start_y,
-            current_x,
-            current_y,
-        }
+    /// 创建框选状态处理器
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SelectingState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -37,13 +32,13 @@ impl SelectingState {
         f: F,
     ) -> R
     where
-        F: FnOnce(&mut Self, &mut SelectingContext<'a>) -> R,
+        F: FnOnce(&mut SelectingContext<'a>) -> R,
     {
         let mut selecting_ctx = SelectingContext::from_state_context(
             ctx.screenshot,
             ctx.ui,
         );
-        f(self, &mut selecting_ctx)
+        f(&mut selecting_ctx)
     }
 }
 
@@ -58,11 +53,8 @@ impl AppStateHandler for SelectingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        // 使用细粒度上下文，明确表明只需 screenshot 和 ui
-        self.with_selecting_context(ctx, |state, selecting_ctx| {
-            // 同步当前点并更新框选
-            state.current_x = x;
-            state.current_y = y;
+        // 坐标更新完全由 SelectionState 管理
+        self.with_selecting_context(ctx, |selecting_ctx| {
             let (cmds, _consumed) = selecting_ctx.screenshot.handle_mouse_move(x, y);
             (cmds, true, StateTransition::None)
         })
@@ -74,7 +66,7 @@ impl AppStateHandler for SelectingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        self.with_selecting_context(ctx, |_state, selecting_ctx| {
+        self.with_selecting_context(ctx, |selecting_ctx| {
             let (cmds, _consumed) = selecting_ctx.screenshot.handle_mouse_down(x, y);
             (cmds, true, StateTransition::None)
         })
@@ -86,7 +78,7 @@ impl AppStateHandler for SelectingState {
         y: i32,
         ctx: &mut StateContext<'_>,
     ) -> (Vec<Command>, bool, StateTransition) {
-        self.with_selecting_context(ctx, |_state, selecting_ctx| {
+        self.with_selecting_context(ctx, |selecting_ctx| {
             let (cmds, _consumed) = selecting_ctx.screenshot.handle_mouse_up(x, y);
             
             // 检查是否有有效的选择区域

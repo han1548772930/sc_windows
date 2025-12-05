@@ -231,6 +231,17 @@ impl GeometryCache {
     pub fn has_text(&self, id: ElementId) -> bool {
         self.text_cache.contains_key(&id) && !self.dirty_flags.contains(&id)
     }
+
+    /// 获取已缓存的路径几何体（只读）
+    ///
+    /// 与 `get_or_create_path` 不同，此方法不会创建新的 geometry。
+    /// 用于在已确保缓存存在后的只读访问场景。
+    pub fn get_path(&self, id: ElementId) -> Option<&ID2D1PathGeometry> {
+        if self.dirty_flags.contains(&id) {
+            return None;
+        }
+        self.path_cache.get(&id)
+    }
 }
 
 /// 缓存统计信息

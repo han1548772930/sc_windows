@@ -2,13 +2,20 @@
 //!
 //! 包含绘图工具、绘图元素和拖拽模式等核心类型。
 
-use std::cell::RefCell;
-use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
-use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
+use std::sync::atomic::{AtomicU64, Ordering};
+use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
-use crate::utils::*;
+use crate::constants::{
+    ARROW_HEAD_ANGLE, ARROW_HEAD_LENGTH, ARROW_HEAD_MARGIN, ARROW_MIN_LENGTH,
+    DEFAULT_DRAWING_COLOR, DEFAULT_ELEMENT_HEIGHT, DEFAULT_ELEMENT_WIDTH, DEFAULT_FONT_NAME,
+    DEFAULT_FONT_SIZE, DEFAULT_FONT_WEIGHT, DEFAULT_LINE_THICKNESS, DEFAULT_TEXT_HEIGHT,
+    DEFAULT_TEXT_WIDTH, ELEMENT_CLICK_TOLERANCE, MAX_FONT_SIZE, MIN_FONT_SIZE,
+};
+use crate::utils::point_to_line_distance;
+
+/// 全局元素 ID 生成器
+static NEXT_ELEMENT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// 绘图工具类型
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +77,8 @@ impl ElementInteractionMode {
 /// 绘图元素结构体
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawingElement {
+    /// 元素唯一标识符（用于缓存查找）
+    pub id: u64,
     pub tool: DrawingTool,
     pub points: Vec<POINT>,
     pub rect: RECT,
@@ -84,15 +93,12 @@ pub struct DrawingElement {
     pub font_underline: bool,
     pub font_strikeout: bool,
     pub selected: bool,
-    // Cache for Pen tool geometry
-    pub path_geometry: RefCell<Option<ID2D1PathGeometry>>,
-    // Cache for Text tool layout
-    pub text_layout: RefCell<Option<IDWriteTextLayout>>,
 }
 
 impl DrawingElement {
     pub fn new(tool: DrawingTool) -> Self {
         Self {
+            id: NEXT_ELEMENT_ID.fetch_add(1, Ordering::Relaxed),
             tool,
             points: Vec::new(),
             rect: RECT {
@@ -101,42 +107,36 @@ impl DrawingElement {
                 right: 0,
                 bottom: 0,
             },
-            color: crate::constants::DEFAULT_DRAWING_COLOR,
-            thickness: crate::constants::DEFAULT_LINE_THICKNESS,
+            color: DEFAULT_DRAWING_COLOR,
+            thickness: DEFAULT_LINE_THICKNESS,
             text: String::new(),
-            font_size: crate::constants::DEFAULT_FONT_SIZE,
-            font_name: crate::constants::DEFAULT_FONT_NAME.to_string(),
-            font_weight: crate::constants::DEFAULT_FONT_WEIGHT,
+            font_size: DEFAULT_FONT_SIZE,
+            font_name: DEFAULT_FONT_NAME.to_string(),
+            font_weight: DEFAULT_FONT_WEIGHT,
             font_italic: false,
             font_underline: false,
             font_strikeout: false,
             selected: false,
-            path_geometry: RefCell::new(None),
-            text_layout: RefCell::new(None),
         }
     }
 
     pub fn get_effective_font_size(&self) -> f32 {
         if self.tool == DrawingTool::Text {
-            self.font_size.max(crate::constants::MIN_FONT_SIZE)
+            self.font_size.max(MIN_FONT_SIZE)
         } else {
             // 非文本元素不应该有字体大小，但为了兼容性返回默认值
-            crate::constants::DEFAULT_FONT_SIZE
+            DEFAULT_FONT_SIZE
         }
     }
 
     /// 设置字体大小（兼容性方法）
     /// 确保正确更新font_size字段
     pub fn set_font_size(&mut self, size: f32) {
-        if self.tool == DrawingTool::Text
-            && (self.font_size - size).abs() > 0.001 {
-                // 使用 clamp 确保字体大小在有效范围内
-                self.font_size = size.clamp(
-                    crate::constants::MIN_FONT_SIZE,
-                    crate::constants::MAX_FONT_SIZE,
-                );
-                self.text_layout.replace(None);
-            }
+        if self.tool == DrawingTool::Text && (self.font_size - size).abs() > 0.001 {
+            // 使用 clamp 确保字体大小在有效范围内
+            self.font_size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+            // 缓存失效由 DrawingManager 的 geometry_cache 管理
+        }
     }
 
     pub fn update_bounding_rect(&mut self) {
@@ -164,8 +164,8 @@ impl DrawingElement {
                         self.rect = RECT {
                             left: start.x,
                             top: start.y,
-                            right: start.x + crate::constants::DEFAULT_TEXT_WIDTH,
-                            bottom: start.y + crate::constants::DEFAULT_TEXT_HEIGHT,
+                            right: start.x + DEFAULT_TEXT_WIDTH,
+                            bottom: start.y + DEFAULT_TEXT_HEIGHT,
                         };
                     }
                 }
@@ -216,7 +216,7 @@ impl DrawingElement {
                     let end = &self.points[1];
 
                     // 考虑箭头头部的额外尺寸
-                    let margin = crate::constants::ARROW_HEAD_MARGIN;
+                    let margin = ARROW_HEAD_MARGIN;
 
                     self.rect = RECT {
                         left: (start.x.min(end.x) - margin),
@@ -233,8 +233,8 @@ impl DrawingElement {
                     self.rect = RECT {
                         left: self.points[0].x,
                         top: self.points[0].y,
-                        right: self.points[0].x + crate::constants::DEFAULT_ELEMENT_WIDTH,
-                        bottom: self.points[0].y + crate::constants::DEFAULT_ELEMENT_HEIGHT,
+                        right: self.points[0].x + DEFAULT_ELEMENT_WIDTH,
+                        bottom: self.points[0].y + DEFAULT_ELEMENT_HEIGHT,
                     };
                 }
             }
@@ -253,7 +253,7 @@ impl DrawingElement {
                     let p2 = &self.points[i + 1];
 
                     let distance = point_to_line_distance(x, y, p1.x, p1.y, p2.x, p2.y);
-                    if distance <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64 {
+                    if distance <= (self.thickness + ELEMENT_CLICK_TOLERANCE) as f64 {
                         return true;
                     }
                 }
@@ -279,7 +279,7 @@ impl DrawingElement {
                     let end = &self.points[1];
 
                     let distance = point_to_line_distance(x, y, start.x, start.y, end.x, end.y);
-                    if distance <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64 {
+                    if distance <= (self.thickness + ELEMENT_CLICK_TOLERANCE) as f64 {
                         return true;
                     }
 
@@ -287,9 +287,9 @@ impl DrawingElement {
                     let dy = end.y - start.y;
                     let length = ((dx * dx + dy * dy) as f64).sqrt();
 
-                    if length > crate::constants::ARROW_MIN_LENGTH {
-                        let arrow_length = crate::constants::ARROW_HEAD_LENGTH;
-                        let arrow_angle = crate::constants::ARROW_HEAD_ANGLE;
+                    if length > ARROW_MIN_LENGTH {
+                        let arrow_length = ARROW_HEAD_LENGTH;
+                        let arrow_angle = ARROW_HEAD_ANGLE;
                         let unit_x = dx as f64 / length;
                         let unit_y = dy as f64 / length;
 
@@ -316,8 +316,8 @@ impl DrawingElement {
                         let distance2 =
                             point_to_line_distance(x, y, end.x, end.y, wing2_x, wing2_y);
 
-                        if distance1 <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64
-                            || distance2 <= (self.thickness + crate::constants::ELEMENT_CLICK_TOLERANCE) as f64
+                        if distance1 <= (self.thickness + ELEMENT_CLICK_TOLERANCE) as f64
+                            || distance2 <= (self.thickness + ELEMENT_CLICK_TOLERANCE) as f64
                         {
                             return true;
                         }
@@ -340,7 +340,7 @@ impl DrawingElement {
     }
 
     pub fn resize(&mut self, new_rect: RECT) {
-        self.invalidate_geometry_cache();
+        // 缓存失效由 DrawingManager 的 geometry_cache 管理
         match self.tool {
             DrawingTool::Rectangle | DrawingTool::Circle => self.resize_two_point_shape(new_rect),
             DrawingTool::Arrow => self.resize_arrow(new_rect),
@@ -349,11 +349,6 @@ impl DrawingElement {
             _ => {}
         }
         self.rect = new_rect;
-    }
-
-    fn invalidate_geometry_cache(&mut self) {
-        self.path_geometry.replace(None);
-        self.text_layout.replace(None);
     }
 
     fn resize_two_point_shape(&mut self, new_rect: RECT) {
@@ -413,8 +408,7 @@ impl DrawingElement {
     }
 
     pub fn move_by(&mut self, dx: i32, dy: i32) {
-        // Invalidate geometry cache when moving
-        self.path_geometry.replace(None);
+        // 缓存失效由 DrawingManager 的 geometry_cache 管理
         for point in &mut self.points {
             point.x += dx;
             point.y += dy;
@@ -622,11 +616,11 @@ mod tests {
 
         // 超过最大值时限制为最大值
         element.set_font_size(300.0);
-        assert_eq!(element.font_size, crate::constants::MAX_FONT_SIZE);
+        assert_eq!(element.font_size, MAX_FONT_SIZE);
 
         // 低于最小值时限制为最小值
         element.set_font_size(2.0);
-        assert_eq!(element.font_size, crate::constants::MIN_FONT_SIZE);
+        assert_eq!(element.font_size, MIN_FONT_SIZE);
     }
 
     #[test]

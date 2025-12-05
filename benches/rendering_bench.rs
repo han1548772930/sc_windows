@@ -7,7 +7,7 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 
 /// 测试创建 DrawingElement 的性能
 fn bench_create_element(c: &mut Criterion) {
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
 
     let mut group = c.benchmark_group("DrawingElement Creation");
 
@@ -35,7 +35,7 @@ fn bench_create_element(c: &mut Criterion) {
 
 /// 测试 DrawingElement 的边界矩形计算性能
 fn bench_bounding_rect(c: &mut Criterion) {
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
     let mut group = c.benchmark_group("Bounding Rect Calculation");
@@ -74,7 +74,7 @@ fn bench_bounding_rect(c: &mut Criterion) {
 
 /// 测试点击检测性能
 fn bench_contains_point(c: &mut Criterion) {
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
     let mut group = c.benchmark_group("Contains Point Check");
@@ -111,7 +111,7 @@ fn bench_contains_point(c: &mut Criterion) {
 
 /// 测试 DrawingElement 移动性能
 fn bench_move_element(c: &mut Criterion) {
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::POINT;
 
     let mut group = c.benchmark_group("Element Move");
@@ -140,7 +140,7 @@ fn bench_move_element(c: &mut Criterion) {
 
 /// 测试 DrawingElement 调整大小性能
 fn bench_resize_element(c: &mut Criterion) {
-    use sc_windows::types::{DrawingElement, DrawingTool};
+    use sc_windows::drawing::{DrawingElement, DrawingTool};
     use windows::Win32::Foundation::{POINT, RECT};
 
     let mut group = c.benchmark_group("Element Resize");

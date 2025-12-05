@@ -15,11 +15,15 @@ use windows::{
     core::*,
 };
 
-use crate::utils::to_wide_chars;
+use std::sync::atomic::{AtomicIsize, Ordering};
+
 use super::core::Settings;
+use crate::utils::to_wide_chars;
+use crate::WINDOW_CLASS_NAME;
 
 /// 全局设置窗口句柄，确保只能打开一个设置窗口
-static mut SETTINGS_WINDOW: Option<HWND> = None;
+/// 使用 AtomicIsize 代替 static mut，避免数据竞争风险
+static SETTINGS_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 /// 设置窗口
 pub struct SettingsWindow {
@@ -60,12 +64,12 @@ const ID_CANCEL: i32 = 1010;
 impl SettingsWindow {
     /// 检查设置窗口是否已经打开
     pub fn is_open() -> bool {
-        unsafe {
-            if let Some(hwnd) = SETTINGS_WINDOW {
-                IsWindow(Some(hwnd)).as_bool()
-            } else {
-                false
-            }
+        let hwnd_value = SETTINGS_WINDOW.load(Ordering::Acquire);
+        if hwnd_value != 0 {
+            let hwnd = HWND(hwnd_value as *mut _);
+            unsafe { IsWindow(Some(hwnd)).as_bool() }
+        } else {
+            false
         }
     }
     /// 热键输入框的窗口过程
@@ -232,7 +236,9 @@ impl SettingsWindow {
     pub fn show(parent_hwnd: HWND) -> Result<()> {
         unsafe {
             // 检查是否已经有设置窗口打开
-            if let Some(existing_hwnd) = SETTINGS_WINDOW {
+            let existing_hwnd_value = SETTINGS_WINDOW.load(Ordering::Acquire);
+            if existing_hwnd_value != 0 {
+                let existing_hwnd = HWND(existing_hwnd_value as *mut _);
                 if IsWindow(Some(existing_hwnd)).as_bool() {
                     // 如果窗口已存在，将其置于前台
                     let _ = ShowWindow(existing_hwnd, SW_RESTORE);
@@ -241,7 +247,7 @@ impl SettingsWindow {
                     return Ok(());
                 } else {
                     // 窗口句柄无效，清除它
-                    SETTINGS_WINDOW = None;
+                    SETTINGS_WINDOW.store(0, Ordering::Release);
                 }
             }
             // 初始化Common Controls 6.0以启用现代样式
@@ -299,7 +305,7 @@ impl SettingsWindow {
             let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
             // 保存窗口句柄到全局变量
-            SETTINGS_WINDOW = Some(hwnd);
+            SETTINGS_WINDOW.store(hwnd.0 as isize, Ordering::Release);
 
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
@@ -388,7 +394,7 @@ impl SettingsWindow {
                         let _window = Box::from_raw(window_ptr);
                         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     }
-                    SETTINGS_WINDOW = None;
+                    SETTINGS_WINDOW.store(0, Ordering::Release);
                     let _ = DestroyWindow(hwnd);
                     LRESULT(0)
                 }
@@ -506,7 +512,7 @@ impl SettingsWindow {
                 }
 
                 WM_DESTROY => {
-                    SETTINGS_WINDOW = None;
+                    SETTINGS_WINDOW.store(0, Ordering::Release);
                     LRESULT(0)
                 }
 
@@ -1443,7 +1449,7 @@ impl SettingsWindow {
                     // 通知主窗口重新加载设置和重新注册热键
                     // 查找主窗口并发送消息
                     if let Ok(main_hwnd) = FindWindowW(
-                        PCWSTR(to_wide_chars(crate::WINDOW_CLASS_NAME).as_ptr()),
+                        PCWSTR(to_wide_chars(WINDOW_CLASS_NAME).as_ptr()),
                         PCWSTR::null(),
                     )
                         && !main_hwnd.0.is_null()

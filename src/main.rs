@@ -29,10 +29,10 @@ unsafe fn handle_commands(app: &mut App, commands: Vec<Command>, hwnd: HWND) {
 
 /// 执行截图并显示窗口
 unsafe fn perform_capture_and_show(hwnd: HWND, app: &mut App) {
-    sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async();
-    app.start_async_ocr_check(hwnd);
+    // 使用带通知的版本，引擎启动完成后会发送状态更新消息
+    sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async_with_hwnd(hwnd);
     app.reset_to_initial_state();
-    
+
     // 使用 App 中缓存的屏幕尺寸，避免重复调用系统API
     let (screen_width, screen_height) = app.get_screen_size();
 
@@ -112,10 +112,21 @@ unsafe extern "system" fn window_proc(
                             .initialize(hwnd, screen_width, screen_height)
                             .is_err()
                         {
+                            // 显示错误提示而不是静默失败
+                            let msg: Vec<u16> = "图形引擎初始化失败，请检查显卡驱动是否正常。"
+                                .encode_utf16().chain(std::iter::once(0)).collect();
+                            let title: Vec<u16> = "启动错误"
+                                .encode_utf16().chain(std::iter::once(0)).collect();
+                            let _ = MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(msg.as_ptr()),
+                                PCWSTR(title.as_ptr()),
+                                MB_OK | MB_ICONERROR,
+                            );
                             return LRESULT(-1);
                         }
 
-                        match App::new(Box::new(renderer)) {
+                        match App::new(renderer) {
                             Ok(mut app) => {
                                 let _ = app.init_system_tray(hwnd);
                                 app.start_async_ocr_check(hwnd);
@@ -136,10 +147,36 @@ unsafe extern "system" fn window_proc(
                                 );
                                 LRESULT(0)
                             }
-                            Err(_) => LRESULT(-1),
+                            Err(e) => {
+                                // 显示应用初始化错误
+                                let msg: Vec<u16> = format!("应用初始化失败: {:?}", e)
+                                    .encode_utf16().chain(std::iter::once(0)).collect();
+                                let title: Vec<u16> = "启动错误"
+                                    .encode_utf16().chain(std::iter::once(0)).collect();
+                                let _ = MessageBoxW(
+                                    Some(hwnd),
+                                    PCWSTR(msg.as_ptr()),
+                                    PCWSTR(title.as_ptr()),
+                                    MB_OK | MB_ICONERROR,
+                                );
+                                LRESULT(-1)
+                            }
                         }
                     }
-                    Err(_) => LRESULT(-1),
+                    Err(e) => {
+                        // 显示 D2D 创建错误
+                        let msg: Vec<u16> = format!("图形引擎创建失败: {:?}\n\n请检查显卡驱动是否正常安装。", e)
+                            .encode_utf16().chain(std::iter::once(0)).collect();
+                        let title: Vec<u16> = "启动错误"
+                            .encode_utf16().chain(std::iter::once(0)).collect();
+                        let _ = MessageBoxW(
+                            Some(hwnd),
+                            PCWSTR(msg.as_ptr()),
+                            PCWSTR(title.as_ptr()),
+                            MB_OK | MB_ICONERROR,
+                        );
+                        LRESULT(-1)
+                    }
                 }
             }
 
@@ -160,10 +197,10 @@ unsafe extern "system" fn window_proc(
             // OCR 完成、热键、定时器等需要特殊处理的消息
             val if val == WM_OCR_COMPLETED => {
                 if let Some(app) = get_app_state(hwnd) {
-let data_ptr = lparam.0 as *mut sc_windows::ocr::OcrCompletionData;
+                    let data_ptr = lparam.0 as *mut sc_windows::ocr::OcrCompletionData;
                     if !data_ptr.is_null() {
                         let data = Box::from_raw(data_ptr);
-                        
+
                         let (has_results, is_ocr_failed, text) = app.handle_ocr_completed(
                             data.ocr_results,
                             data.image_data,
@@ -171,15 +208,24 @@ let data_ptr = lparam.0 as *mut sc_windows::ocr::OcrCompletionData;
                         );
 
                         if has_results
-                            && let Err(e) = sc_windows::screenshot::save::copy_text_to_clipboard(&text) {
-                                eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
-                            }
+                            && let Err(e) =
+                                sc_windows::screenshot::save::copy_text_to_clipboard(&text)
+                        {
+                            eprintln!("Failed to copy OCR text to clipboard: {:?}", e);
+                        }
 
                         if !has_results || is_ocr_failed {
                             let message = "未识别到文本内容。\n\n请确保选择区域包含清晰的文字。";
-                            let message_w: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
-                            let title_w: Vec<u16> = "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
-                            let _ = MessageBoxW(Some(hwnd), PCWSTR(message_w.as_ptr()), PCWSTR(title_w.as_ptr()), MB_OK | MB_ICONINFORMATION);
+                            let message_w: Vec<u16> =
+                                message.encode_utf16().chain(std::iter::once(0)).collect();
+                            let title_w: Vec<u16> =
+                                "OCR结果".encode_utf16().chain(std::iter::once(0)).collect();
+                            let _ = MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(message_w.as_ptr()),
+                                PCWSTR(title_w.as_ptr()),
+                                MB_OK | MB_ICONINFORMATION,
+                            );
                         }
 
                         app.stop_ocr_engine_async();
@@ -191,14 +237,20 @@ let data_ptr = lparam.0 as *mut sc_windows::ocr::OcrCompletionData;
 
             WM_HOTKEY => {
                 if wparam.0 == HOTKEY_SCREENSHOT_ID as usize
-                    && let Some(app) = get_app_state(hwnd) {
-                        if win_api::is_window_visible(hwnd) {
-                            let _ = win_api::hide_window(hwnd);
-                            let _ = SetTimer(Some(hwnd), TIMER_CAPTURE_DELAY_ID, TIMER_CAPTURE_DELAY_MS, None);
-                        } else {
-                            perform_capture_and_show(hwnd, app);
-                        }
+                    && let Some(app) = get_app_state(hwnd)
+                {
+                    if win_api::is_window_visible(hwnd) {
+                        let _ = win_api::hide_window(hwnd);
+                        let _ = SetTimer(
+                            Some(hwnd),
+                            TIMER_CAPTURE_DELAY_ID,
+                            TIMER_CAPTURE_DELAY_MS,
+                            None,
+                        );
+                    } else {
+                        perform_capture_and_show(hwnd, app);
                     }
+                }
                 LRESULT(0)
             }
 

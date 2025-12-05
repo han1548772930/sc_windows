@@ -1,5 +1,5 @@
 use crate::constants::HANDLE_DETECTION_RADIUS;
-use crate::types::DragMode;
+use crate::drawing::DragMode;
 use windows::Win32::Foundation::RECT;
 
 /// 手柄检测配置

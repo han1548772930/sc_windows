@@ -5,17 +5,6 @@
 
 use std::path::PathBuf;
 
-// Legacy color defaults (for backward compatibility)
-pub fn default_color_red() -> u8 {
-    255
-}
-pub fn default_color_green() -> u8 {
-    0
-}
-pub fn default_color_blue() -> u8 {
-    0
-}
-
 // Drawing color defaults
 pub fn default_drawing_color_red() -> u8 {
     255

@@ -9,16 +9,20 @@
 //! - [`OcrManager`](ocr::OcrManager): OCR 文字识别
 //! - [`WindowDetectionManager`](window_detection::WindowDetectionManager): 窗口检测
 
-use crate::message::{Command, SystemMessage};
-use crate::settings::Settings;
 use std::sync::{Arc, RwLock};
+
+use windows::Win32::Foundation::{HWND, RECT};
+
+use crate::message::{Command, SystemMessage};
+use crate::ocr::{recognize_text_from_selection, PaddleOcrEngine};
+use crate::screenshot::ScreenshotManager;
+use crate::settings::Settings;
 
 pub mod hotkeys;
 pub mod tray;
 pub mod window_detection;
 
 use hotkeys::HotkeyManager;
-use crate::ocr::OcrManager;
 use tray::TrayManager;
 use window_detection::WindowDetectionManager;
 
@@ -33,8 +37,6 @@ pub struct SystemManager {
     hotkeys: HotkeyManager,
     /// 窗口检测管理器
     window_detection: WindowDetectionManager,
-    /// OCR管理器
-    ocr: OcrManager,
 }
 
 impl SystemManager {
@@ -47,7 +49,6 @@ impl SystemManager {
             tray: TrayManager::new()?,
             hotkeys: HotkeyManager::new(Arc::clone(&settings))?,
             window_detection: WindowDetectionManager::new()?,
-            ocr: OcrManager::new()?,
             settings,
         })
     }
@@ -61,8 +62,9 @@ impl SystemManager {
                 // TODO: 实现窗口检测处理逻辑
                 vec![]
             }
-            SystemMessage::OcrStatusUpdate(available) => {
-                self.ocr.update_status(available);
+            SystemMessage::OcrStatusUpdate(_available) => {
+                // OCR 引擎状态由 PaddleOcrEngine 内部管理
+                // 仅请求重绘UI以更新状态显示
                 vec![Command::RequestRedraw]
             }
         }
@@ -74,10 +76,7 @@ impl SystemManager {
     }
 
     /// 初始化系统集成
-    pub fn initialize(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> Result<(), SystemError> {
+    pub fn initialize(&mut self, hwnd: HWND) -> Result<(), SystemError> {
         // 初始化系统托盘
         self.tray.initialize(hwnd)?;
 
@@ -88,7 +87,7 @@ impl SystemManager {
         self.window_detection.start_detection()?;
 
         // 确保OCR引擎已启动
-        self.ocr.ensure_engine_started()?;
+        PaddleOcrEngine::ensure_engine_started();
 
         Ok(())
     }
@@ -98,7 +97,7 @@ impl SystemManager {
         self.tray.cleanup();
         self.hotkeys.cleanup();
         self.window_detection.stop_detection();
-        self.ocr.stop_engine();
+        PaddleOcrEngine::stop_engine(false);
     }
 
     /// 处理托盘消息
@@ -107,14 +106,30 @@ impl SystemManager {
     }
 
     /// 启动异步OCR引擎状态检查
-    pub fn start_async_ocr_check(&mut self, hwnd: windows::Win32::Foundation::HWND) {
-        // 通过OCR管理器启动异步状态检查
-        self.ocr.start_async_status_check(hwnd);
+    pub fn start_async_ocr_check(&mut self, hwnd: HWND) {
+        let hwnd_ptr = hwnd.0 as usize;
+        // 直接调用 PaddleOcrEngine 的异步状态检查
+        PaddleOcrEngine::check_engine_status_async(
+            move |exe_exists, engine_ready, _status| {
+                let available = exe_exists && engine_ready;
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_USER};
+                    let hwnd = HWND(hwnd_ptr as *mut std::ffi::c_void);
+                    // WM_USER + 10 = WM_OCR_STATUS_UPDATE
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        WM_USER + 10,
+                        windows::Win32::Foundation::WPARAM(if available { 1 } else { 0 }),
+                        windows::Win32::Foundation::LPARAM(0),
+                    );
+                }
+            },
+        );
     }
 
     /// 异步停止OCR引擎
     pub fn stop_ocr_engine_async(&mut self) {
-        self.ocr.stop_engine();
+        PaddleOcrEngine::stop_engine(false);
     }
 
     /// 重新加载设置
@@ -123,42 +138,36 @@ impl SystemManager {
         self.hotkeys.reload_settings();
         // 重新加载托盘设置
         self.tray.reload_settings();
-        // 重新加载OCR设置
-        self.ocr.reload_settings();
+        // OCR设置通常不需要重新加载
     }
 
     /// 重新注册热键
-    pub fn reregister_hotkey(
-        &mut self,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) -> windows::core::Result<()> {
+    pub fn reregister_hotkey(&mut self, hwnd: HWND) -> windows::core::Result<()> {
         self.hotkeys.reregister_hotkey(hwnd)
     }
 
-    /// 更新OCR引擎状态
-    pub fn update_ocr_engine_status(
-        &mut self,
-        available: bool,
-        _hwnd: windows::Win32::Foundation::HWND,
-    ) {
-        self.ocr.update_status(available);
+    /// 更新OCR引擎状态后的回调处理
+    ///
+    /// OCR 引擎状态由 `PaddleOcrEngine` 内部管理，
+    /// 此方法仅作为状态更新后的回调钩子。
+    pub fn on_ocr_engine_status_changed(&mut self, _available: bool, _hwnd: HWND) {
+        // 状态已由 PaddleOcrEngine 内部更新
         // 可以在这里添加状态更新后的其他逻辑
     }
 
-    /// 查询OCR引擎可用性缓存（供UI非阻塞使用）
+    /// 查询OCR引擎可用性（供UI非阻塞使用）
     pub fn ocr_is_available(&self) -> bool {
-        self.ocr.is_available()
+        PaddleOcrEngine::is_engine_available()
     }
 
-    /// 从选择区域识别文本（委托给OcrManager）
+    /// 从选择区域识别文本
     pub fn recognize_text_from_selection(
         &mut self,
-        selection_rect: windows::Win32::Foundation::RECT,
-        hwnd: windows::Win32::Foundation::HWND,
-        screenshot_manager: &mut crate::screenshot::ScreenshotManager,
+        selection_rect: RECT,
+        hwnd: HWND,
+        screenshot_manager: &mut ScreenshotManager,
     ) -> Result<(), SystemError> {
-        self.ocr
-            .recognize_text_from_selection(selection_rect, hwnd, screenshot_manager)
+        recognize_text_from_selection(selection_rect, hwnd, screenshot_manager)
     }
 }
 

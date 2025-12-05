@@ -1,9 +1,14 @@
-use super::UIError;
-use crate::message::Command;
-use crate::platform::{PlatformError, PlatformRenderer};
-use crate::types::ToolbarButton;
-use crate::utils::d2d_helpers::rounded_rect;
+use std::collections::HashSet;
+
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+
+use super::svg_icons::SvgIconManager;
+use super::{ToolbarButton, UIError};
+use crate::drawing::DrawingTool;
+use crate::message::{Command, DrawingMessage};
+use crate::platform::traits::Color;
+use crate::platform::windows::d2d::Direct2DRenderer;
+use crate::utils::d2d_helpers::rounded_rect;
 
 /// 工具栏管理器
 pub struct ToolbarManager {
@@ -20,7 +25,7 @@ pub struct ToolbarManager {
     /// 当前按下的按钮（用于跟踪按下和释放）
     pub pressed_button: ToolbarButton,
     /// 按钮禁用状态
-    pub disabled_buttons: std::collections::HashSet<ToolbarButton>,
+    pub disabled_buttons: HashSet<ToolbarButton>,
 }
 
 impl ToolbarManager {
@@ -38,7 +43,7 @@ impl ToolbarManager {
             hovered_button: ToolbarButton::None,
             clicked_button: ToolbarButton::None,
             pressed_button: ToolbarButton::None,
-            disabled_buttons: std::collections::HashSet::new(),
+            disabled_buttons: HashSet::new(),
         })
     }
 
@@ -142,7 +147,7 @@ impl ToolbarManager {
         self.clicked_button = button;
     }
     /// 更新禁用按钮集合
-    pub fn set_disabled(&mut self, buttons: std::collections::HashSet<ToolbarButton>) {
+    pub fn set_disabled(&mut self, buttons: HashSet<ToolbarButton>) {
         self.disabled_buttons = buttons;
     }
 
@@ -184,29 +189,16 @@ impl ToolbarManager {
                 // 动作按钮：不改变当前 clicked_button；触发保存动作
                 vec![Command::SaveSelectionToFile]
             }
-            ToolbarButton::Rectangle => vec![Command::SelectDrawingTool(
-                crate::types::DrawingTool::Rectangle,
-            )],
-            ToolbarButton::Circle => vec![Command::SelectDrawingTool(
-                crate::types::DrawingTool::Circle,
-            )],
-            ToolbarButton::Arrow => {
-                vec![Command::SelectDrawingTool(crate::types::DrawingTool::Arrow)]
-            }
-            ToolbarButton::Pen => vec![Command::SelectDrawingTool(crate::types::DrawingTool::Pen)],
-            ToolbarButton::Text => {
-                vec![Command::SelectDrawingTool(crate::types::DrawingTool::Text)]
-            }
-            ToolbarButton::Undo => {
-                vec![Command::Drawing(crate::message::DrawingMessage::Undo)]
-            }
-            ToolbarButton::ExtractText => {
-                // 实现文本提取功能
-                vec![Command::ExtractText]
-            }
+            ToolbarButton::Rectangle => vec![Command::SelectDrawingTool(DrawingTool::Rectangle)],
+            ToolbarButton::Circle => vec![Command::SelectDrawingTool(DrawingTool::Circle)],
+            ToolbarButton::Arrow => vec![Command::SelectDrawingTool(DrawingTool::Arrow)],
+            ToolbarButton::Pen => vec![Command::SelectDrawingTool(DrawingTool::Pen)],
+            ToolbarButton::Text => vec![Command::SelectDrawingTool(DrawingTool::Text)],
+            ToolbarButton::Undo => vec![Command::Drawing(DrawingMessage::Undo)],
+            ToolbarButton::ExtractText => vec![Command::ExtractText],
             ToolbarButton::Languages => {
-                // 显示设置窗口以选择 OCR 语言
-                vec![Command::ShowSettings]
+                eprintln!("暂时不做");
+                todo!();
             }
             ToolbarButton::Pin => {
                 // 实现固定功能
@@ -227,104 +219,105 @@ impl ToolbarManager {
     /// 渲染工具栏
     pub fn render(
         &self,
-        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
-        svg_icons: &super::svg_icons::SvgIconManager,
+        d2d_renderer: &mut Direct2DRenderer,
+        svg_icons: &SvgIconManager,
     ) -> Result<(), UIError> {
         if !self.visible {
             return Ok(());
         }
 
-        // 尝试使用Direct2D直接渲染
-        if let Some(d2d_renderer) = renderer
-            .as_any_mut()
-            .downcast_mut::<crate::platform::windows::d2d::Direct2DRenderer>()
-        {
-            // Get brushes with caching
-            let bg_color = crate::platform::traits::Color { r: 1.0, g: 1.0, b: 1.0, a: 0.95 };
-            let hover_color = crate::platform::traits::Color { r: 0.75, g: 0.75, b: 0.75, a: 1.0 };
-            
-            let bg_brush = d2d_renderer.get_or_create_brush(bg_color).ok();
-            let hover_brush = d2d_renderer.get_or_create_brush(hover_color).ok();
+        // Get brushes with caching
+        let bg_color = Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 0.95,
+        };
+        let hover_color = Color {
+            r: 0.75,
+            g: 0.75,
+            b: 0.75,
+            a: 1.0,
+        };
 
-            unsafe {
-                if let Some(render_target) = &d2d_renderer.render_target {
-                    // 绘制工具栏背景
-                    let toolbar_rect = self.rect;
+        let bg_brush = d2d_renderer.get_or_create_brush(bg_color).ok();
+        let hover_brush = d2d_renderer.get_or_create_brush(hover_color).ok();
 
-                    // 使用新的辅助函数创建工具栏背景画刷并绘制圆角矩形
-                    if let Some(bg_brush) = &bg_brush {
-                        let rounded_rect = rounded_rect(
-                            toolbar_rect.left,
-                            toolbar_rect.top,
-                            toolbar_rect.right - toolbar_rect.left,
-                            toolbar_rect.bottom - toolbar_rect.top,
-                            10.0,
-                        );
-                        render_target.FillRoundedRectangle(&rounded_rect, bg_brush);
+        unsafe {
+            if let Some(render_target) = &d2d_renderer.render_target {
+                // 绘制工具栏背景
+                let toolbar_rect = self.rect;
+
+                // 使用新的辅助函数创建工具栏背景画刷并绘制圆角矩形
+                if let Some(bg_brush) = &bg_brush {
+                    let rounded_rect = rounded_rect(
+                        toolbar_rect.left,
+                        toolbar_rect.top,
+                        toolbar_rect.right - toolbar_rect.left,
+                        toolbar_rect.bottom - toolbar_rect.top,
+                        10.0,
+                    );
+                    render_target.FillRoundedRectangle(&rounded_rect, bg_brush);
+                }
+
+                for (button_rect, button_type) in &self.buttons {
+                    // 绘制按钮背景状态 - 只有 hover 时才显示背景
+                    if self.hovered_button == *button_type {
+                        // 悬停状态 - 使用新的辅助函数
+                        if let Some(hover_brush) = &hover_brush {
+                            let button_rounded_rect = rounded_rect(
+                                button_rect.left,
+                                button_rect.top,
+                                button_rect.right - button_rect.left,
+                                button_rect.bottom - button_rect.top,
+                                6.0,
+                            );
+                            render_target.FillRoundedRectangle(&button_rounded_rect, hover_brush);
+                        }
                     }
 
-                    for (button_rect, button_type) in &self.buttons {
-                        // 创建按钮画刷
-                        // 绘制按钮背景状态 - 只有 hover 时才显示背景
-                        if self.hovered_button == *button_type {
-                            // 悬停状态 - 使用新的辅助函数
-                            if let Some(hover_brush) = &hover_brush {
-                                let button_rounded_rect = rounded_rect(
-                                    button_rect.left,
-                                    button_rect.top,
-                                    button_rect.right - button_rect.left,
-                                    button_rect.bottom - button_rect.top,
-                                    6.0,
-                                );
-                                render_target
-                                    .FillRoundedRectangle(&button_rounded_rect, hover_brush);
-                            }
-                        }
+                    // 确定图标颜色
+                    let is_disabled = self.disabled_buttons.contains(button_type);
+                    let icon_color = if is_disabled {
+                        // 禁用状态 - 灰色
+                        Some((170, 170, 170))
+                    } else if self.clicked_button == *button_type {
+                        // 选中状态 - 绿色
+                        Some((33, 196, 94))
+                    } else {
+                        // 普通状态 - 深灰色
+                        Some((16, 16, 16))
+                    };
 
-                        // 确定图标颜色
-                        let is_disabled = self.disabled_buttons.contains(button_type);
-                        let icon_color = if is_disabled {
-                            // 禁用状态 - 灰色
-                            Some((170, 170, 170))
-                        } else if self.clicked_button == *button_type {
-                            // 选中状态 - 绿色
-                            Some((33, 196, 94))
-                        } else {
-                            // 普通状态 - 深灰色
-                            Some((16, 16, 16))
+                    // 渲染 SVG 图标
+                    if let Ok(Some(icon_bitmap)) = svg_icons.render_icon_to_bitmap(
+                        *button_type,
+                        render_target,
+                        24, // 图标大小
+                        icon_color,
+                    ) {
+                        // 计算图标居中位置
+                        let icon_size = 20.0; // 显示大小
+                        let icon_x = button_rect.left
+                            + (button_rect.right - button_rect.left - icon_size) / 2.0;
+                        let icon_y = button_rect.top
+                            + (button_rect.bottom - button_rect.top - icon_size) / 2.0;
+
+                        let icon_rect = windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: icon_x,
+                            top: icon_y,
+                            right: icon_x + icon_size,
+                            bottom: icon_y + icon_size,
                         };
 
-                        // 渲染 SVG 图标
-                        if let Ok(Some(icon_bitmap)) = svg_icons.render_icon_to_bitmap(
-                            *button_type,
-                            render_target,
-                            24, // 图标大小
-                            icon_color,
-                        ) {
-                            // 计算图标居中位置
-                            let icon_size = 20.0; // 显示大小
-                            let icon_x = button_rect.left
-                                + (button_rect.right - button_rect.left - icon_size) / 2.0;
-                            let icon_y = button_rect.top
-                                + (button_rect.bottom - button_rect.top - icon_size) / 2.0;
-
-                            let icon_rect =
-                                windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                    left: icon_x,
-                                    top: icon_y,
-                                    right: icon_x + icon_size,
-                                    bottom: icon_y + icon_size,
-                                };
-
-                            // 绘制图标
-                            render_target.DrawBitmap(
-                                &icon_bitmap,
-                                Some(&icon_rect),
-                                1.0, // 不透明度
-                                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                                None,
-                            );
-                        }
+                        // 绘制图标
+                        render_target.DrawBitmap(
+                            &icon_bitmap,
+                            Some(&icon_rect),
+                            1.0, // 不透明度
+                            windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                            None,
+                        );
                     }
                 }
             }
@@ -358,19 +351,19 @@ impl ToolbarManager {
 
         // 检查是否点击了工具栏按钮
         let button_type = self.get_button_at_position(x, y);
-        if button_type != crate::types::ToolbarButton::None {
-             // 禁用按钮不可点击
-             if self.disabled_buttons.contains(&button_type) {
-                 return vec![];
-             }
+        if button_type != ToolbarButton::None {
+            // 禁用按钮不可点击
+            if self.disabled_buttons.contains(&button_type) {
+                return vec![];
+            }
 
-             // 记录按下的按钮
-             self.pressed_button = button_type;
-             // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
-             // 调试输出
-             eprintln!("Toolbar button clicked: {button_type:?}");
-             // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
-             return self.handle_button_click(button_type);
+            // 记录按下的按钮
+            self.pressed_button = button_type;
+            // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
+            // 调试输出
+            eprintln!("Toolbar button clicked: {button_type:?}");
+            // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
+            return self.handle_button_click(button_type);
         }
 
         vec![]

@@ -2,20 +2,21 @@
 //!
 //! 提供 OCR 引擎的启动、停止、识别等功能。
 
-use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
-use paddleocr::{ImageData, Ppocr};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
+use paddleocr::{ImageData, Ppocr};
+use serde_json::Value;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
 
 use super::types::{BoundingBox, OcrResult};
+use crate::settings::Settings;
 
 // 当前活跃的OCR引擎（按需启动和关闭）
 static CURRENT_OCR_ENGINE: OnceLock<Mutex<Option<Ppocr>>> = OnceLock::new();
@@ -38,11 +39,32 @@ impl PaddleOcrEngine {
     /// 异步启动OCR引擎（截图开始时调用，不阻塞）
     /// 注意：推荐使用 ensure_engine_started() 方法
     pub fn start_ocr_engine_async() {
-        // 在后台线程中异步启动OCR引擎
-        std::thread::spawn(|| {
-            if let Err(_e) = Self::start_ocr_engine_sync() {
-                #[cfg(debug_assertions)]
-                eprintln!("异步启动OCR引擎失败: {_e}");
+        Self::start_ocr_engine_async_with_callback(None);
+    }
+
+    /// 异步启动OCR引擎，完成后通知指定窗口
+    pub fn start_ocr_engine_async_with_hwnd(hwnd: HWND) {
+        Self::start_ocr_engine_async_with_callback(Some(hwnd.0 as usize));
+    }
+
+    /// 内部实现：异步启动引擎，可选回调
+    fn start_ocr_engine_async_with_callback(hwnd_ptr: Option<usize>) {
+        std::thread::spawn(move || {
+            let success = Self::start_ocr_engine_sync().is_ok();
+
+            // 启动完成后发送状态更新消息
+            if let Some(ptr) = hwnd_ptr {
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_USER};
+                    let hwnd = HWND(ptr as *mut std::ffi::c_void);
+                    // WM_USER + 10 = WM_OCR_STATUS_UPDATE
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        WM_USER + 10,
+                        WPARAM(if success { 1 } else { 0 }),
+                        LPARAM(0),
+                    );
+                }
             }
         });
     }
@@ -103,24 +125,25 @@ impl PaddleOcrEngine {
     fn stop_ocr_engine_sync() {
         if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
             && let Ok(mut engine_guard) = engine_mutex.lock()
-                && let Some(engine) = engine_guard.take() {
-                    #[cfg(debug_assertions)]
-                    let start_time = std::time::Instant::now();
-                    #[cfg(debug_assertions)]
-                    println!("正在后台停止OCR引擎...");
+            && let Some(engine) = engine_guard.take()
+        {
+            #[cfg(debug_assertions)]
+            let start_time = std::time::Instant::now();
+            #[cfg(debug_assertions)]
+            println!("正在后台停止OCR引擎...");
 
-                    // 正常关闭引擎
-                    drop(engine);
+            // 正常关闭引擎
+            drop(engine);
 
-                    // 等待进程退出
-                    std::thread::sleep(std::time::Duration::from_millis(300));
+            // 等待进程退出
+            std::thread::sleep(std::time::Duration::from_millis(300));
 
-                    // 强制清理残留进程
-                    Self::force_kill_paddle_processes();
+            // 强制清理残留进程
+            Self::force_kill_paddle_processes();
 
-                    #[cfg(debug_assertions)]
-                    println!("OCR引擎已停止，耗时: {:?}", start_time.elapsed());
-                }
+            #[cfg(debug_assertions)]
+            println!("OCR引擎已停止，耗时: {:?}", start_time.elapsed());
+        }
     }
 
     /// 立即停止OCR引擎（程序退出时使用，同步）
@@ -134,26 +157,41 @@ impl PaddleOcrEngine {
         // 立即检查OCR引擎是否就绪
         if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
             && let Ok(mut engine_guard) = engine_mutex.lock()
-                && let Some(engine) = engine_guard.as_mut() {
-                    // 引擎已就绪，执行OCR
-                    #[cfg(debug_assertions)]
-                    println!("OCR引擎就绪，开始识别...");
+            && let Some(engine) = engine_guard.as_mut()
+        {
+            // 引擎已就绪，执行OCR
+            #[cfg(debug_assertions)]
+            println!("OCR引擎就绪，开始识别...");
 
-                    return engine
-                        .ocr(image_data)
-                        .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
-                }
+            return engine
+                .ocr(image_data)
+                .map_err(|e| anyhow::anyhow!("PaddleOCR 识别失败: {}", e));
+        }
 
         // 引擎未就绪，直接返回错误
         Err(anyhow::anyhow!("OCR引擎未就绪，请等待引擎启动完成"))
     }
 
-    /// 检查OCR引擎是否已经准备就绪
+    /// 检查OCR引擎是否已经准备就绪（非阻塞，UI线程使用）
+    ///
+    /// 使用 `try_lock` 避免阻塞主线程。如果锁被占用（引擎正在启动/停止），
+    /// 返回 `false` 而不是等待。
     pub fn is_engine_ready() -> bool {
         if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
-            && let Ok(engine_guard) = engine_mutex.lock() {
-                return engine_guard.is_some();
-            }
+            && let Ok(engine_guard) = engine_mutex.try_lock()
+        {
+            return engine_guard.is_some();
+        }
+        false
+    }
+
+    /// 检查OCR引擎是否已经准备就绪（阻塞版本，后台线程使用）
+    fn is_engine_ready_blocking() -> bool {
+        if let Some(engine_mutex) = CURRENT_OCR_ENGINE.get()
+            && let Ok(engine_guard) = engine_mutex.lock()
+        {
+            return engine_guard.is_some();
+        }
         false
     }
 
@@ -196,33 +234,18 @@ impl PaddleOcrEngine {
         });
     }
 
-    /// 异步检查OCR引擎状态并返回详细信息（非阻塞）
+    /// 异步检查OCR引擎状态并返回详细信息（后台线程执行）
+    ///
+    /// 注意：此方法仅检查状态，不会启动引擎。
+    /// 引擎启动应通过 `ensure_engine_started()` 单独调用。
     pub fn check_engine_status_async<F>(callback: F)
     where
         F: Fn(bool, bool, String) + Send + 'static,
     {
         std::thread::spawn(move || {
-            // 在后台线程中检查引擎状态
+            // 在后台线程中检查引擎状态（使用阻塞版本，等待锁释放）
             let exe_exists = Self::find_paddle_exe().is_ok();
-            let mut engine_ready = Self::is_engine_ready();
-
-            // 如果可执行文件存在但引擎未启动，则尝试启动引擎
-            if exe_exists && !engine_ready {
-                #[cfg(debug_assertions)]
-                println!("检测到PaddleOCR可执行文件，正在启动OCR引擎...");
-
-                // 尝试启动引擎
-                if let Err(_e) = Self::start_ocr_engine_sync() {
-                    #[cfg(debug_assertions)]
-                    eprintln!("启动OCR引擎失败: {_e}");
-                } else {
-                    // 启动成功，重新检查状态
-                    engine_ready = Self::is_engine_ready();
-                    #[cfg(debug_assertions)]
-                    println!("OCR引擎启动成功，状态: {engine_ready}");
-                }
-            }
-
+            let engine_ready = Self::is_engine_ready_blocking();
             let status = Self::get_engine_status();
             callback(exe_exists, engine_ready, status);
         });
@@ -287,7 +310,7 @@ impl PaddleOcrEngine {
     /// 根据用户设置选择对应的OCR语言配置
     fn get_language_config_path() -> Option<PathBuf> {
         // 从设置中读取用户选择的语言
-        let settings = crate::settings::Settings::load();
+        let settings = Settings::load();
         let language = &settings.ocr_language;
 
         match language.as_str() {
@@ -297,22 +320,6 @@ impl PaddleOcrEngine {
             "korean" => Some(PathBuf::from("models\\config_korean.txt")),
             _ => None, // "chinese" or any unknown language uses default config
         }
-    }
-
-    /// 从文件路径识别文本（使用 PaddleOCR）
-    pub fn recognize_file(&mut self, path: &std::path::Path) -> Result<Vec<OcrResult>> {
-        // 检查文件是否存在
-        if !path.exists() {
-            return Err(anyhow::anyhow!("文件不存在: {:?}", path));
-        }
-
-        // 使用全局 PaddleOCR 引擎进行文本识别（隐藏窗口）
-        let ocr_result = Self::call_global_ocr(path.into())?;
-
-        // 解析JSON结果
-        let results = self.parse_paddle_ocr_result(&ocr_result)?;
-
-        Ok(results)
     }
 
     /// 从内存中的图像数据识别文本
@@ -341,69 +348,6 @@ impl PaddleOcrEngine {
         }
     }
 
-    /// 批量识别多个图像数据
-    pub fn recognize_batch_from_memory(
-        &mut self,
-        images_data: &[Vec<u8>],
-    ) -> Result<Vec<(String, Option<f32>)>> {
-        let mut results = Vec::new();
-
-        // 为每个图像使用Base64方式识别，避免磁盘IO
-        for image_data in images_data.iter() {
-            // 将图像数据编码为Base64
-            let base64_string = general_purpose::STANDARD.encode(image_data);
-            let image_data_obj = ImageData::ImageBase64Dict {
-                image_base64: base64_string,
-            };
-
-            // 使用全局 PaddleOCR 引擎识别
-            match Self::call_global_ocr(image_data_obj) {
-                Ok(json_str) => {
-                    // 解析结果
-                    if let Ok(ocr_results) = self.parse_paddle_ocr_result(&json_str) {
-                        // 提取文本和置信度
-                        let mut text = String::new();
-                        let mut total_confidence = 0.0;
-                        let count = ocr_results.len();
-
-                        for (i, res) in ocr_results.iter().enumerate() {
-                            if i > 0 {
-                                text.push(' ');
-                            }
-                            text.push_str(&res.text);
-                            total_confidence += res.confidence;
-                        }
-
-                        let avg_confidence = if count > 0 {
-                            Some(total_confidence / count as f32)
-                        } else {
-                            // 检查是否是"未识别到任何文字"的情况
-                            if ocr_results.len() == 1 && ocr_results[0].text == "未识别到任何文字" {
-                                None
-                            } else {
-                                Some(0.0)
-                            }
-                        };
-
-                        // 如果结果是空的或者全是占位符，视为空
-                        if text.is_empty() || text == "未识别到任何文字" {
-                             results.push((String::new(), Some(0.0)));
-                        } else {
-                             results.push((text, avg_confidence));
-                        }
-                    } else {
-                        results.push((String::new(), Some(0.0)));
-                    }
-                }
-                Err(_) => {
-                    results.push((String::new(), Some(0.0))); // 识别失败
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
     /// 解析PaddleOCR的JSON结果
     fn parse_paddle_ocr_result(&self, json_str: &str) -> Result<Vec<OcrResult>> {
         let mut results = Vec::new();
@@ -414,9 +358,10 @@ impl PaddleOcrEngine {
 
         // 检查返回码
         if let Some(code) = json_value.get("code").and_then(|v| v.as_i64())
-            && code != 100 {
-                return Err(anyhow::anyhow!("PaddleOCR返回错误码: {}", code));
-            }
+            && code != 100
+        {
+            return Err(anyhow::anyhow!("PaddleOCR返回错误码: {}", code));
+        }
 
         // 获取data数组
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
@@ -605,157 +550,4 @@ pub fn recognize_text_by_lines(image_data: &[u8], selection_rect: RECT) -> Resul
     final_results.sort_by(|a, b| a.bounding_box.y.cmp(&b.bounding_box.y));
 
     Ok(final_results)
-}
-
-/// 从原图中提取指定区域的图片数据
-pub fn crop_bmp(original_image_data: &[u8], crop_rect: &RECT) -> Result<Vec<u8>> {
-    // 解析 BMP 头部信息
-    if original_image_data.len() < 54 {
-        return Err(anyhow::anyhow!("BMP 数据太小"));
-    }
-
-    // 读取 BMP 头部信息
-    let width = i32::from_le_bytes([
-        original_image_data[18],
-        original_image_data[19],
-        original_image_data[20],
-        original_image_data[21],
-    ]);
-    let height = i32::from_le_bytes([
-        original_image_data[22],
-        original_image_data[23],
-        original_image_data[24],
-        original_image_data[25],
-    ])
-    .abs();
-
-    let bits_per_pixel = u16::from_le_bytes([original_image_data[28], original_image_data[29]]);
-
-    // 计算每行的字节数（需要4字节对齐）
-    let bytes_per_pixel = (bits_per_pixel / 8) as i32;
-    let row_size = ((width * bytes_per_pixel + 3) / 4) * 4;
-
-    // 计算裁剪区域
-    let crop_x = crop_rect.left.max(0).min(width - 1);
-    let crop_y = crop_rect.top.max(0).min(height - 1);
-    let crop_width = (crop_rect.right - crop_rect.left)
-        .max(1)
-        .min(width - crop_x);
-    let crop_height = (crop_rect.bottom - crop_rect.top)
-        .max(1)
-        .min(height - crop_y);
-
-    // 如果裁剪区域无效，返回原图
-    if crop_width <= 0 || crop_height <= 0 {
-        return Ok(original_image_data.to_vec());
-    }
-
-    // 创建新的 BMP 头部
-    let new_row_size = ((crop_width * bytes_per_pixel + 3) / 4) * 4;
-    let new_image_size = new_row_size * crop_height;
-    let new_file_size = 54 + new_image_size;
-
-    let mut new_bmp = Vec::with_capacity(new_file_size as usize);
-
-    // 复制并修改 BMP 头部
-    new_bmp.extend_from_slice(&original_image_data[0..18]); // 文件头
-    new_bmp.extend_from_slice(&crop_width.to_le_bytes()); // 新宽度
-    new_bmp.extend_from_slice(&(-crop_height).to_le_bytes()); // 新高度 (保持负值，Top-Down)
-    new_bmp.extend_from_slice(&original_image_data[26..54]); // 其余头部信息
-
-    // 修改文件大小
-    new_bmp[2..6].copy_from_slice(&(new_file_size as u32).to_le_bytes());
-    // 修改图像数据大小
-    new_bmp[34..38].copy_from_slice(&(new_image_size as u32).to_le_bytes());
-
-    // 复制像素数据
-    let pixel_data_offset = 54;
-
-    for y in 0..crop_height {
-        let src_y = crop_y + y;
-        let src_row_start = pixel_data_offset + (src_y * row_size) as usize;
-        let src_pixel_start = src_row_start + (crop_x * bytes_per_pixel) as usize;
-        let src_pixel_end = src_pixel_start + (crop_width * bytes_per_pixel) as usize;
-
-        if src_pixel_end <= original_image_data.len() {
-            new_bmp.extend_from_slice(&original_image_data[src_pixel_start..src_pixel_end]);
-
-            // 添加行填充
-            let padding = (new_row_size - crop_width * bytes_per_pixel) as usize;
-            new_bmp.resize(new_bmp.len() + padding, 0);
-        }
-    }
-
-    Ok(new_bmp)
-}
-
-/// 将位图转换为 BMP 数据
-pub fn bitmap_to_bmp_data(
-    mem_dc: HDC,
-    bitmap: HBITMAP,
-    width: i32,
-    height: i32,
-) -> Result<Vec<u8>> {
-    unsafe {
-        // 获取位图信息
-        let mut bitmap_info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height, // 负值表示自顶向下
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
-            },
-            bmiColors: [RGBQUAD::default(); 1],
-        };
-
-        // 计算图像数据大小
-        let data_size = (width * height * 4) as usize;
-        let mut pixel_data = vec![0u8; data_size];
-
-        // 获取位图数据
-        let result = GetDIBits(
-            mem_dc,
-            bitmap,
-            0,
-            height as u32,
-            Some(pixel_data.as_mut_ptr() as *mut _),
-            &mut bitmap_info,
-            DIB_RGB_COLORS,
-        );
-
-        if result == 0 {
-            return Err(anyhow::anyhow!("获取位图数据失败"));
-        }
-
-        // 将 BGRA 数据转换为简单的 BMP 格式
-        // 创建 BMP 文件头
-        let file_size = 54 + data_size as u32; // BMP 头部 + 数据
-        let mut bmp_data = Vec::with_capacity(file_size as usize);
-
-        // BMP 文件头 (14 字节)
-        bmp_data.extend_from_slice(b"BM"); // 签名
-        bmp_data.extend_from_slice(&file_size.to_le_bytes()); // 文件大小
-        bmp_data.extend_from_slice(&[0u8; 4]); // 保留字段
-        bmp_data.extend_from_slice(&54u32.to_le_bytes()); // 数据偏移
-
-        // BMP 信息头 (40 字节)
-        bmp_data.extend_from_slice(&40u32.to_le_bytes()); // 信息头大小
-        bmp_data.extend_from_slice(&width.to_le_bytes()); // 宽度
-        bmp_data.extend_from_slice(&(-height).to_le_bytes()); // 高度（负值，表示自顶向下，与 GetDIBits 一致）
-        bmp_data.extend_from_slice(&1u16.to_le_bytes()); // 平面数
-        bmp_data.extend_from_slice(&32u16.to_le_bytes()); // 位深度
-        bmp_data.extend_from_slice(&[0u8; 24]); // 其他字段填充为 0
-
-        // 添加像素数据
-        bmp_data.extend_from_slice(&pixel_data);
-
-        Ok(bmp_data)
-    }
 }

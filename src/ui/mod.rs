@@ -8,8 +8,15 @@
 //! - [`SvgIconManager`](svg_icons::SvgIconManager): SVG 图标管理
 //! - [`cursor`]: 光标管理功能
 
+use std::collections::HashSet;
+
+use windows::Win32::Foundation::RECT;
+
+use crate::constants::{COLOR_SELECTION_BORDER, HANDLE_SIZE};
+use crate::drawing::DrawingTool;
 use crate::message::{Command, UIMessage};
-use crate::platform::{PlatformError, PlatformRenderer};
+use crate::platform::traits::{Color, Rectangle};
+use crate::platform::windows::d2d::Direct2DRenderer;
 use crate::rendering::{RenderItem, RenderList, z_order};
 
 pub mod cursor;
@@ -17,6 +24,7 @@ pub mod preview;
 pub mod svg_icons;
 pub mod toolbar;
 pub mod types;
+pub mod file_dialog;
 
 // Re-export types for convenience
 pub use preview::PreviewWindow;
@@ -54,7 +62,7 @@ impl UIManager {
         self.toolbar.hide();
 
         // 重置工具栏按钮状态
-        self.toolbar.clicked_button = crate::types::ToolbarButton::None;
+        self.toolbar.clicked_button = ToolbarButton::None;
     }
 
     /// 处理UI消息
@@ -102,10 +110,10 @@ impl UIManager {
     /// 渲染UI元素
     pub fn render(
         &self,
-        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
+        d2d_renderer: &mut Direct2DRenderer,
     ) -> Result<(), UIError> {
         // 渲染工具栏
-        self.toolbar.render(renderer, &self.svg_icons)?;
+        self.toolbar.render(d2d_renderer, &self.svg_icons)?;
 
         Ok(())
     }
@@ -123,9 +131,9 @@ impl UIManager {
     /// * `has_auto_highlight` - 是否有自动高亮
     pub fn render_selection_ui(
         &self,
-        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
+        d2d_renderer: &mut Direct2DRenderer,
         screen_size: (i32, i32),
-        selection_rect: Option<&windows::Win32::Foundation::RECT>,
+        selection_rect: Option<&RECT>,
         show_handles: bool,
         hide_ui_for_capture: bool,
         has_auto_highlight: bool,
@@ -139,8 +147,6 @@ impl UIManager {
         let Some(selection_rect) = selection_rect else {
             return Ok(());
         };
-
-        use crate::platform::traits::{Color, Rectangle};
 
         // 创建渲染列表
         let mut render_list = RenderList::with_capacity(4);
@@ -185,13 +191,12 @@ impl UIManager {
                 3.0,
             )
         } else {
-            let c = &crate::constants::COLOR_SELECTION_BORDER;
             (
                 Color {
-                    r: c.r,
-                    g: c.g,
-                    b: c.b,
-                    a: c.a,
+                    r: COLOR_SELECTION_BORDER.r,
+                    g: COLOR_SELECTION_BORDER.g,
+                    b: COLOR_SELECTION_BORDER.b,
+                    a: COLOR_SELECTION_BORDER.a,
                 },
                 2.0,
             )
@@ -220,7 +225,7 @@ impl UIManager {
             };
             render_list.submit(RenderItem::SelectionHandles {
                 rect: selection_rect_platform,
-                handle_size: crate::constants::HANDLE_SIZE,
+                handle_size: HANDLE_SIZE,
                 fill_color,
                 border_color: handle_border_color,
                 border_width: 1.0,
@@ -230,7 +235,7 @@ impl UIManager {
 
         // 执行渲染列表（按 z_order 排序后统一绘制）
         render_list
-            .execute(renderer)
+            .execute(d2d_renderer)
             .map_err(|e| UIError::RenderError(format!("render list execute failed: {e}")))?;
 
         Ok(())
@@ -286,25 +291,25 @@ impl UIManager {
     }
 
     /// 获取当前悬停的工具栏按钮
-    pub fn get_hovered_button(&self) -> crate::types::ToolbarButton {
+    pub fn get_hovered_button(&self) -> ToolbarButton {
         self.toolbar.hovered_button
     }
 
     /// 查询某个按钮是否被禁用
-    pub fn is_button_disabled(&self, button: crate::types::ToolbarButton) -> bool {
+    pub fn is_button_disabled(&self, button: ToolbarButton) -> bool {
         self.toolbar.disabled_buttons.contains(&button)
     }
 
     /// 更新工具栏选中的绘图工具
-    pub fn update_toolbar_selected_tool(&mut self, tool: crate::types::DrawingTool) {
+    pub fn update_toolbar_selected_tool(&mut self, tool: DrawingTool) {
         // 将绘图工具转换为工具栏按钮
         let button = match tool {
-            crate::types::DrawingTool::Rectangle => crate::types::ToolbarButton::Rectangle,
-            crate::types::DrawingTool::Circle => crate::types::ToolbarButton::Circle,
-            crate::types::DrawingTool::Arrow => crate::types::ToolbarButton::Arrow,
-            crate::types::DrawingTool::Pen => crate::types::ToolbarButton::Pen,
-            crate::types::DrawingTool::Text => crate::types::ToolbarButton::Text,
-            crate::types::DrawingTool::None => crate::types::ToolbarButton::None,
+            DrawingTool::Rectangle => ToolbarButton::Rectangle,
+            DrawingTool::Circle => ToolbarButton::Circle,
+            DrawingTool::Arrow => ToolbarButton::Arrow,
+            DrawingTool::Pen => ToolbarButton::Pen,
+            DrawingTool::Text => ToolbarButton::Text,
+            DrawingTool::None => ToolbarButton::None,
         };
 
         // 更新工具栏的选中按钮状态
@@ -316,7 +321,7 @@ impl UIManager {
     /// 设置工具栏禁用按钮状态
     pub fn set_toolbar_disabled(
         &mut self,
-        buttons: std::collections::HashSet<crate::types::ToolbarButton>,
+        buttons: HashSet<ToolbarButton>,
     ) {
         self.toolbar.set_disabled(buttons);
     }

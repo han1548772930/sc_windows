@@ -1,6 +1,7 @@
-use super::DrawingError;
-use crate::platform::{PlatformError, PlatformRenderer};
-use crate::types::DrawingElement;
+use windows::Win32::Foundation::RECT;
+
+use super::history::DrawingAction;
+use super::types::{DrawingElement, DrawingTool};
 
 /// 元素管理器
 ///
@@ -56,16 +57,21 @@ impl ElementManager {
         // 如果达到限制，移除最早的非文本元素
         if self.elements.len() >= self.max_elements {
             // 优先移除最早的非文本元素
-            if let Some(pos) = self.elements.iter().position(|e| {
-                e.tool != crate::types::DrawingTool::Text
-            }) {
+            if let Some(pos) = self
+                .elements
+                .iter()
+                .position(|e| e.tool != DrawingTool::Text)
+            {
                 self.elements.remove(pos);
             } else {
                 // 如果全是文本元素，移除最早的
                 self.elements.remove(0);
             }
             #[cfg(debug_assertions)]
-            eprintln!("ElementManager: 达到最大元素限制 {}，已移除最早的元素", self.max_elements);
+            eprintln!(
+                "ElementManager: 达到最大元素限制 {}，已移除最早的元素",
+                self.max_elements
+            );
         }
         self.elements.push(element);
     }
@@ -96,11 +102,11 @@ impl ElementManager {
         &self,
         x: i32,
         y: i32,
-        selection_rect: Option<windows::Win32::Foundation::RECT>,
+        selection_rect: Option<RECT>,
     ) -> Option<usize> {
         // 从后往前查找（最后绘制的元素在最上层）
         for (index, element) in self.elements.iter().enumerate().rev() {
-            if element.tool == crate::types::DrawingTool::Pen {
+            if element.tool == DrawingTool::Pen {
                 continue;
             }
 
@@ -121,8 +127,8 @@ impl ElementManager {
     /// 检查元素是否在选择框内可见
     pub fn is_element_visible_in_selection(
         &self,
-        element: &crate::types::DrawingElement,
-        selection_rect: &windows::Win32::Foundation::RECT,
+        element: &DrawingElement,
+        selection_rect: &RECT,
     ) -> bool {
         let element_rect = element.get_bounding_rect();
 
@@ -142,194 +148,10 @@ impl ElementManager {
 
         // 设置新的选中状态
         if let Some(idx) = index
-            && idx < self.elements.len() {
-                self.elements[idx].selected = true;
-            }
-    }
-
-    /// 渲染所有元素
-    pub fn render(
-        &self,
-        renderer: &mut dyn PlatformRenderer<Error = PlatformError>,
-    ) -> Result<(), DrawingError> {
-        use crate::platform::traits::{Color, DrawStyle, Point, TextStyle};
-        use crate::types::DrawingTool;
-
-        for element in &self.elements {
-            // 转换颜色格式
-            let color = Color {
-                r: element.color.r,
-                g: element.color.g,
-                b: element.color.b,
-                a: element.color.a,
-            };
-
-            match element.tool {
-                DrawingTool::Rectangle => {
-                    if element.points.len() >= 2 {
-                        let rect = crate::platform::traits::Rectangle {
-                            x: element.points[0].x as f32,
-                            y: element.points[0].y as f32,
-                            width: (element.points[1].x - element.points[0].x) as f32,
-                            height: (element.points[1].y - element.points[0].y) as f32,
-                        };
-
-                        let style = DrawStyle {
-                            stroke_color: color,
-                            fill_color: None,
-                            stroke_width: element.thickness,
-                        };
-
-                        renderer
-                            .draw_rectangle(rect, &style)
-                            .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                    }
-                }
-                DrawingTool::Circle => {
-                    if element.points.len() >= 2 {
-                        let center_x = (element.points[0].x + element.points[1].x) as f32 / 2.0;
-                        let center_y = (element.points[0].y + element.points[1].y) as f32 / 2.0;
-                        let radius_x =
-                            (element.points[1].x - element.points[0].x).abs() as f32 / 2.0;
-                        let radius_y =
-                            (element.points[1].y - element.points[0].y).abs() as f32 / 2.0;
-
-                        // 使用较大的半径作为圆形半径（简化版本）
-                        let radius = radius_x.max(radius_y);
-
-                        let center = Point {
-                            x: center_x,
-                            y: center_y,
-                        };
-
-                        let style = DrawStyle {
-                            stroke_color: color,
-                            fill_color: None,
-                            stroke_width: element.thickness,
-                        };
-
-                        renderer
-                            .draw_circle(center, radius, &style)
-                            .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                    }
-                }
-                DrawingTool::Arrow => {
-                    if element.points.len() >= 2 {
-                        // 绘制箭头主线
-                        let start = Point {
-                            x: element.points[0].x as f32,
-                            y: element.points[0].y as f32,
-                        };
-                        let end = Point {
-                            x: element.points[1].x as f32,
-                            y: element.points[1].y as f32,
-                        };
-
-                        let style = DrawStyle {
-                            stroke_color: color,
-                            fill_color: None,
-                            stroke_width: element.thickness,
-                        };
-
-                        renderer
-                            .draw_line(start, end, &style)
-                            .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-
-                        // 绘制箭头头部（简化版本）
-                        let dx = end.x - start.x;
-                        let dy = end.y - start.y;
-                        let length = (dx * dx + dy * dy).sqrt();
-
-                        if length > 0.0 {
-                            let arrow_length = 15.0;
-                            let arrow_angle: f32 = 0.5; // 约30度
-
-                            let unit_x = dx / length;
-                            let unit_y = dy / length;
-
-                            // 箭头翼1
-                            let wing1_x = end.x
-                                - arrow_length
-                                    * (unit_x * arrow_angle.cos() - unit_y * arrow_angle.sin());
-                            let wing1_y = end.y
-                                - arrow_length
-                                    * (unit_x * arrow_angle.sin() + unit_y * arrow_angle.cos());
-
-                            // 箭头翼2
-                            let wing2_x = end.x
-                                - arrow_length
-                                    * (unit_x * arrow_angle.cos() + unit_y * arrow_angle.sin());
-                            let wing2_y = end.y
-                                - arrow_length
-                                    * (-unit_x * arrow_angle.sin() + unit_y * arrow_angle.cos());
-
-                            let wing1 = Point {
-                                x: wing1_x,
-                                y: wing1_y,
-                            };
-                            let wing2 = Point {
-                                x: wing2_x,
-                                y: wing2_y,
-                            };
-
-                            renderer
-                                .draw_line(end, wing1, &style)
-                                .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                            renderer
-                                .draw_line(end, wing2, &style)
-                                .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                        }
-                    }
-                }
-                DrawingTool::Pen => {
-                    if element.points.len() > 1 {
-                        let style = DrawStyle {
-                            stroke_color: color,
-                            fill_color: None,
-                            stroke_width: element.thickness,
-                        };
-
-                        // 连接所有点绘制自由线条
-                        for i in 0..element.points.len() - 1 {
-                            let start = Point {
-                                x: element.points[i].x as f32,
-                                y: element.points[i].y as f32,
-                            };
-                            let end = Point {
-                                x: element.points[i + 1].x as f32,
-                                y: element.points[i + 1].y as f32,
-                            };
-
-                            renderer
-                                .draw_line(start, end, &style)
-                                .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                        }
-                    }
-                }
-                DrawingTool::Text => {
-                    if !element.points.is_empty() && !element.text.is_empty() {
-                        let position = Point {
-                            x: element.points[0].x as f32,
-                            y: element.points[0].y as f32,
-                        };
-
-                        let text_style = TextStyle {
-                            font_size: element.font_size,
-                            color,
-                            font_family: element.font_name.clone(), // use element's own font
-                        };
-
-                        renderer
-                            .draw_text(&element.text, position, &text_style)
-                            .map_err(|e| DrawingError::RenderError(e.to_string()))?;
-                    }
-                }
-                DrawingTool::None => {
-                    // 不绘制任何内容
-                }
-            }
+            && idx < self.elements.len()
+        {
+            self.elements[idx].selected = true;
         }
-        Ok(())
     }
 
     /// 获取所有元素的引用
@@ -370,8 +192,7 @@ impl ElementManager {
     // ==================== 命令模式支持 ====================
 
     /// 应用撤销操作
-    pub fn apply_undo(&mut self, action: &super::history::DrawingAction) {
-        use super::history::DrawingAction;
+    pub fn apply_undo(&mut self, action: &DrawingAction) {
         match action {
             DrawingAction::AddElement { index, .. } => {
                 // 撤销添加 = 删除元素
@@ -385,34 +206,55 @@ impl ElementManager {
                     self.elements.insert(*index, element.clone());
                 }
             }
-            DrawingAction::MoveElement { index, old_points, old_rect, .. } => {
+            DrawingAction::MoveElement {
+                index,
+                old_points,
+                old_rect,
+                ..
+            } => {
                 // 撤销移动 = 恢复原位置
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.points = old_points.clone();
                     element.rect = *old_rect;
-                    element.path_geometry.replace(None);
+                    // 缓存失效由 DrawingManager 的 geometry_cache 管理
                 }
             }
-            DrawingAction::ResizeElement { index, old_points, old_rect, old_font_size, .. } => {
+            DrawingAction::ResizeElement {
+                index,
+                old_points,
+                old_rect,
+                old_font_size,
+                ..
+            } => {
                 // 撤销调整大小 = 恢复原尺寸
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.points = old_points.clone();
                     element.rect = *old_rect;
                     element.font_size = *old_font_size;
-                    element.path_geometry.replace(None);
-                    element.text_layout.replace(None);
+                    // 缓存失效由 DrawingManager 的 geometry_cache 管理
                 }
             }
-            DrawingAction::ModifyText { index, old_text, old_points, old_rect, .. } => {
+            DrawingAction::ModifyText {
+                index,
+                old_text,
+                old_points,
+                old_rect,
+                ..
+            } => {
                 // 撤销文本修改 = 恢复原文本
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.text = old_text.clone();
                     element.points = old_points.clone();
                     element.rect = *old_rect;
-                    element.text_layout.replace(None);
+                    // 缓存失效由 DrawingManager 的 geometry_cache 管理
                 }
             }
-            DrawingAction::ModifyProperty { index, old_color, old_thickness, .. } => {
+            DrawingAction::ModifyProperty {
+                index,
+                old_color,
+                old_thickness,
+                ..
+            } => {
                 // 撤销属性修改 = 恢复原属性
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.color = *old_color;
@@ -429,8 +271,7 @@ impl ElementManager {
     }
 
     /// 应用重做操作
-    pub fn apply_redo(&mut self, action: &super::history::DrawingAction) {
-        use super::history::DrawingAction;
+    pub fn apply_redo(&mut self, action: &DrawingAction) {
         match action {
             DrawingAction::AddElement { element, index } => {
                 // 重做添加 = 插入元素
@@ -450,26 +291,42 @@ impl ElementManager {
                     element.move_by(*dx, *dy);
                 }
             }
-            DrawingAction::ResizeElement { index, new_points, new_rect, new_font_size, .. } => {
+            DrawingAction::ResizeElement {
+                index,
+                new_points,
+                new_rect,
+                new_font_size,
+                ..
+            } => {
                 // 重做调整大小 = 应用新尺寸
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.points = new_points.clone();
                     element.rect = *new_rect;
                     element.font_size = *new_font_size;
-                    element.path_geometry.replace(None);
-                    element.text_layout.replace(None);
+                    // 缓存失效由 DrawingManager 的 geometry_cache 管理
                 }
             }
-            DrawingAction::ModifyText { index, new_text, new_points, new_rect, .. } => {
+            DrawingAction::ModifyText {
+                index,
+                new_text,
+                new_points,
+                new_rect,
+                ..
+            } => {
                 // 重做文本修改 = 应用新文本
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.text = new_text.clone();
                     element.points = new_points.clone();
                     element.rect = *new_rect;
-                    element.text_layout.replace(None);
+                    // 缓存失效由 DrawingManager 的 geometry_cache 管理
                 }
             }
-            DrawingAction::ModifyProperty { index, new_color, new_thickness, .. } => {
+            DrawingAction::ModifyProperty {
+                index,
+                new_color,
+                new_thickness,
+                ..
+            } => {
                 // 重做属性修改 = 应用新属性
                 if let Some(element) = self.elements.get_mut(*index) {
                     element.color = *new_color;
