@@ -17,8 +17,10 @@
 use std::sync::{Arc, RwLock};
 
 use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Graphics::Direct2D::ID2D1BitmapRenderTarget;
 
 use crate::message::{Command, DrawingMessage};
+use crate::platform::windows::system::get_screen_size;
 use crate::rendering::{LayerCache, LayerType};
 use crate::settings::Settings;
 
@@ -64,6 +66,11 @@ pub struct DrawingManager {
     pub(super) just_saved_text: bool,
     /// 图层缓存管理器
     pub(super) layer_cache: LayerCache,
+
+    /// Pen 笔迹增量绘制缓存（离屏位图）
+    pub(super) pen_stroke_cache: Option<ID2D1BitmapRenderTarget>,
+    /// 上次绘制到缓存的点索引（用于增量绘制）
+    pub(super) last_drawn_point_index: usize,
 }
 
 impl DrawingManager {
@@ -106,8 +113,13 @@ impl DrawingManager {
             text_cursor_visible: false,
             cursor_timer_id: 1001,
             just_saved_text: false,
-            // 默认初始化，屏幕尺寸将在渲染器初始化时更新
-            layer_cache: LayerCache::new(1920, 1080),
+            // 使用实际屏幕尺寸初始化
+            layer_cache: {
+                let (w, h) = get_screen_size();
+                LayerCache::new(w as u32, h as u32)
+            },
+            pen_stroke_cache: None,
+            last_drawn_point_index: 0,
         })
     }
 
@@ -127,6 +139,9 @@ impl DrawingManager {
         self.text_cursor_visible = false;
         self.just_saved_text = false;
         self.layer_cache.invalidate_all();
+        // 清理增量绘制缓存
+        self.pen_stroke_cache = None;
+        self.last_drawn_point_index = 0;
     }
 
     /// 处理绘图消息
@@ -139,8 +154,7 @@ impl DrawingManager {
                     commands.extend(self.stop_text_editing());
                 }
                 if self.selected_element.is_some() {
-                    self.layer_cache
-                        .invalidate(LayerType::StaticElements);
+                    self.layer_cache.invalidate(LayerType::StaticElements);
                 }
                 self.current_tool = tool;
                 self.tools.set_current_tool(tool);
@@ -153,9 +167,7 @@ impl DrawingManager {
             DrawingMessage::StartDrawing(x, y) => {
                 if self.current_tool != DrawingTool::None {
                     let mut element = DrawingElement::new(self.current_tool);
-                    element
-                        .points
-                        .push(POINT { x, y });
+                    element.points.push(POINT { x, y });
                     self.current_element = Some(element);
                     vec![Command::RequestRedraw]
                 } else {
@@ -166,18 +178,14 @@ impl DrawingManager {
                 if let Some(ref mut element) = self.current_element {
                     match self.current_tool {
                         DrawingTool::Pen => {
-                            element
-                                .points
-                                .push(POINT { x, y });
+                            element.points.push(POINT { x, y });
                             // 正在绘制的元素还没有索引，缓存失效在 FinishDrawing 时处理
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.len() >= 2 {
                                 element.points[1] = POINT { x, y };
                             } else {
-                                element
-                                    .points
-                                    .push(POINT { x, y });
+                                element.points.push(POINT { x, y });
                             }
                         }
                         _ => {}
@@ -245,7 +253,7 @@ impl DrawingManager {
                 // 命令模式：记录删除操作
                 // 先获取元素的 id 用于清理缓存（在删除前获取）
                 let element_id = self.elements.get_elements().get(index).map(|e| e.id);
-                
+
                 if let Some(element) = self.elements.get_elements().get(index).cloned() {
                     let action = history::DrawingAction::RemoveElement { element, index };
                     self.history.record_action(

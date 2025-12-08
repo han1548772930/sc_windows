@@ -32,7 +32,7 @@ pub fn request_redraw(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 请求窗口局部重绘（脏矩形优化）
+/// 请求窗口局部重绘
 /// 只重绘指定的矩形区域，减少不必要的渲染开销
 #[inline]
 pub fn request_redraw_rect(hwnd: HWND, rect: &RECT) -> windows::core::Result<()> {

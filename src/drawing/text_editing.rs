@@ -4,8 +4,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_NONE, ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_HIT_TEST_METRICS,
-    DWRITE_TEXT_METRICS, IDWriteFactory, IDWriteTextLayout,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWriteCreateFactory,
+    IDWriteFactory, IDWriteTextLayout,
 };
 
 use crate::constants::{
@@ -104,7 +104,8 @@ impl DrawingManager {
                         element.font_size,
                         element.font_weight,
                         element.font_italic,
-                    ).ok();
+                    )
+                    .ok();
 
                     text_format.and_then(|fmt| {
                         // 使用辅助函数创建带样式的文本布局
@@ -116,16 +117,14 @@ impl DrawingManager {
                             text_content_rect.bottom - text_content_rect.top,
                             element.font_underline,
                             element.font_strikeout,
-                        ).ok()
+                        )
+                        .ok()
                     })
                 };
 
                 if let Some(layout) = text_layout.as_ref() {
                     render_target.DrawTextLayout(
-                        d2d_point(
-                            text_content_rect.left as i32,
-                            text_content_rect.top as i32,
-                        ),
+                        d2d_point(text_content_rect.left as i32, text_content_rect.top as i32),
                         layout,
                         &brush,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -155,7 +154,7 @@ impl DrawingManager {
         Ok(())
     }
 
-    /// 绘制文本光标（优化版：使用 DirectWrite HitTest）
+    /// 绘制文本光标
     fn draw_text_cursor_optimized(
         &self,
         _element: &DrawingElement,
@@ -307,9 +306,7 @@ impl DrawingManager {
 
         // 创建新的文字元素
         let mut text_element = DrawingElement::new(DrawingTool::Text);
-        text_element
-            .points
-            .push(POINT { x, y });
+        text_element.points.push(POINT { x, y });
 
         // 使用设置中的字体大小、颜色和样式（仅在创建时读取一次并保存到元素上）
         let settings = Settings::load();
@@ -463,13 +460,13 @@ impl DrawingManager {
         vec![]
     }
 
-    /// 处理光标定时器（优化：只重绘光标区域）
+    /// 处理光标定时器
     pub fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
         if self.text_editing && timer_id == self.cursor_timer_id as u32 {
             // 切换光标可见性
             self.text_cursor_visible = !self.text_cursor_visible;
 
-            // 脏矩形优化：只重绘光标所在的文本元素区域
+            // 只重绘光标所在的文本元素区域
             if let Some(element_index) = self.editing_element_index
                 && let Some(element) = self.elements.get_elements().get(element_index)
             {

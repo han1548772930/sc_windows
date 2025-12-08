@@ -190,8 +190,8 @@ impl WindowDetector {
 
     /// 综合检测：根据鼠标位置同时检测窗口和子控件
     /// 返回 (窗口信息, 子控件信息)
-    /// 
-    /// 优化：只有当窗口变化时才刷新子控件列表，避免频繁调用 EnumChildWindows
+    ///
+    /// 只有当窗口变化时才刷新子控件列表，避免频繁调用 EnumChildWindows
     pub fn detect_at_point(
         &mut self,
         x: i32,
@@ -202,13 +202,13 @@ impl WindowDetector {
 
         let control = if let Some(ref window_info) = window {
             let current_hwnd = window_info.hwnd.0 as isize;
-            
-            // 节流优化：只有当窗口变化时才刷新子控件列表
+
+            // 只有当窗口变化时才刷新子控件列表
             if self.last_detected_hwnd != Some(current_hwnd) {
                 self.last_detected_hwnd = Some(current_hwnd);
                 let _ = self.refresh_child_controls(window_info.hwnd);
             }
-            
+
             // 在子控件列表中查找
             self.get_child_control_at_point(x, y).cloned()
         } else {

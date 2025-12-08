@@ -6,14 +6,14 @@
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
+use super::DrawingManager;
 use super::history;
 use super::types::{DragMode, DrawingElement, DrawingTool, ElementInteractionMode};
-use super::DrawingManager;
 use crate::constants::HANDLE_DETECTION_RADIUS;
 use crate::message::{Command, DrawingMessage};
 use crate::rendering::LayerType;
 use crate::utils::{
-    clamp_to_rect, detect_handle_at_position_unified, is_drag_threshold_exceeded, HandleConfig,
+    HandleConfig, clamp_to_rect, detect_handle_at_position_unified, is_drag_threshold_exceeded,
 };
 
 impl DrawingManager {
@@ -541,14 +541,14 @@ impl DrawingManager {
         self.interaction_mode = ElementInteractionMode::Drawing;
 
         let mut new_element = DrawingElement::new(self.current_tool);
-            if self.current_tool == DrawingTool::Text {
-                if let Ok(settings) = self.settings.read() {
-                    new_element.color = D2D1_COLOR_F {
-                        r: settings.font_color.0 as f32 / 255.0,
-                        g: settings.font_color.1 as f32 / 255.0,
-                        b: settings.font_color.2 as f32 / 255.0,
-                        a: 1.0,
-                    };
+        if self.current_tool == DrawingTool::Text {
+            if let Ok(settings) = self.settings.read() {
+                new_element.color = D2D1_COLOR_F {
+                    r: settings.font_color.0 as f32 / 255.0,
+                    g: settings.font_color.1 as f32 / 255.0,
+                    b: settings.font_color.2 as f32 / 255.0,
+                    a: 1.0,
+                };
                 new_element.font_size = settings.font_size;
                 new_element.font_name = settings.font_name.clone();
                 new_element.font_weight = settings.font_weight;
@@ -592,6 +592,11 @@ impl DrawingManager {
         match &self.interaction_mode {
             ElementInteractionMode::Drawing => {
                 if let Some(mut element) = self.current_element.take() {
+                    //清理 Pen 工具的增量绘制缓存
+                    if element.tool == DrawingTool::Pen {
+                        self.clear_pen_stroke_cache();
+                    }
+
                     let should_save = match element.tool {
                         DrawingTool::Pen => element.points.len() > 1,
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {

@@ -81,9 +81,7 @@ impl DrawingManager {
 
         {
             // 检查是否需要重建静态层缓存
-            let needs_rebuild = self
-                .layer_cache
-                .needs_rebuild(LayerType::StaticElements);
+            let needs_rebuild = self.layer_cache.needs_rebuild(LayerType::StaticElements);
 
             if needs_rebuild {
                 // 重建静态层缓存
@@ -91,7 +89,7 @@ impl DrawingManager {
                 let elements_snapshot: Vec<_> = self.elements.get_elements().to_vec();
                 let d2d_factory = d2d_renderer.d2d_factory.clone();
 
-                // 【优化】预先为所有 Pen 元素填充 GeometryCache
+                // 预先为所有 Pen 元素填充 GeometryCache
                 for element in &elements_snapshot {
                     if element.tool == DrawingTool::Pen && element.points.len() > 1 {
                         let element_id = element.id as usize;
@@ -107,7 +105,7 @@ impl DrawingManager {
                     }
                 }
 
-                // 【优化】直接传递 GeometryCache 引用给闭包，避免 clone HashMap
+                // 直接传递 GeometryCache 引用给闭包，避免 clone HashMap
                 let geometry_cache = &self.geometry_cache;
                 let rebuild_result = d2d_renderer.update_static_layer_with_context(
                     geometry_cache,
@@ -118,7 +116,7 @@ impl DrawingManager {
                             if Some(i) == selected_idx {
                                 continue;
                             }
-                            // 【优化】直接从 GeometryCache 查找 geometry
+                            // 直接从 GeometryCache 查找 geometry
                             let _ = Self::draw_element_d2d_with_geometry_cache(
                                 element,
                                 layer_target,
@@ -162,12 +160,17 @@ impl DrawingManager {
             }
 
             // 绘制动态层：当前正在绘制的元素
-            // 注意：当前绘制元素不使用缓存（因为点集合在不断变化）
-            if let Some(ref element) = self.current_element
-                && let Some(render_target) = d2d_renderer.render_target.clone()
-            {
-                let target_interface: &ID2D1RenderTarget = &render_target;
-                let _ = Self::draw_element_d2d_static(element, target_interface, d2d_renderer);
+            //  工具使用增量绘制缓存，其他工具每帧重绘
+            if let Some(ref element) = self.current_element.clone() {
+                if element.tool == DrawingTool::Pen {
+                    // Pen 工具：先增量绘制新点到缓存，然后贴图
+                    let _ = self.draw_incremental_pen_stroke(d2d_renderer);
+                    let _ = self.draw_pen_stroke_from_cache(d2d_renderer);
+                } else if let Some(render_target) = d2d_renderer.render_target.clone() {
+                    // 其他工具：每帧重绘
+                    let target_interface: &ID2D1RenderTarget = &render_target;
+                    let _ = Self::draw_element_d2d_static(&element, target_interface, d2d_renderer);
+                }
             }
 
             // 绘制动态层：元素选中指示器
@@ -209,10 +212,8 @@ impl DrawingManager {
             match element.tool {
                 DrawingTool::Pen => {
                     if element.points.len() > 1 {
-                        // 【优化核心】直接从 GeometryCache 查找已缓存的 geometry
-                        if let Some(path_geometry) =
-                            geometry_cache.get_path(element.id as usize)
-                        {
+                        // 直接从 GeometryCache 查找已缓存的 geometry
+                        if let Some(path_geometry) = geometry_cache.get_path(element.id as usize) {
                             render_target.DrawGeometry(
                                 path_geometry,
                                 &brush,
@@ -275,8 +276,7 @@ impl DrawingManager {
                                 element.font_size,
                                 element.font_weight,
                                 element.font_italic,
-                            )
-                            {
+                            ) {
                                 // 2. 计算带 Padding 的文本区域 (保持位置一致)
                                 let padding = TEXT_PADDING;
                                 let width = (element.rect.right as f32
@@ -298,8 +298,7 @@ impl DrawingManager {
                                     height,
                                     element.font_underline,
                                     element.font_strikeout,
-                                )
-                                {
+                                ) {
                                     // 4. 绘制 TextLayout
                                     let origin = d2d_point(
                                         element.rect.left as i32 + padding as i32,
@@ -743,5 +742,174 @@ impl DrawingManager {
 
             Some(path_geometry)
         }
+    }
+
+    // ========== 增量绘制 ==========
+
+    /// 确保 Pen 笔迹缓存存在
+    ///
+    /// 如果缓存不存在，创建一个与主渲染目标兼容的离屏位图
+    pub fn ensure_pen_stroke_cache(
+        &mut self,
+        d2d_renderer: &Direct2DRenderer,
+    ) -> Result<(), DrawingError> {
+        if self.pen_stroke_cache.is_some() {
+            return Ok(());
+        }
+
+        let render_target = d2d_renderer
+            .render_target
+            .as_ref()
+            .ok_or_else(|| DrawingError::RenderError("No render target available".to_string()))?;
+
+        unsafe {
+            // 创建与主渲染目标兼容的离屏渲染目标（继承尺寸和格式）
+            let cache_target = render_target
+                .CreateCompatibleRenderTarget(
+                    None,
+                    None,
+                    None,
+                    windows::Win32::Graphics::Direct2D::D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+                )
+                .map_err(|e| {
+                    DrawingError::RenderError(format!("Failed to create pen stroke cache: {e:?}"))
+                })?;
+
+            // 初始化缓存（清除为透明）
+            cache_target.BeginDraw();
+            cache_target.Clear(Some(
+                &windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                },
+            ));
+            let _ = cache_target.EndDraw(None, None);
+
+            self.pen_stroke_cache = Some(cache_target);
+            self.last_drawn_point_index = 0;
+        }
+
+        Ok(())
+    }
+
+    /// 增量绘制新点到笔迹缓存
+    ///
+    /// 只绘制从 `last_drawn_point_index` 到当前点的线段
+    pub fn draw_incremental_pen_stroke(
+        &mut self,
+        d2d_renderer: &mut Direct2DRenderer,
+    ) -> Result<(), DrawingError> {
+        // 获取当前元素信息
+        let (points, color, thickness) = {
+            let element = match &self.current_element {
+                Some(e) if e.tool == DrawingTool::Pen => e,
+                _ => return Ok(()), // 不是 Pen 工具，跳过
+            };
+            (element.points.clone(), element.color, element.thickness)
+        };
+
+        // 确保缓存存在
+        self.ensure_pen_stroke_cache(d2d_renderer)?;
+
+        let cache_target = self.pen_stroke_cache.as_ref().ok_or_else(|| {
+            DrawingError::RenderError("Pen stroke cache not available".to_string())
+        })?;
+
+        let last_idx = self.last_drawn_point_index;
+        let current_len = points.len();
+
+        // 如果没有新点，跳过
+        if current_len <= 1 || last_idx >= current_len.saturating_sub(1) {
+            return Ok(());
+        }
+
+        // 创建画笔
+        let brush_color = Color {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: color.a,
+        };
+        let brush = d2d_renderer
+            .get_or_create_brush(brush_color)
+            .map_err(|e| DrawingError::RenderError(format!("Failed to get brush: {e:?}")))?;
+
+        unsafe {
+            cache_target.BeginDraw();
+
+            // 确定绘制起点
+            let start_idx = if last_idx == 0 { 0 } else { last_idx };
+
+            // 增量绘制新的线段
+            for i in start_idx..current_len.saturating_sub(1) {
+                let p1 = &points[i];
+                let p2 = &points[i + 1];
+
+                let start_point = windows_numerics::Vector2 {
+                    X: p1.x as f32,
+                    Y: p1.y as f32,
+                };
+                let end_point = windows_numerics::Vector2 {
+                    X: p2.x as f32,
+                    Y: p2.y as f32,
+                };
+
+                cache_target.DrawLine(start_point, end_point, &brush, thickness, None);
+            }
+
+            let end_result = cache_target.EndDraw(None, None);
+            if let Err(e) = end_result {
+                return Err(DrawingError::RenderError(format!(
+                    "EndDraw failed on pen stroke cache: {e:?}"
+                )));
+            }
+        }
+
+        // 更新已绘制索引
+        self.last_drawn_point_index = current_len.saturating_sub(1);
+
+        Ok(())
+    }
+
+    /// 从缓存绘制 Pen 笔迹到屏幕
+    pub fn draw_pen_stroke_from_cache(
+        &self,
+        d2d_renderer: &Direct2DRenderer,
+    ) -> Result<(), DrawingError> {
+        let cache_target = match &self.pen_stroke_cache {
+            Some(cache) => cache,
+            None => return Ok(()), // 没有缓存，跳过
+        };
+
+        let render_target = d2d_renderer
+            .render_target
+            .as_ref()
+            .ok_or_else(|| DrawingError::RenderError("No render target available".to_string()))?;
+
+        unsafe {
+            // 从缓存获取位图
+            let bitmap = cache_target.GetBitmap().map_err(|e| {
+                DrawingError::RenderError(format!("Failed to get bitmap from cache: {e:?}"))
+            })?;
+
+            // 绘制到主渲染目标
+            render_target.DrawBitmap(
+                &bitmap,
+                None, // 全屏
+                1.0,  // 不透明
+                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                None, // 全图
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 清理 Pen 笔迹缓存
+    pub fn clear_pen_stroke_cache(&mut self) {
+        self.pen_stroke_cache = None;
+        self.last_drawn_point_index = 0;
     }
 }

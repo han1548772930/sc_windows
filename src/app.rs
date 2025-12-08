@@ -11,14 +11,18 @@ use crate::error::{AppError, AppResult};
 use crate::message::{Command, DrawingMessage, Message, ScreenshotMessage};
 use crate::ocr::OcrResult;
 use crate::platform::windows::d2d::Direct2DRenderer;
+use crate::platform::windows::system::get_screen_size;
 use crate::platform::{Color, EventConverter, InputEvent, MouseButton, PlatformError, Rectangle};
 use crate::rendering::{DirtyRectTracker, DirtyType};
 use crate::screenshot::{ScreenshotError, ScreenshotManager, save::copy_bmp_data_to_clipboard};
 use crate::settings::ConfigManager;
-use crate::state::{AppState, AppStateHandler, ProcessingOperation, StateContext, StateTransition, create_state};
+use crate::state::{
+    AppState, AppStateHandler, ProcessingOperation, StateContext, StateTransition, create_state,
+};
 use crate::system::{SystemError, SystemManager};
-use crate::ui::{cursor::CursorManager, file_dialog, PreviewWindow, ToolbarButton, UIError, UIManager};
-use crate::platform::windows::system::get_screen_size;
+use crate::ui::{
+    PreviewWindow, ToolbarButton, UIError, UIManager, cursor::CursorManager, file_dialog,
+};
 use crate::utils::win_api;
 
 /// 应用程序主结构体
@@ -211,11 +215,11 @@ impl App {
 
     /// 渲染所有组件
     ///
-    /// 使用 DirtyRectTracker 追踪脏区域，为后续局部渲染优化做准备。
+    /// 使用 DirtyRectTracker 追踪脏区域
     pub fn render(&mut self) -> AppResult<()> {
-        // 检查脏区域类型（当前用于调试/日志，后续可用于优化）
+        // 检查脏区域类型
         let dirty_type = self.dirty_tracker.dirty_type();
-        
+
         #[cfg(debug_assertions)]
         if dirty_type == DirtyType::Partial {
             if let Some(rect) = self.dirty_tracker.get_combined_dirty_rect() {
@@ -392,14 +396,11 @@ impl App {
     }
 
     /// 选择绘图工具
-    pub fn select_drawing_tool(
-        &mut self,
-        tool: DrawingTool,
-    ) -> Vec<Command> {
+    pub fn select_drawing_tool(&mut self, tool: DrawingTool) -> Vec<Command> {
         let message = DrawingMessage::SelectTool(tool);
         self.drawing.handle_message(message)
     }
-    
+
     /// 创建D2D位图
     pub fn create_d2d_bitmap_from_gdi(&mut self) -> AppResult<()> {
         self.screenshot
@@ -592,10 +593,7 @@ impl App {
     }
 
     /// 合成选择区域图像和绘图元素，返回BMP数据
-    fn compose_selection_with_drawings(
-        &mut self,
-        selection_rect: &RECT,
-    ) -> AppResult<Vec<u8>> {
+    fn compose_selection_with_drawings(&mut self, selection_rect: &RECT) -> AppResult<Vec<u8>> {
         // 获取D2D位图
         let Some(source_bitmap) = self.screenshot.get_d2d_bitmap() else {
             return Err(AppError::Screenshot("No D2D bitmap available".to_string()));
@@ -608,7 +606,8 @@ impl App {
         // 使用闭包来渲染元素
         let drawing_ref = &self.drawing;
 
-        let bmp_data = self.platform
+        let bmp_data = self
+            .platform
             .render_selection_to_bmp(&source_bitmap, &sel_rect, |render_target, renderer| {
                 drawing_ref
                     .render_elements_to_target(render_target, renderer, &sel_rect)
@@ -664,8 +663,7 @@ impl App {
         }
 
         // 显示文件保存对话框
-        let Some(file_path) = file_dialog::show_image_save_dialog(hwnd, "screenshot.png")
-        else {
+        let Some(file_path) = file_dialog::show_image_save_dialog(hwnd, "screenshot.png") else {
             return Ok(false); // 用户取消了对话框
         };
 
@@ -752,17 +750,23 @@ impl App {
         match event {
             InputEvent::MouseMove { x, y } => self.handle_mouse_move(x, y),
 
-            InputEvent::MouseDown { x, y, button: MouseButton::Left } => {
-                self.handle_mouse_down(x, y)
-            }
+            InputEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            } => self.handle_mouse_down(x, y),
 
-            InputEvent::MouseUp { x, y, button: MouseButton::Left } => {
-                self.handle_mouse_up(x, y)
-            }
+            InputEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            } => self.handle_mouse_up(x, y),
 
-            InputEvent::DoubleClick { x, y, button: MouseButton::Left } => {
-                self.handle_double_click(x, y)
-            }
+            InputEvent::DoubleClick {
+                x,
+                y,
+                button: MouseButton::Left,
+            } => self.handle_double_click(x, y),
 
             InputEvent::KeyDown { key, .. } => self.handle_key_input(key.0),
 
@@ -842,10 +846,7 @@ impl App {
             val if val == WM_OCR_STATUS_UPDATE => {
                 let available = wparam.0 != 0;
                 self.on_ocr_engine_status_changed(available, hwnd);
-                let commands = vec![
-                    Command::UpdateToolbar,
-                    Command::RequestRedraw,
-                ];
+                let commands = vec![Command::UpdateToolbar, Command::RequestRedraw];
                 self.execute_command_chain(commands, hwnd);
                 Some(LRESULT(0))
             }
@@ -866,8 +867,7 @@ impl App {
         let is_ocr_failed = ocr_results.len() == 1 && ocr_results[0].text == "OCR识别失败";
 
         // 显示OCR结果窗口
-        if let Err(e) =
-            PreviewWindow::show(image_data, ocr_results.clone(), selection_rect, false)
+        if let Err(e) = PreviewWindow::show(image_data, ocr_results.clone(), selection_rect, false)
         {
             eprintln!("Failed to show OCR result window: {:?}", e);
         }
@@ -886,7 +886,6 @@ impl App {
         (has_results, is_ocr_failed, text)
     }
 }
-
 
 impl From<ScreenshotError> for AppError {
     fn from(err: ScreenshotError) -> Self {
