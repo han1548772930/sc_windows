@@ -3,7 +3,6 @@
 //! 提供 OCR 引擎的启动、停止、识别等功能。
 //! 使用 MNN 推理框架，无需外部进程。
 
-use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
