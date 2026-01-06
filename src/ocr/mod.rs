@@ -10,6 +10,6 @@ pub mod manager;
 pub mod types;
 
 // 重导出常用类型
-pub use engine::{PaddleOcrEngine, recognize_text_by_lines};
+pub use engine::{OcrLanguageInfo, PaddleOcrEngine, recognize_text_by_lines};
 pub use manager::recognize_text_from_selection;
 pub use types::{BoundingBox, OcrCompletionData, OcrResult};
