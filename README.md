@@ -5,7 +5,7 @@ Windows 原生截图与标注工具（Rust + Direct2D），支持矩形/圆形/�
 ## 功能
 - **截图**：框选区域、智能窗口检测与高亮、实时尺寸预览
 - **标注**：矩形、圆形、箭头、画笔、文字，支持颜色与粗细调节，撤销/重做
-- **OCR**：PaddleOCR 集成，支持中英日韩等多语言文字识别
+- **OCR**：内置 PaddleOCR + MNN 推理，支持中英日韩等多语言文字识别
 - **输出**：保存到文件、复制到剪贴板、固钉悬浮窗口
 - **系统集成**：系统托盘、全局热键（默认 Ctrl+Alt+S）
 
@@ -57,8 +57,8 @@ cargo build --release
 ./target/release/sc_windows.exe
 ```
 
-### OCR 支持（可选）
-将 [PaddleOCR-json](https://github.com/hiroi-sora/PaddleOCR-json) 放在可执行文件同目录的 `PaddleOCR-json_v1.4.1/` 文件夹中。
+### OCR 支持
+OCR 已内置，使用 MNN 推理引擎 + PaddleOCR 模型。模型文件位于 `models/` 目录，支持多语言（中文、英文、日文、韩文、阿拉伯文等）。
 
 ## 目录结构
 ```
