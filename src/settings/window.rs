@@ -1,7 +1,7 @@
 //! Settings window UI implementation
 //!
 //! This module contains the Win32 settings window implementation,
-//! including control creation, layout, and event handling.
+//! using a tabbed interface similar to native-windows-gui demo.
 
 use std::ffi::c_void;
 
@@ -18,39 +18,52 @@ use windows::{
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use super::core::Settings;
-use crate::utils::to_wide_chars;
 use crate::WINDOW_CLASS_NAME;
+use crate::ocr::PaddleOcrEngine;
+use crate::ui::controls::{Font, Tab, TabsContainer};
+use crate::utils::to_wide_chars;
 
 /// 全局设置窗口句柄，确保只能打开一个设置窗口
-/// 使用 AtomicIsize 代替 static mut，避免数据竞争风险
 static SETTINGS_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+/// 布局常量 - 放大以适应字体
+const MARGIN: i32 = 15;
+const ROW_HEIGHT: i32 = 32;
+const ROW_SPACING: i32 = 8;
+const LABEL_WIDTH: i32 = 80;
+const CONTROL_HEIGHT: i32 = 28;
+const BUTTON_WIDTH: i32 = 90;
+const BUTTON_HEIGHT: i32 = 30;
 
 /// 设置窗口
 pub struct SettingsWindow {
     hwnd: HWND,
     settings: Settings,
-    // 控件句柄
+    // Tab 控件
+    tabs_container: HWND,
+    tab_drawing: HWND, // 绘图设置 Tab
+    tab_system: HWND,  // 系统设置 Tab
+    // 绘图设置控件
     line_thickness_edit: HWND,
     font_choose_button: HWND,
-    // 颜色相关控件
     drawing_color_button: HWND,
     drawing_color_preview: HWND,
     text_color_preview: HWND,
-    // 热键控件
+    // 系统设置控件
     hotkey_edit: HWND,
-    // 配置路径控件
     config_path_edit: HWND,
     config_path_browse_button: HWND,
-    // OCR语言选择控件
     ocr_language_combo: HWND,
-    // 按钮
+    // 底部按钮
     ok_button: HWND,
     cancel_button: HWND,
     // 字体句柄
     font: HFONT,
 }
 
-// 控件ID
+// 控件 ID
+#[allow(dead_code)]
+const ID_TABS: i32 = 1000;
 const ID_LINE_THICKNESS: i32 = 1001;
 const ID_FONT_CHOOSE_BUTTON: i32 = 1003;
 const ID_DRAWING_COLOR_BUTTON: i32 = 1006;
@@ -151,13 +164,7 @@ impl SettingsWindow {
                     let original_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                     if original_proc != 0 {
                         let wndproc: WNDPROC = std::mem::transmute(original_proc);
-                        return CallWindowProcW(
-                            wndproc,
-                            hwnd,
-                            msg,
-                            wparam,
-                            lparam,
-                        );
+                        return CallWindowProcW(wndproc, hwnd, msg, wparam, lparam);
                     }
                     return LRESULT(0);
                 }
@@ -218,13 +225,7 @@ impl SettingsWindow {
                     let original_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                     if original_proc != 0 {
                         let wndproc: WNDPROC = std::mem::transmute(original_proc);
-                        return CallWindowProcW(
-                            wndproc,
-                            hwnd,
-                            msg,
-                            wparam,
-                            lparam,
-                        );
+                        return CallWindowProcW(wndproc, hwnd, msg, wparam, lparam);
                     }
                 }
             }
@@ -285,8 +286,8 @@ impl SettingsWindow {
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // 移除 WS_THICKFRAME
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                420, // 窗口宽度
-                440, // 窗口高度（包含标题栏）
+                480, // 窗口宽度
+                480, // 窗口高度
                 Some(parent_hwnd),
                 None,
                 Some(instance.into()),
@@ -347,6 +348,9 @@ impl SettingsWindow {
                     let mut window = SettingsWindow {
                         hwnd,
                         settings,
+                        tabs_container: HWND::default(),
+                        tab_drawing: HWND::default(),
+                        tab_system: HWND::default(),
                         line_thickness_edit: HWND::default(),
                         font_choose_button: HWND::default(),
                         drawing_color_button: HWND::default(),
@@ -369,6 +373,21 @@ impl SettingsWindow {
 
                     LRESULT(0)
                 }
+
+                WM_NOTIFY => {
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindow;
+                    if !window_ptr.is_null() {
+                        let window = &*window_ptr;
+                        let nmhdr = &*(lparam.0 as *const NMHDR);
+                        // TCN_SELCHANGE = TCN_FIRST - 1 = -551 = 0xFFFFFDD9 (as u32)
+                        if nmhdr.code == 0xFFFFFDD9_u32 {
+                            window.handle_tab_change();
+                        }
+                    }
+                    LRESULT(0)
+                }
+
+                WM_SIZE => DefWindowProcW(hwnd, msg, wparam, lparam),
 
                 WM_COMMAND => {
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindow;
@@ -409,38 +428,29 @@ impl SettingsWindow {
 
                         // 检查是否是绘图颜色预览控件
                         if control_hwnd == window.drawing_color_preview {
-                            // 创建绘图颜色画刷
                             let color = (window.settings.drawing_color_red as u32)
                                 | ((window.settings.drawing_color_green as u32) << 8)
                                 | ((window.settings.drawing_color_blue as u32) << 16);
                             let brush = CreateSolidBrush(COLORREF(color));
-
-                            // 设置背景色
                             SetBkColor(hdc, COLORREF(color));
-
                             return LRESULT(brush.0 as isize);
                         }
 
                         // 检查是否是文字颜色预览控件
                         if control_hwnd == window.text_color_preview {
-                            // 创建文字颜色画刷
                             let color = (window.settings.text_color_red as u32)
                                 | ((window.settings.text_color_green as u32) << 8)
                                 | ((window.settings.text_color_blue as u32) << 16);
                             let brush = CreateSolidBrush(COLORREF(color));
-
-                            // 设置背景色
                             SetBkColor(hdc, COLORREF(color));
-
                             return LRESULT(brush.0 as isize);
                         }
                     }
 
-                    // 对于所有其他静态文本控件，设置透明背景
+                    // Tab 页面内的标签使用白色背景
                     SetBkMode(hdc, TRANSPARENT);
-
-                    // 返回空画刷，让父窗口绘制背景
-                    LRESULT(GetStockObject(HOLLOW_BRUSH).0 as isize)
+                    SetTextColor(hdc, COLORREF(0x000000)); // 黑色文字
+                    LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
                 }
 
                 WM_CTLCOLOREDIT => {
@@ -510,11 +520,10 @@ impl SettingsWindow {
         }
     }
 
-    /// 查找具有指定文本的子控件
-    fn find_control_by_text(&self, text: &str) -> Option<HWND> {
+    /// 查找具有指定文本的子控件（在指定父窗口内）
+    fn find_control_by_text_in_parent(&self, text: &str, parent: HWND) -> Option<HWND> {
         unsafe {
-            // 使用GetWindow来查找子控件
-            if let Ok(mut child) = GetWindow(self.hwnd, GW_CHILD) {
+            if let Ok(mut child) = GetWindow(parent, GW_CHILD) {
                 while !child.is_invalid() {
                     let mut buffer = [0u16; 256];
                     let len = GetWindowTextW(child, &mut buffer);
@@ -531,226 +540,303 @@ impl SettingsWindow {
                     }
                 }
             }
-
             None
         }
     }
 
-    /// 专业的Windows标准布局 - 规整对齐
+    /// Tab 布局 - 现代化 Tab 界面
     fn layout_controls(&mut self) {
         unsafe {
             let mut client_rect = RECT::default();
             let _ = GetClientRect(self.hwnd, &mut client_rect);
-
             let window_width = client_rect.right - client_rect.left;
             let window_height = client_rect.bottom - client_rect.top;
 
-            // 统一布局参数
-            let margin = 20;              // 外边距
-            let group_indent = 15;        // 分组内缩进
-            let row_height = 28;          // 行高
-            let group_title_height = 22;  // 分组标题高度
-            let group_spacing = 8;        // 分组间距
-            let label_width = 90;         // 统一标签宽度
-            let control_start_x = margin + group_indent + label_width + 10; // 控件起始X
-            let button_height = 24;
-            let edit_height = 22;
-            let label_height = 18;
-            let bottom_button_width = 80;
-
-            let mut y = margin;
+            // 布局参数
+            let button_height = BUTTON_HEIGHT;
+            let button_width = BUTTON_WIDTH;
 
             // ═══════════════════════════════════════════════════
-            // 绘图设置
+            // TabsContainer 布局
             // ═══════════════════════════════════════════════════
-            if let Some(title) = self.find_control_by_text("绘图设置") {
-                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
+            let tabs_height = window_height - button_height - MARGIN * 3;
+            let tabs_width = window_width - MARGIN * 2;
+            if !self.tabs_container.is_invalid() {
+                let _ = SetWindowPos(
+                    self.tabs_container,
+                    None,
+                    MARGIN,
+                    MARGIN,
+                    tabs_width,
+                    tabs_height,
+                    SWP_NOZORDER,
+                );
+
+                // Tab 页面位置和大小（参考 NWG）
+                let page_x = 5;
+                let page_y = 25;
+                let page_width = tabs_width - 11;
+                let page_height = tabs_height - 33;
+
+                if !self.tab_drawing.is_invalid() {
+                    let _ = SetWindowPos(
+                        self.tab_drawing,
+                        None,
+                        page_x,
+                        page_y,
+                        page_width,
+                        page_height,
+                        SWP_NOZORDER,
+                    );
+                    self.layout_drawing_tab(page_width);
+                }
+
+                if !self.tab_system.is_invalid() {
+                    let _ = SetWindowPos(
+                        self.tab_system,
+                        None,
+                        page_x,
+                        page_y,
+                        page_width,
+                        page_height,
+                        SWP_NOZORDER,
+                    );
+                    self.layout_system_tab(page_width);
+                }
             }
-            y += group_title_height + 4;
-
-            // 线条粗细
-            if let Some(label) = self.find_control_by_text("线条粗细:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let _ = SetWindowPos(self.line_thickness_edit, None, control_start_x, y, 60, edit_height, SWP_NOZORDER);
-            y += row_height;
-
-            // 字体设置
-            if let Some(label) = self.find_control_by_text("字体设置:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let _ = SetWindowPos(self.font_choose_button, None, control_start_x, y, 100, button_height, SWP_NOZORDER);
-            y += row_height + group_spacing;
 
             // ═══════════════════════════════════════════════════
-            // 颜色设置
-            // ═══════════════════════════════════════════════════
-            if let Some(title) = self.find_control_by_text("颜色设置") {
-                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
-            }
-            y += group_title_height + 4;
-
-            // 绘图颜色
-            if let Some(label) = self.find_control_by_text("绘图颜色:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let _ = SetWindowPos(self.drawing_color_button, None, control_start_x, y, 80, button_height, SWP_NOZORDER);
-            let _ = SetWindowPos(self.drawing_color_preview, None, control_start_x + 88, y + 2, 24, 20, SWP_NOZORDER);
-            y += row_height + group_spacing;
-
-            // ═══════════════════════════════════════════════════
-            // 热键设置
-            // ═══════════════════════════════════════════════════
-            if let Some(title) = self.find_control_by_text("热键设置") {
-                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
-            }
-            y += group_title_height + 4;
-
-            // 截图热键
-            if let Some(label) = self.find_control_by_text("截图热键:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let hotkey_width = window_width - control_start_x - margin;
-            let _ = SetWindowPos(self.hotkey_edit, None, control_start_x, y, hotkey_width, edit_height, SWP_NOZORDER);
-            y += row_height + group_spacing;
-
-            // ═══════════════════════════════════════════════════
-            // 配置文件
-            // ═══════════════════════════════════════════════════
-            if let Some(title) = self.find_control_by_text("配置文件路径") {
-                let _ = SetWindowPos(title, None, margin, y, 120, group_title_height, SWP_NOZORDER);
-            }
-            y += group_title_height + 4;
-
-            // 保存路径
-            if let Some(label) = self.find_control_by_text("保存路径:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let browse_width = 70;
-            let path_width = window_width - control_start_x - margin - browse_width - 8;
-            let _ = SetWindowPos(self.config_path_edit, None, control_start_x, y, path_width, edit_height, SWP_NOZORDER);
-            let _ = SetWindowPos(self.config_path_browse_button, None, control_start_x + path_width + 8, y, browse_width, button_height, SWP_NOZORDER);
-            y += row_height + group_spacing;
-
-            // ═══════════════════════════════════════════════════
-            // OCR 设置
-            // ═══════════════════════════════════════════════════
-            // OCR语言（不需要分组标题，直接放在配置文件组后面）
-            if let Some(label) = self.find_control_by_text("OCR识别语言:") {
-                let _ = SetWindowPos(label, None, margin + group_indent, y + 3, label_width, label_height, SWP_NOZORDER);
-            }
-            let _ = SetWindowPos(self.ocr_language_combo, None, control_start_x, y, 140, 200, SWP_NOZORDER);
-
-            // ═══════════════════════════════════════════════════
-            // 底部按钮（居中）
+            // 底部按钮布局
             // ═══════════════════════════════════════════════════
             let button_spacing = 15;
-            let buttons_total_width = bottom_button_width * 2 + button_spacing;
+            let buttons_total_width = button_width * 2 + button_spacing;
             let buttons_x = (window_width - buttons_total_width) / 2;
-            let buttons_y = window_height - button_height - margin;
+            let buttons_y = window_height - button_height - MARGIN;
 
-            let _ = SetWindowPos(self.ok_button, None, buttons_x, buttons_y, bottom_button_width, button_height, SWP_NOZORDER);
-            let _ = SetWindowPos(self.cancel_button, None, buttons_x + bottom_button_width + button_spacing, buttons_y, bottom_button_width, button_height, SWP_NOZORDER);
+            let _ = SetWindowPos(
+                self.ok_button,
+                None,
+                buttons_x,
+                buttons_y,
+                button_width,
+                button_height,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                self.cancel_button,
+                None,
+                buttons_x + button_width + button_spacing,
+                buttons_y,
+                button_width,
+                button_height,
+                SWP_NOZORDER,
+            );
 
-            // 强制重绘窗口
+            // 强制重绘
             let _ = InvalidateRect(Some(self.hwnd), None, TRUE.into());
         }
     }
 
-    /// 创建控件 - 专业Windows标准布局
+    /// 布局绘图设置 Tab 内的控件
+    fn layout_drawing_tab(&self, _tab_width: i32) {
+        unsafe {
+            let margin = 10;
+            let row_height = ROW_HEIGHT;
+            let label_width = LABEL_WIDTH;
+            let control_x = margin + label_width + 10;
+            let edit_height = CONTROL_HEIGHT;
+            let button_height = BUTTON_HEIGHT;
+
+            let mut y = margin;
+
+            // 线条粗细
+            if let Some(label) = self.find_control_by_text_in_parent("线条粗细:", self.tab_drawing)
+            {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let _ = SetWindowPos(
+                self.line_thickness_edit,
+                None,
+                control_x,
+                y,
+                60,
+                edit_height,
+                SWP_NOZORDER,
+            );
+            y += row_height + ROW_SPACING;
+
+            // 字体设置
+            if let Some(label) = self.find_control_by_text_in_parent("字体设置:", self.tab_drawing)
+            {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let _ = SetWindowPos(
+                self.font_choose_button,
+                None,
+                control_x,
+                y,
+                110,
+                button_height,
+                SWP_NOZORDER,
+            );
+            y += row_height + ROW_SPACING;
+
+            // 绘图颜色
+            if let Some(label) = self.find_control_by_text_in_parent("绘图颜色:", self.tab_drawing)
+            {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let _ = SetWindowPos(
+                self.drawing_color_preview,
+                None,
+                control_x,
+                y + 2,
+                24,
+                20,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                self.drawing_color_button,
+                None,
+                control_x + 32,
+                y,
+                100,
+                button_height,
+                SWP_NOZORDER,
+            );
+        }
+    }
+
+    /// 布局系统设置 Tab 内的控件
+    fn layout_system_tab(&self, tab_width: i32) {
+        unsafe {
+            let margin = 10;
+            let row_height = ROW_HEIGHT;
+            let label_width = LABEL_WIDTH;
+            let control_x = margin + label_width + 10;
+            let edit_height = CONTROL_HEIGHT;
+            let button_height = BUTTON_HEIGHT;
+            let available_width = tab_width - margin * 2;
+
+            let mut y = margin;
+
+            // 截图热键
+            if let Some(label) = self.find_control_by_text_in_parent("截图热键:", self.tab_system)
+            {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let hotkey_width = available_width - label_width - 20;
+            let _ = SetWindowPos(
+                self.hotkey_edit,
+                None,
+                control_x,
+                y,
+                hotkey_width,
+                edit_height,
+                SWP_NOZORDER,
+            );
+            y += row_height + ROW_SPACING;
+
+            // 保存路径
+            if let Some(label) = self.find_control_by_text_in_parent("保存路径:", self.tab_system)
+            {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let browse_width = 80;
+            let path_width = available_width - label_width - browse_width - 30;
+            let _ = SetWindowPos(
+                self.config_path_edit,
+                None,
+                control_x,
+                y,
+                path_width,
+                edit_height,
+                SWP_NOZORDER,
+            );
+            let _ = SetWindowPos(
+                self.config_path_browse_button,
+                None,
+                control_x + path_width + 8,
+                y,
+                browse_width,
+                button_height,
+                SWP_NOZORDER,
+            );
+            y += row_height + ROW_SPACING;
+
+            // OCR语言
+            if let Some(label) = self.find_control_by_text_in_parent("OCR语言", self.tab_system) {
+                let _ = SetWindowPos(label, None, margin, y + 3, label_width, 18, SWP_NOZORDER);
+            }
+            let _ = SetWindowPos(
+                self.ocr_language_combo,
+                None,
+                control_x,
+                y,
+                160,
+                200,
+                SWP_NOZORDER,
+            );
+        }
+    }
+
+    /// 创建控件 - 使用 Tab 布局
     fn create_controls(&mut self) {
         unsafe {
             let instance = GetModuleHandleW(None).unwrap_or_default().into();
 
-            // 创建标准Windows字体
-            self.font = CreateFontW(
-                -12,                                                    // 字体高度 (标准大小)
-                0,                                                      // 字体宽度
-                0,                                                      // 角度
-                0,                                                      // 基线角度
-                FW_NORMAL.0 as i32,                                     // 字体粗细
-                0,                                                      // 斜体
-                0,                                                      // 下划线
-                0,                                                      // 删除线
-                DEFAULT_CHARSET,                                        // 字符集
-                OUT_DEFAULT_PRECIS,                                     // 输出精度
-                CLIP_DEFAULT_PRECIS,                                    // 裁剪精度
-                DEFAULT_QUALITY,                                        // 输出质量
-                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,               // 字体族
-                PCWSTR(to_wide_chars("Microsoft Sans Serif").as_ptr()), // 标准字体
-            );
+            // 系统默认 GUI 字体
+            self.font = HFONT(GetStockObject(DEFAULT_GUI_FONT).0);
 
+            // 获取窗口客户区大小
+            let mut client_rect = RECT::default();
+            let _ = GetClientRect(self.hwnd, &mut client_rect);
+            let window_width = client_rect.right - client_rect.left;
+            let window_height = client_rect.bottom - client_rect.top;
 
-            // 绘图设置分组标题
-            let drawing_group_title = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("绘图设置").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                drawing_group_title,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 创建 TabsContainer
+            // ═══════════════════════════════════════════════════════════════════════════════
+            let tabs_height = window_height - BUTTON_HEIGHT - MARGIN * 3;
+            let tabs = TabsContainer::builder()
+                .position(MARGIN, MARGIN)
+                .size(window_width - MARGIN * 2, tabs_height)
+                .parent(self.hwnd)
+                .build()
+                .unwrap();
+            tabs.set_font(&Font { handle: self.font });
+            self.tabs_container = tabs.handle;
 
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 创建绘图设置 Tab
+            // ═══════════════════════════════════════════════════════════════════════════════
+            let tab_drawing = Tab::builder()
+                .text("绘图设置")
+                .parent(self.hwnd)
+                .build(&tabs)
+                .unwrap();
+            self.tab_drawing = tab_drawing.handle;
+
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 创建系统设置 Tab
+            // ═══════════════════════════════════════════════════════════════════════════════
+            let tab_system = Tab::builder()
+                .text("系统设置")
+                .parent(self.hwnd)
+                .build(&tabs)
+                .unwrap();
+            self.tab_system = tab_system.handle;
+
+            std::mem::forget(tabs);
+            std::mem::forget(tab_drawing);
+            std::mem::forget(tab_system);
+
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 绘图设置 Tab 内的控件
+            // ═══════════════════════════════════════════════════════════════════════════════
 
             // 线条粗细标签
-            let thickness_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("线条粗细:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                thickness_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-            // 字体设置标签
-            let font_settings_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("字体设置:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                font_settings_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
+            let _ = self.create_label("线条粗细:", self.tab_drawing, instance);
 
             // 线条粗细输入框
             self.line_thickness_edit = CreateWindowExW(
@@ -761,8 +847,8 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_drawing),
                 Some(HMENU(ID_LINE_THICKNESS as *mut _)),
                 Some(instance),
                 None,
@@ -775,6 +861,9 @@ impl SettingsWindow {
                 None,
             );
 
+            // 字体设置标签
+            let _ = self.create_label("字体设置:", self.tab_drawing, instance);
+
             // 字体选择按钮
             self.font_choose_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -784,14 +873,13 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_drawing),
                 Some(HMENU(ID_FONT_CHOOSE_BUTTON as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
-            Self::set_modern_theme(self.font_choose_button);
             SendMessageW(
                 self.font_choose_button,
                 WM_SETFONT,
@@ -799,53 +887,8 @@ impl SettingsWindow {
                 None,
             );
 
-
-            // 颜色设置分组标题
-            let color_group_title = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("颜色设置").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                color_group_title,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
             // 绘图颜色标签
-            let drawing_color_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("绘图颜色:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                drawing_color_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
+            let _ = self.create_label("绘图颜色:", self.tab_drawing, instance);
 
             // 绘图颜色预览框
             self.drawing_color_preview = CreateWindowExW(
@@ -856,8 +899,8 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_drawing),
                 None,
                 Some(instance),
                 None,
@@ -873,14 +916,13 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_drawing),
                 Some(HMENU(ID_DRAWING_COLOR_BUTTON as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
-            Self::set_modern_theme(self.drawing_color_button);
             SendMessageW(
                 self.drawing_color_button,
                 WM_SETFONT,
@@ -888,112 +930,24 @@ impl SettingsWindow {
                 None,
             );
 
-
-            // 热键设置分组标题
-            let hotkey_group_title = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("热键设置").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                hotkey_group_title,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 系统设置 Tab 内的控件
+            // ═══════════════════════════════════════════════════════════════════════════════
 
             // 热键标签
-            let hotkey_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("截图热键:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                hotkey_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            let _ = self.create_label("截图热键:", self.tab_system, instance);
 
-
-            // 配置路径设置分组标题
-            let config_path_group_title = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("配置文件路径").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                config_path_group_title,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-            // 配置路径标签
-            let config_path_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("保存路径:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                config_path_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-
-            // 热键输入框 - 移除ES_READONLY样式，使用普通编辑框
+            // 热键输入框
             self.hotkey_edit = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
                 PCWSTR(to_wide_chars("EDIT").as_ptr()),
                 PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP, // 移除ES_READONLY
+                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_system),
                 Some(HMENU(ID_HOTKEY_EDIT as *mut _)),
                 Some(instance),
                 None,
@@ -1005,19 +959,18 @@ impl SettingsWindow {
                 Some(WPARAM(self.font.0 as usize)),
                 None,
             );
-
-            // 设置热键输入框的现代主题
             Self::set_modern_theme(self.hotkey_edit);
 
-            // 子类化热键输入框以处理按键事件
+            // 子类化热键输入框
             let original_proc = SetWindowLongPtrW(
                 self.hotkey_edit,
                 GWLP_WNDPROC,
                 Self::hotkey_edit_proc as isize,
             );
-            // 存储原始窗口过程
             SetWindowLongPtrW(self.hotkey_edit, GWLP_USERDATA, original_proc);
 
+            // 配置路径标签
+            let _ = self.create_label("保存路径:", self.tab_system, instance);
 
             // 配置路径输入框
             self.config_path_edit = CreateWindowExW(
@@ -1028,8 +981,8 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_system),
                 Some(HMENU(ID_CONFIG_PATH_EDIT as *mut _)),
                 Some(instance),
                 None,
@@ -1052,8 +1005,8 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_system),
                 Some(HMENU(ID_CONFIG_PATH_BROWSE as *mut _)),
                 Some(instance),
                 None,
@@ -1065,43 +1018,21 @@ impl SettingsWindow {
                 Some(WPARAM(self.font.0 as usize)),
                 None,
             );
-            Self::set_modern_theme(self.config_path_browse_button);
-
 
             // OCR语言标签
-            let ocr_language_label = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars("OCR识别语言:").as_ptr()),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
-                None,
-                Some(instance),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(
-                ocr_language_label,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            let _ = self.create_label("OCR语言", self.tab_system, instance);
 
             // OCR语言选择下拉框
             self.ocr_language_combo = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
                 PCWSTR(to_wide_chars("COMBOBOX").as_ptr()),
                 PCWSTR::null(),
-                WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003), // CBS_DROPDOWNLIST = 0x0003
+                WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003),
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
-                Some(self.hwnd),
+                0,
+                Some(self.tab_system),
                 Some(HMENU(ID_OCR_LANGUAGE_COMBO as *mut _)),
                 Some(instance),
                 None,
@@ -1115,38 +1046,12 @@ impl SettingsWindow {
             );
             Self::set_modern_theme(self.ocr_language_combo);
 
-            // 添加语言选项
-            let languages = [
-                ("chinese", "简体中文 (默认)"),
-                ("english", "英文"),
-                ("chinese_cht", "繁体中文"),
-                ("japan", "日文"),
-                ("korean", "韩文"),
-            ];
+            // 加载 OCR 语言
+            self.load_ocr_languages();
 
-            for (value, display) in &languages {
-                let text = to_wide_chars(display);
-                let index = SendMessageW(
-                    self.ocr_language_combo,
-                    0x0143, // CB_ADDSTRING
-                    Some(WPARAM(0)),
-                    Some(LPARAM(text.as_ptr() as isize)),
-                );
-
-                // 存储语言值作为项目数据
-                let value_text = to_wide_chars(value);
-                let value_box = Box::new(value_text);
-                let value_ptr = Box::into_raw(value_box);
-                SendMessageW(
-                    self.ocr_language_combo,
-                    0x0151, // CB_SETITEMDATA
-                    Some(WPARAM(index.0 as usize)),
-                    Some(LPARAM(value_ptr as isize)),
-                );
-            }
-
-
-            // 确定按钮
+            // ═══════════════════════════════════════════════════════════════════════════════
+            // 底部按钮（在主窗口中）
+            // ═══════════════════════════════════════════════════════════════════════════════
             self.ok_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
@@ -1155,14 +1060,13 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
+                0,
                 Some(self.hwnd),
                 Some(HMENU(ID_OK as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
-            Self::set_modern_theme(self.ok_button);
             SendMessageW(
                 self.ok_button,
                 WM_SETFONT,
@@ -1170,7 +1074,6 @@ impl SettingsWindow {
                 None,
             );
 
-            // 取消按钮
             self.cancel_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 PCWSTR(to_wide_chars("BUTTON").as_ptr()),
@@ -1179,14 +1082,13 @@ impl SettingsWindow {
                 0,
                 0,
                 0,
-                0, // 位置将在layout_controls中设置
+                0,
                 Some(self.hwnd),
                 Some(HMENU(ID_CANCEL as *mut _)),
                 Some(instance),
                 None,
             )
             .unwrap_or_default();
-            Self::set_modern_theme(self.cancel_button);
             SendMessageW(
                 self.cancel_button,
                 WM_SETFONT,
@@ -1194,8 +1096,99 @@ impl SettingsWindow {
                 None,
             );
 
-            // 初始布局控件
+            // 初始布局
             self.layout_controls();
+        }
+    }
+
+    /// 创建标签辅助方法
+    fn create_label(&self, text: &str, parent: HWND, instance: HINSTANCE) -> HWND {
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(to_wide_chars("STATIC").as_ptr()),
+                PCWSTR(to_wide_chars(text).as_ptr()),
+                WS_VISIBLE | WS_CHILD,
+                0,
+                0,
+                0,
+                0,
+                Some(parent),
+                None,
+                Some(instance),
+                None,
+            )
+            .unwrap_or_default();
+            SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), None);
+            hwnd
+        }
+    }
+
+    /// 加载 OCR 语言列表
+    fn load_ocr_languages(&self) {
+        unsafe {
+            let available_languages = PaddleOcrEngine::get_available_languages();
+
+            if available_languages.is_empty() {
+                let text = to_wide_chars("未找到 OCR 模型");
+                SendMessageW(
+                    self.ocr_language_combo,
+                    0x0143,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(text.as_ptr() as isize)),
+                );
+            } else {
+                for (i, lang) in available_languages.iter().enumerate() {
+                    let display = if i == 0 {
+                        format!("{} (默认)", lang.display_name)
+                    } else {
+                        lang.display_name.clone()
+                    };
+
+                    let text = to_wide_chars(&display);
+                    let index = SendMessageW(
+                        self.ocr_language_combo,
+                        0x0143,
+                        Some(WPARAM(0)),
+                        Some(LPARAM(text.as_ptr() as isize)),
+                    );
+
+                    let value_text = to_wide_chars(&lang.id);
+                    let value_box = Box::new(value_text);
+                    let value_ptr = Box::into_raw(value_box);
+                    SendMessageW(
+                        self.ocr_language_combo,
+                        0x0151,
+                        Some(WPARAM(index.0 as usize)),
+                        Some(LPARAM(value_ptr as isize)),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 处理 Tab 切换 - 直接切换页面可见性
+    fn handle_tab_change(&self) {
+        unsafe {
+            if self.tabs_container.is_invalid() {
+                return;
+            }
+            // 获取当前选中的 Tab 索引
+            let index = SendMessageW(
+                self.tabs_container,
+                TCM_GETCURSEL,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            )
+            .0 as i32;
+
+            // 切换页面可见性
+            if !self.tab_drawing.is_invalid() {
+                let _ = ShowWindow(self.tab_drawing, if index == 0 { SW_SHOW } else { SW_HIDE });
+            }
+            if !self.tab_system.is_invalid() {
+                let _ = ShowWindow(self.tab_system, if index == 1 { SW_SHOW } else { SW_HIDE });
+            }
         }
     }
 
@@ -1268,12 +1261,10 @@ impl SettingsWindow {
                     if let Ok(main_hwnd) = FindWindowW(
                         PCWSTR(to_wide_chars(WINDOW_CLASS_NAME).as_ptr()),
                         PCWSTR::null(),
-                    )
-                        && !main_hwnd.0.is_null()
+                    ) && !main_hwnd.0.is_null()
                     {
                         // 发送自定义消息通知设置已更改 (WM_USER + 3)
-                        let _ =
-                            PostMessageW(Some(main_hwnd), WM_USER + 3, WPARAM(0), LPARAM(0));
+                        let _ = PostMessageW(Some(main_hwnd), WM_USER + 3, WPARAM(0), LPARAM(0));
                     }
 
                     let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
@@ -1495,8 +1486,7 @@ impl SettingsWindow {
 
                     // 更新输入框
                     let path_wide = to_wide_chars(&path_str);
-                    let _ =
-                        SetWindowTextW(self.config_path_edit, PCWSTR(path_wide.as_ptr()));
+                    let _ = SetWindowTextW(self.config_path_edit, PCWSTR(path_wide.as_ptr()));
                 }
             } else {
                 // 如果创建失败，使用简单的输入框

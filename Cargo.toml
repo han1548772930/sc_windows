@@ -16,9 +16,10 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 anyhow = "1.0"
 thiserror = "2"
 parking_lot = "0.12"
-paddleocr = { path = "paddleocr" }
-base64 = "0.21"
+image = "0.25"
 reqwest = { version = "0.12", features = ["json"] }
+
+ocr-rs = "2.0"
 
 
 [target.'cfg(windows)'.dependencies]
@@ -77,3 +78,6 @@ harness = false
 codegen-units = 1
 lto = true
 opt-level = 3
+
+[profile.dev]
+opt-level = 1

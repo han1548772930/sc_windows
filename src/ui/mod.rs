@@ -19,6 +19,7 @@ use crate::platform::traits::{Color, Rectangle};
 use crate::platform::windows::d2d::Direct2DRenderer;
 use crate::rendering::{RenderItem, RenderList, z_order};
 
+pub mod controls;
 pub mod cursor;
 pub mod preview;
 pub mod svg_icons;
