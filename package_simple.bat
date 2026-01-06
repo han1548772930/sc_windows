@@ -15,10 +15,10 @@ if not exist "target\release\sc_windows.exe" (
     exit /b 1
 )
 
-REM Check PaddleOCR folder
-if not exist "PaddleOCR-json_v1.4.1" (
-    echo Error: PaddleOCR-json_v1.4.1 folder not found
-    echo Please ensure PaddleOCR engine folder is in current directory
+REM Check models folder
+if not exist "models" (
+    echo Error: models folder not found
+    echo Please ensure OCR models folder is in current directory
     echo.
     pause
     exit /b 1
@@ -33,13 +33,13 @@ if exist "OCR_Screenshot_Tool_Complete.zip" del "OCR_Screenshot_Tool_Complete.zi
 REM Show files to be packaged
 echo Files to be packaged:
 echo   - target\release\sc_windows.exe
-echo   - PaddleOCR-json_v1.4.1\
+echo   - models\
 echo   - README.md
 echo.
 
 REM Create ZIP directly without temp folder
 echo Creating ZIP package...
-powershell -Command "Compress-Archive -Path 'target\release\sc_windows.exe','PaddleOCR-json_v1.4.1','README.md' -DestinationPath 'OCR_Screenshot_Tool_Complete.zip' -Force"
+powershell -Command "Compress-Archive -Path 'target\release\sc_windows.exe','models','README.md' -DestinationPath 'OCR_Screenshot_Tool_Complete.zip' -Force"
 
 if exist "OCR_Screenshot_Tool_Complete.zip" (
     echo.
