@@ -4,7 +4,6 @@ use windows::Win32::Foundation::HWND;
 
 use crate::app::App;
 use crate::message::{Command, DrawingMessage, Message};
-use crate::ocr::PaddleOcrEngine;
 use crate::settings::SettingsWindow;
 use crate::utils::{command_helpers, win_api};
 
@@ -155,8 +154,8 @@ impl CommandExecutor for App {
             }
             Command::ShowOverlay => {
                 // 显示覆盖层（截图成功）
-                // 覆盖层显示时异步预热OCR引擎，完成后自动发送状态更新消息
-                PaddleOcrEngine::start_ocr_engine_async_with_hwnd(hwnd);
+                // 覆盖层显示时异步预热 OCR 引擎
+                self.start_ocr_engine_async(hwnd);
                 vec![]
             }
             Command::HideOverlay | Command::HideWindow => {
