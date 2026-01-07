@@ -19,6 +19,7 @@ pub struct SvgIcon {
     pub name: String,
     pub rect: RECT,
     pub hovered: bool,
+    pub selected: bool, // 是否选中（用于绘图工具）
     pub is_title_bar_button: bool, // 是否是标题栏按钮
 }
 

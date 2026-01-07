@@ -10,12 +10,14 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::drawing::PreviewDrawingState;
 use super::renderer::PreviewRenderer;
 use super::types::{SvgIcon, MARGINS};
 use crate::constants::{
     BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, ICON_START_X,
     TITLE_BAR_HEIGHT,
 };
+use crate::drawing::DrawingTool;
 use crate::ocr::OcrResult;
 use crate::platform::windows::system::get_screen_size;
 use crate::screenshot::save::copy_text_to_clipboard;
@@ -50,6 +52,9 @@ pub struct PreviewWindow {
 
     // Direct2D 渲染器
     renderer: Option<PreviewRenderer>,
+
+    // 绘图功能
+    drawing_state: Option<PreviewDrawingState>,
 }
 
 impl PreviewWindow {
@@ -73,9 +78,12 @@ impl PreviewWindow {
     fn create_left_icons() -> Vec<SvgIcon> {
         let mut icons = Vec::new();
 
-        let icon_x = ICON_START_X;
+        let mut icon_x = ICON_START_X;
         let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
+        let icon_spacing = 12; // 图标间距
+        let separator_width = 20; // 分隔符宽度
 
+        // Pin 图标
         icons.push(SvgIcon {
             name: "pin".to_string(),
             rect: RECT {
@@ -85,10 +93,70 @@ impl PreviewWindow {
                 bottom: icon_y + ICON_SIZE,
             },
             hovered: false,
+            selected: false,
             is_title_bar_button: false,
         });
+        icon_x += ICON_SIZE + separator_width; // pin 后面加分隔符
+
+        // 绘图工具图标列表
+        let drawing_tools = [
+            "square",       // 矩形工具
+            "circle",       // 圆形工具
+            "move-up-right", // 箭头工具
+            "pen",          // 画笔工具
+            "type",         // 文字工具
+        ];
+
+        for svg_name in drawing_tools.iter() {
+            icons.push(SvgIcon {
+                name: svg_name.to_string(),
+                rect: RECT {
+                    left: icon_x,
+                    top: icon_y,
+                    right: icon_x + ICON_SIZE,
+                    bottom: icon_y + ICON_SIZE,
+                },
+                hovered: false,
+                selected: false,
+                is_title_bar_button: false,
+            });
+            icon_x += ICON_SIZE + icon_spacing;
+        }
 
         icons
+    }
+
+    /// 更新工具栏图标选中状态
+    fn update_tool_icons(&mut self) {
+        let current_tool = self.drawing_state
+            .as_ref()
+            .map(|ds| ds.get_current_tool())
+            .unwrap_or(DrawingTool::None);
+            
+        for icon in &mut self.svg_icons {
+            let is_drawing_tool_icon = matches!(
+                icon.name.as_str(),
+                "square" | "circle" | "move-up-right" | "pen" | "type"
+            );
+            if is_drawing_tool_icon {
+                icon.selected = match (icon.name.as_str(), current_tool) {
+                    ("square", DrawingTool::Rectangle) => true,
+                    ("circle", DrawingTool::Circle) => true,
+                    ("move-up-right", DrawingTool::Arrow) => true,
+                    ("pen", DrawingTool::Pen) => true,
+                    ("type", DrawingTool::Text) => true,
+                    _ => false,
+                };
+            }
+        }
+    }
+
+    /// 切换绘图工具
+    fn switch_drawing_tool(&mut self, tool: DrawingTool) {
+        if let Some(ref mut ds) = self.drawing_state {
+            ds.switch_tool(tool);
+        }
+        self.update_tool_icons();
     }
 
     /// 调整图标位置使其居中（简化版本，参考test.rs）
@@ -170,6 +238,7 @@ impl PreviewWindow {
                     bottom: icon_y + ICON_SIZE,
                 },
                 hovered: false,
+                selected: false,
                 is_title_bar_button: true,
             });
         }
@@ -186,6 +255,45 @@ impl PreviewWindow {
         // 注意：这里的image_area_width是为图像预留的区域宽度，不是图像实际显示宽度
         let margin = if self.show_text_area { 20 } else { 0 };
         let image_area_width = self.window_width - text_area_width - margin;
+
+        // 计算图片显示区域（用于绘图限制）
+        let image_area_rect = if !self.show_text_area {
+            // Pin 模式：图片占满标题栏下方
+            RECT {
+                left: 0,
+                top: TITLE_BAR_HEIGHT,
+                right: self.image_width,
+                bottom: TITLE_BAR_HEIGHT + self.image_height,
+            }
+        } else {
+            // OCR 模式：图片在左侧区域居中
+            let available_width = (image_area_width - 40) as f32;
+            let available_height = (self.window_height - TITLE_BAR_HEIGHT - 40) as f32;
+            let start_y = TITLE_BAR_HEIGHT + 10;
+
+            let scale_x = available_width / self.image_width as f32;
+            let scale_y = available_height / self.image_height as f32;
+            let scale = scale_x.min(scale_y).min(1.0);
+
+            let display_w = (self.image_width as f32 * scale) as i32;
+            let display_h = (self.image_height as f32 * scale) as i32;
+
+            let left_area_center_x = 20 + (available_width as i32) / 2;
+            let x = left_area_center_x - display_w / 2;
+            let y = start_y + ((available_height as i32) - display_h) / 2;
+
+            RECT {
+                left: x,
+                top: y,
+                right: x + display_w,
+                bottom: y + display_h,
+            }
+        };
+
+        // 更新绘图状态的图片区域
+        if let Some(ref mut ds) = self.drawing_state {
+            ds.set_image_area(image_area_rect);
+        }
 
         if self.show_text_area {
             // 计算文字显示区域（简化版本）
@@ -405,6 +513,9 @@ impl PreviewWindow {
                 .collect::<Vec<_>>()
                 .join("\n");
 
+            // 创建绘图状态
+            let drawing_state = PreviewDrawingState::new(hwnd).ok();
+
             let mut window = Self {
                 hwnd,
                 image_pixels,
@@ -425,6 +536,7 @@ impl PreviewWindow {
                 is_pinned: is_pin_mode,
                 show_text_area: !is_pin_mode,
                 renderer: PreviewRenderer::new().ok(),
+                drawing_state,
             };
 
             let mut title_bar_buttons = window.create_title_bar_buttons(window_width, false);
@@ -566,7 +678,7 @@ impl PreviewWindow {
                                     );
                                 }
 
-                                // 传递 show_text_area 参数
+                                // 传递 show_text_area 和 drawing_state 参数
                                 if let Err(e) = renderer.render(
                                     &window.text_lines,
                                     window.text_area_rect,
@@ -582,6 +694,7 @@ impl PreviewWindow {
                                         .selection_start
                                         .and_then(|s| window.selection_end.map(|e| (s, e))),
                                     window.show_text_area,
+                                    window.drawing_state.as_mut(),
                                 ) {
                                     eprintln!("PreviewWindow: render failed: {:?}", e);
                                 } else {
@@ -815,8 +928,42 @@ impl PreviewWindow {
                                         );
                                         return LRESULT(0);
                                     }
+                                    // 绘图工具图标
+                                    "square" => {
+                                        window.switch_drawing_tool(DrawingTool::Rectangle);
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        return LRESULT(0);
+                                    }
+                                    "circle" => {
+                                        window.switch_drawing_tool(DrawingTool::Circle);
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        return LRESULT(0);
+                                    }
+                                    "move-up-right" => {
+                                        window.switch_drawing_tool(DrawingTool::Arrow);
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        return LRESULT(0);
+                                    }
+                                    "pen" => {
+                                        window.switch_drawing_tool(DrawingTool::Pen);
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        return LRESULT(0);
+                                    }
+                                    "type" => {
+                                        window.switch_drawing_tool(DrawingTool::Text);
+                                        let _ = InvalidateRect(Some(hwnd), None, false);
+                                        return LRESULT(0);
+                                    }
                                     _ => {}
                                 }
+                            }
+                        }
+
+                        // 绘图交互处理
+                        if let Some(ref mut ds) = window.drawing_state {
+                            if ds.handle_mouse_down(x, y) {
+                                let _ = SetCapture(hwnd);
+                                return LRESULT(0);
                             }
                         }
 
@@ -856,6 +1003,17 @@ impl PreviewWindow {
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
                         let window = &mut *window_ptr;
+                        let x = (lparam.0 as i16) as i32;
+                        let y = ((lparam.0 >> 16) as i16) as i32;
+
+                        // 绘图交互处理
+                        if let Some(ref mut ds) = window.drawing_state {
+                            if ds.handle_mouse_up(x, y) {
+                                let _ = ReleaseCapture();
+                                return LRESULT(0);
+                            }
+                        }
+
                         if window.is_selecting {
                             window.is_selecting = false;
                             let _ = ReleaseCapture();
@@ -909,6 +1067,13 @@ impl PreviewWindow {
                             }
                         }
 
+                        // 绘图交互处理
+                        if let Some(ref mut ds) = window.drawing_state {
+                            if ds.handle_mouse_move(x, y) {
+                                needs_repaint = true;
+                            }
+                        }
+
                         // 文本选择移动逻辑
                         if window.is_selecting && window.show_text_area {
                             let text_rect = window.text_area_rect;
@@ -933,6 +1098,22 @@ impl PreviewWindow {
 
                         if needs_repaint {
                             let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                    }
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+                WM_LBUTTONDBLCLK => {
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        let x = (lparam.0 as i16) as i32;
+                        let y = ((lparam.0 >> 16) as i16) as i32;
+
+                        // 绘图双击处理（用于编辑文本元素）
+                        if let Some(ref mut ds) = window.drawing_state {
+                            if ds.handle_double_click(x, y) {
+                                return LRESULT(0);
+                            }
                         }
                     }
                     DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -975,13 +1156,39 @@ impl PreviewWindow {
                     }
                     LRESULT(0)
                 }
+                WM_CHAR => {
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        let character = char::from_u32(wparam.0 as u32);
+                        
+                        // 绘图文本输入处理
+                        if let Some(ch) = character {
+                            if let Some(ref mut ds) = window.drawing_state {
+                                if ds.handle_char_input(ch) {
+                                    return LRESULT(0);
+                                }
+                            }
+                        }
+                    }
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
                 WM_KEYDOWN => {
                     let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
                     if !window_ptr.is_null() {
                         let window = &mut *window_ptr;
-                        let vk = wparam.0 as u16;
+                        let vk = wparam.0 as u32;
                         let ctrl_pressed =
                             (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
+
+                        // 绘图键盘处理（文本编辑状态下的特殊键：方向键、退格、回车、Escape 等）
+                        if let Some(ref mut ds) = window.drawing_state {
+                            if ds.is_text_editing() {
+                                if ds.handle_key_input(vk) {
+                                    return LRESULT(0);
+                                }
+                            }
+                        }
 
                         if ctrl_pressed && window.show_text_area {
                             match vk {
@@ -1039,6 +1246,19 @@ impl PreviewWindow {
                         }
                     }
                     DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+                WM_TIMER => {
+                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    if !window_ptr.is_null() {
+                        let window = &mut *window_ptr;
+                        let timer_id = wparam.0 as u32;
+                        
+                        // 处理绘图光标定时器
+                        if let Some(ref mut ds) = window.drawing_state {
+                            ds.handle_cursor_timer(timer_id);
+                        }
+                    }
+                    LRESULT(0)
                 }
                 WM_DESTROY => {
                     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
