@@ -62,8 +62,6 @@ pub struct SettingsWindow {
 }
 
 // 控件 ID
-#[allow(dead_code)]
-const ID_TABS: i32 = 1000;
 const ID_LINE_THICKNESS: i32 = 1001;
 const ID_FONT_CHOOSE_BUTTON: i32 = 1003;
 const ID_DRAWING_COLOR_BUTTON: i32 = 1006;

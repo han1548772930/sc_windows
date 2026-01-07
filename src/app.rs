@@ -367,15 +367,6 @@ impl App {
         self.system.reregister_hotkey(hwnd)
     }
 
-    /// OCR引擎状态变更回调
-    pub fn on_ocr_engine_status_changed(
-        &mut self,
-        available: bool,
-        hwnd: windows::Win32::Foundation::HWND,
-    ) {
-        self.system.on_ocr_engine_status_changed(available, hwnd);
-    }
-
     /// 处理键盘输入
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
         // ESC键在任何状态下都可以退出（保持在App层处理）
@@ -849,8 +840,7 @@ impl App {
             }
 
             val if val == WM_OCR_STATUS_UPDATE => {
-                let available = wparam.0 != 0;
-                self.on_ocr_engine_status_changed(available, hwnd);
+                // OCR 引擎状态更新，刷新 UI
                 let commands = vec![Command::UpdateToolbar, Command::RequestRedraw];
                 self.execute_command_chain(commands, hwnd);
                 Some(LRESULT(0))
