@@ -130,15 +130,20 @@ impl DrawingManager {
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
 
+                    // 检查是否是正在编辑的文本元素（使用元素 id 比较，而不是指针比较）
+                    let is_editing_this_element = if let Some(edit_idx) = self.editing_element_index {
+                        self.elements
+                            .get_elements()
+                            .get(edit_idx)
+                            .map(|e| e.id == element.id)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
                     if self.text_editing
                         && self.text_cursor_visible
-                        && let Some(edit_idx) = self.editing_element_index
-                        && let Some(current_idx) = self
-                            .elements
-                            .get_elements()
-                            .iter()
-                            .position(|e| std::ptr::eq(e, element))
-                        && current_idx == edit_idx
+                        && is_editing_this_element
                     {
                         self.draw_text_cursor_optimized(
                             element,
@@ -435,6 +440,9 @@ impl DrawingManager {
             return vec![];
         }
 
+        // 输入时保持光标可见
+        self.text_cursor_visible = true;
+
         if let Some(element_index) = self.editing_element_index
             && let Some(element) = self.elements.get_element_mut(element_index)
         {
@@ -494,6 +502,9 @@ impl DrawingManager {
             return vec![];
         }
 
+        // 操作时保持光标可见
+        self.text_cursor_visible = true;
+
         if let Some(element_index) = self.editing_element_index
             && self.text_cursor_pos > 0
             && let Some(element) = self.elements.get_element_mut(element_index)
@@ -525,6 +536,7 @@ impl DrawingManager {
     pub(super) fn move_cursor_left(&mut self) -> Vec<Command> {
         if self.text_cursor_pos > 0 {
             self.text_cursor_pos -= 1;
+            self.text_cursor_visible = true; // 移动时保持光标可见
             vec![Command::RequestRedraw]
         } else {
             vec![]
@@ -539,6 +551,7 @@ impl DrawingManager {
             let char_count = el.text.chars().count();
             if self.text_cursor_pos < char_count {
                 self.text_cursor_pos += 1;
+                self.text_cursor_visible = true; // 移动时保持光标可见
                 return vec![Command::RequestRedraw];
             }
         }
@@ -560,6 +573,7 @@ impl DrawingManager {
             } else {
                 self.text_cursor_pos = 0;
             }
+            self.text_cursor_visible = true; // 移动时保持光标可见
             return vec![Command::RequestRedraw];
         }
         vec![]
@@ -580,6 +594,7 @@ impl DrawingManager {
             } else {
                 self.text_cursor_pos = el.text.chars().count();
             }
+            self.text_cursor_visible = true; // 移动时保持光标可见
             return vec![Command::RequestRedraw];
         }
         vec![]
@@ -617,6 +632,7 @@ impl DrawingManager {
                         .map(|line| line.chars().count() + 1)
                         .sum();
                     self.text_cursor_pos = chars_before_prev + target_col;
+                    self.text_cursor_visible = true; // 移动时保持光标可见
                     return vec![Command::RequestRedraw];
                 }
             }
@@ -656,6 +672,7 @@ impl DrawingManager {
                 let next_len = next_line_text.chars().count();
                 let target_col = current_col.min(next_len);
                 self.text_cursor_pos = self.text_cursor_pos + next_nl + 1 + target_col;
+                self.text_cursor_visible = true; // 移动时保持光标可见
                 return vec![Command::RequestRedraw];
             }
         }

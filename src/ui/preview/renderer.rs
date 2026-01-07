@@ -5,6 +5,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 
+use super::drawing::PreviewDrawingState;
 use super::types::{D2DIconBitmaps, IconCache, SvgIcon};
 use crate::constants::{
     BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, CONTENT_BG_COLOR_D2D,
@@ -103,6 +104,12 @@ impl PreviewRenderer {
             "window-maximize",
             "window-minimize",
             "window-restore",
+            // 绘图工具图标
+            "square",
+            "circle",
+            "move-up-right",
+            "pen",
+            "type",
         ];
 
         for name in icons.iter() {
@@ -180,6 +187,12 @@ impl PreviewRenderer {
             "window-maximize" => Some(include_str!("../../../icons/window-maximize.svg")),
             "window-minimize" => Some(include_str!("../../../icons/window-minimize.svg")),
             "window-restore" => Some(include_str!("../../../icons/window-restore.svg")),
+            // 绘图工具图标
+            "square" => Some(include_str!("../../../icons/square.svg")),
+            "circle" => Some(include_str!("../../../icons/circle.svg")),
+            "move-up-right" => Some(include_str!("../../../icons/move-up-right.svg")),
+            "pen" => Some(include_str!("../../../icons/pen.svg")),
+            "type" => Some(include_str!("../../../icons/type.svg")),
             _ => None,
         }
     }
@@ -389,6 +402,7 @@ impl PreviewRenderer {
         image_height: i32,
         selection: Option<((usize, usize), (usize, usize))>,
         show_text_area: bool,
+        drawing_state: Option<&mut PreviewDrawingState>,
     ) -> Result<()> {
         self.begin_frame()?;
 
@@ -445,7 +459,15 @@ impl PreviewRenderer {
                 .map_err(|e| anyhow::anyhow!("Failed to draw bitmap: {:?}", e))?;
         }
 
-        // 3. 绘制文本区域
+        // 3. 绘制绘图元素（在图片上方）
+        if let Some(ds) = drawing_state {
+            let image_area_rect = ds.image_area_rect;
+            ds.manager
+                .render(&mut self.d2d_renderer, Some(&image_area_rect))
+                .map_err(|e| anyhow::anyhow!("Failed to render drawing elements: {:?}", e))?;
+        }
+
+        // 4. 绘制文本区域
         if show_text_area {
             self.render_text_area(text_lines, text_rect, scroll_offset, line_height, selection)?;
         }
