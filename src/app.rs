@@ -335,8 +335,13 @@ impl App {
     }
 
     /// 异步停止OCR引擎
-    pub fn stop_ocr_engine_async(&mut self) {
+    pub fn stop_ocr_engine_async(&self) {
         self.system.stop_ocr_engine_async();
+    }
+
+    /// 异步启动 OCR 引擎
+    pub fn start_ocr_engine_async(&self, hwnd: windows::Win32::Foundation::HWND) {
+        self.system.start_ocr_engine_async(hwnd);
     }
 
     /// 重新加载设置

@@ -29,8 +29,8 @@ unsafe fn handle_commands(app: &mut App, commands: Vec<Command>, hwnd: HWND) {
 
 /// 执行截图并显示窗口
 unsafe fn perform_capture_and_show(hwnd: HWND, app: &mut App) {
-    // 使用带通知的版本，引擎启动完成后会发送状态更新消息
-    sc_windows::ocr::PaddleOcrEngine::start_ocr_engine_async_with_hwnd(hwnd);
+    // 异步启动 OCR 引擎
+    app.start_ocr_engine_async(hwnd);
     app.reset_to_initial_state();
 
     // 使用 App 中缓存的屏幕尺寸，避免重复调用系统API
@@ -182,7 +182,6 @@ unsafe extern "system" fn window_proc(
 
             WM_DESTROY => {
                 let _ = UnregisterHotKey(Some(hwnd), HOTKEY_SCREENSHOT_ID);
-                sc_windows::ocr::PaddleOcrEngine::cleanup_global_engine();
 
                 let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
                 if !ptr.is_null() {

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use super::core::Settings;
 use crate::WINDOW_CLASS_NAME;
-use crate::ocr::PaddleOcrEngine;
+use crate::ocr::get_available_languages;
 use crate::ui::controls::{Font, Tab, TabsContainer};
 use crate::utils::to_wide_chars;
 
@@ -1127,7 +1127,7 @@ impl SettingsWindow {
     /// 加载 OCR 语言列表
     fn load_ocr_languages(&self) {
         unsafe {
-            let available_languages = PaddleOcrEngine::get_available_languages();
+            let available_languages = get_available_languages();
 
             if available_languages.is_empty() {
                 let text = to_wide_chars("未找到 OCR 模型");
