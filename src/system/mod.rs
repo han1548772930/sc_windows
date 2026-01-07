@@ -29,9 +29,6 @@ use window_detection::WindowDetectionManager;
 
 /// 系统管理器
 pub struct SystemManager {
-    /// 共享的配置引用
-    #[allow(dead_code)]
-    settings: Arc<RwLock<Settings>>,
     /// 托盘管理器
     tray: TrayManager,
     /// 热键管理器
@@ -50,9 +47,8 @@ impl SystemManager {
     pub fn new(settings: Arc<RwLock<Settings>>) -> Result<Self, SystemError> {
         Ok(Self {
             tray: TrayManager::new()?,
-            hotkeys: HotkeyManager::new(Arc::clone(&settings))?,
+            hotkeys: HotkeyManager::new(settings)?,
             window_detection: WindowDetectionManager::new()?,
-            settings,
             ocr_engine: Arc::new(Mutex::new(None)),
         })
     }
@@ -239,11 +235,6 @@ impl SystemManager {
         self.hotkeys.reregister_hotkey(hwnd)
     }
 
-    /// 更新 OCR 引擎状态后的回调处理
-    pub fn on_ocr_engine_status_changed(&mut self, _available: bool, _hwnd: HWND) {
-        // 可以在这里添加状态更新后的其他逻辑
-    }
-
     /// 从选择区域识别文本
     pub fn recognize_text_from_selection(
         &self,
@@ -373,10 +364,11 @@ impl SystemManager {
 
         Ok(())
     }
+}
 
-    /// 获取 OCR 引擎 Arc 引用（用于外部调用）
-    pub fn get_ocr_engine(&self) -> Arc<Mutex<Option<OcrEngine>>> {
-        Arc::clone(&self.ocr_engine)
+impl Drop for SystemManager {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }
 
