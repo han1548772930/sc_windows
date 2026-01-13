@@ -166,6 +166,7 @@ impl CommandExecutor for App {
                 vec![]
             }
             Command::QuitApp => {
+                self.cleanup_before_quit();
                 let _ = self.host_platform().destroy_window(window);
                 vec![]
             }

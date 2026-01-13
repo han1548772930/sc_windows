@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::Write;
 
 use sc_platform::WindowId;
-use sc_platform_windows::win32::Result as WinResult;
 
 use crate::command_executor::CommandExecutor;
 use crate::constants::*;
@@ -17,7 +16,9 @@ use sc_drawing::Rect;
 use sc_drawing_host::{DrawingConfig, DrawingError, DrawingManager, DrawingTool};
 use sc_host_protocol::{Command, DrawingMessage, UIMessage};
 use sc_ocr::{OcrCompletionData, OcrResult};
-use sc_platform::{Color, HostPlatform, InputEvent, KeyCode, MouseButton, PlatformError};
+use sc_platform::{
+    Color, HostPlatform, InputEvent, KeyCode, MouseButton, PlatformError, PlatformServicesError,
+};
 use sc_platform_windows::windows::{Direct2DRenderer, UserEventSender};
 use sc_rendering::Rectangle;
 use sc_rendering::{DirtyRectTracker, DirtyType};
@@ -261,8 +262,9 @@ impl App {
 
     /// 初始化系统托盘
     pub fn init_system_tray(&mut self, window: WindowId) -> AppResult<()> {
+        let host_platform = self.host_platform.as_ref();
         self.system
-            .initialize(window)
+            .initialize(window, host_platform)
             .map_err(|e| AppError::Init(format!("Failed to initialize system tray: {e}")))
     }
 
@@ -327,8 +329,14 @@ impl App {
     }
 
     /// 重新注册热键
-    pub fn reregister_hotkey(&mut self, window: WindowId) -> WinResult<()> {
-        self.system.reregister_hotkey(window)
+    pub fn reregister_hotkey(&mut self, window: WindowId) -> Result<(), PlatformServicesError> {
+        let host_platform = self.host_platform.as_ref();
+        self.system.reregister_hotkey(window, host_platform)
+    }
+
+    pub(crate) fn cleanup_before_quit(&mut self) {
+        let host_platform = self.host_platform.as_ref();
+        self.system.cleanup_platform(host_platform);
     }
 
     /// 执行一条 core action，并返回需要由宿主执行的命令。
