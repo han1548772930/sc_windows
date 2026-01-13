@@ -1,0 +1,16 @@
+[package]
+name = "sc_highlight"
+version = "0.1.0"
+edition = "2024"
+description = "Window/control hit-testing for screenshot auto-highlight"
+license = "MIT"
+
+[dependencies]
+sc_app = { path = "../sc_app" }
+sc_platform = { path = "../sc_platform" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }

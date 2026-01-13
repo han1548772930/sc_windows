@@ -1,0 +1,21 @@
+[package]
+name = "sc_drawing_host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Drawing editor host component (Windows)"
+
+[dependencies]
+thiserror = "2"
+sc_host_protocol = { path = "../sc_host_protocol" }
+sc_drawing = { path = "../sc_drawing", features = ["windows"] }
+sc_app = { path = "../sc_app" }
+
+[target.'cfg(windows)'.dependencies]
+sc_platform_windows = { path = "../sc_platform_windows" }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct2D",
+  "Win32_Graphics_Direct2D_Common",
+  "Win32_Graphics_DirectWrite",
+] }

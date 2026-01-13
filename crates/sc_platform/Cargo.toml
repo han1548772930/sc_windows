@@ -1,0 +1,9 @@
+[package]
+name = "sc_platform"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Platform abstraction traits and types"
+
+[dependencies]
+sc_rendering = { path = "../sc_rendering" }

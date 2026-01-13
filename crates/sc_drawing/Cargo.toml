@@ -1,0 +1,27 @@
+[package]
+name = "sc_drawing"
+version = "0.1.0"
+edition = "2024"
+description = "Platform-independent drawing and annotation library"
+license = "MIT"
+
+[features]
+default = []
+windows = ["dep:windows", "dep:windows-numerics"]
+
+[dependencies]
+sc_rendering = { path = "../sc_rendering" }
+
+[dependencies.windows]
+version = "0.62"
+optional = true
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+]
+
+[dependencies.windows-numerics]
+version = "0.3"
+optional = true

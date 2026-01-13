@@ -1,0 +1,34 @@
+[package]
+name = "sc_windows"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+# Thin wrapper around the host + public compatibility re-exports.
+sc_host_windows = { path = "../../crates/sc_host_windows" }
+
+# Compatibility modules (sc_windows::drawing/ui/ocr/message)
+sc_drawing_host = { path = "../../crates/sc_drawing_host" }
+sc_ui_windows = { path = "../../crates/sc_ui_windows" }
+sc_ocr = { path = "../../crates/sc_ocr" }
+sc_host_protocol = { path = "../../crates/sc_host_protocol" }
+sc_settings = { path = "../../crates/sc_settings" }
+
+# Used by tests/benches.
+sc_app = { path = "../../crates/sc_app" }
+sc_drawing = { path = "../../crates/sc_drawing", features = ["windows"] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "rendering_bench"
+harness = false
+
+[[bench]]
+name = "capture_bench"
+harness = false
