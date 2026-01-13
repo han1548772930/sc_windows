@@ -11,12 +11,13 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use sc_platform::{CursorIcon, HostPlatform, WindowId};
 use sc_platform_windows::windows::WindowsHostPlatform;
 
+use sc_ui::preview_layout;
+
 use super::drawing::PreviewDrawingState;
 use super::renderer::PreviewRenderer;
 use super::types::{MARGINS, SvgIcon};
 use crate::constants::{
-    BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, ICON_START_X,
-    TITLE_BAR_HEIGHT,
+    BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, TITLE_BAR_HEIGHT,
 };
 use sc_app::selection::RectI32;
 use sc_drawing_host::{DragMode, DrawingConfig, DrawingTool};
@@ -220,54 +221,16 @@ impl PreviewWindowState {
 
     /// 创建左侧图标（仅位置和名称）
     fn create_left_icons() -> Vec<SvgIcon> {
-        let mut icons = Vec::new();
-
-        let mut icon_x = ICON_START_X;
-        let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-        let icon_spacing = 12; // 图标间距
-        let separator_width = 20; // 分隔符宽度
-
-        // Pin 图标
-        icons.push(SvgIcon {
-            name: "pin".to_string(),
-            rect: RectI32 {
-                left: icon_x,
-                top: icon_y,
-                right: icon_x + ICON_SIZE,
-                bottom: icon_y + ICON_SIZE,
-            },
-            hovered: false,
-            selected: false,
-            is_title_bar_button: false,
-        });
-        icon_x += ICON_SIZE + separator_width; // pin 后面加分隔符
-
-        // 绘图工具图标列表
-        let drawing_tools = [
-            "square",        // 矩形工具
-            "circle",        // 圆形工具
-            "move-up-right", // 箭头工具
-            "pen",           // 画笔工具
-            "type",          // 文字工具
-        ];
-
-        for svg_name in drawing_tools.iter() {
-            icons.push(SvgIcon {
-                name: svg_name.to_string(),
-                rect: RectI32 {
-                    left: icon_x,
-                    top: icon_y,
-                    right: icon_x + ICON_SIZE,
-                    bottom: icon_y + ICON_SIZE,
-                },
+        preview_layout::create_left_icons()
+            .into_iter()
+            .map(|icon| SvgIcon {
+                name: icon.name.to_string(),
+                rect: icon.rect,
                 hovered: false,
                 selected: false,
-                is_title_bar_button: false,
-            });
-            icon_x += ICON_SIZE + icon_spacing;
-        }
-
-        icons
+                is_title_bar_button: icon.is_title_bar_button(),
+            })
+            .collect()
     }
 
     /// 更新工具栏图标选中状态
@@ -356,39 +319,16 @@ impl PreviewWindowState {
 
     /// 创建标题栏按钮
     fn create_title_bar_buttons(&self, window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
-        let mut buttons = Vec::new();
-
-        // 根据窗口状态选择按钮配置
-        let button_names = if is_maximized {
-            // 最大化状态：关闭、还原、最小化（从右到左）
-            vec!["window-close", "window-restore", "window-minimize"]
-        } else {
-            // 普通状态：关闭、最大化、最小化（从右到左）
-            vec!["window-close", "window-maximize", "window-minimize"]
-        };
-
-        // 从右到左创建按钮
-        for (i, name) in button_names.iter().enumerate() {
-            // 按钮位置计算
-            let button_x = window_width - (i as i32 + 1) * BUTTON_WIDTH_OCR;
-            let icon_x = button_x + (BUTTON_WIDTH_OCR - ICON_SIZE) / 2;
-            let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-
-            buttons.push(SvgIcon {
-                name: name.to_string(),
-                rect: RectI32 {
-                    left: icon_x,
-                    top: icon_y,
-                    right: icon_x + ICON_SIZE,
-                    bottom: icon_y + ICON_SIZE,
-                },
+        preview_layout::create_title_bar_buttons(window_width, is_maximized)
+            .into_iter()
+            .map(|icon| SvgIcon {
+                name: icon.name.to_string(),
+                rect: icon.rect,
                 hovered: false,
                 selected: false,
-                is_title_bar_button: true,
-            });
-        }
-
-        buttons
+                is_title_bar_button: icon.is_title_bar_button(),
+            })
+            .collect()
     }
 
     /// 重新计算窗口布局

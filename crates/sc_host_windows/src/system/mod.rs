@@ -5,10 +5,9 @@ use sc_app::selection as core_selection;
 use sc_drawing::Rect;
 use sc_host_protocol::Command;
 use sc_ocr::{self, BoundingBox, OcrCompletionData, OcrConfig, OcrEngine, OcrResult};
-use sc_platform::{HostPlatform, TrayEvent, WindowId};
-use sc_platform_windows::win32::{Error as WinError, Result as WinResult};
+use sc_platform::{HostPlatform, PlatformServicesError, TrayEvent, WindowId};
+use sc_platform_windows::windows::UserEventSender;
 use sc_platform_windows::windows::bmp::crop_bmp;
-use sc_platform_windows::windows::{HotkeyManager, TrayManager, UserEventSender};
 use sc_settings::Settings;
 
 use crate::HostEvent;
@@ -18,10 +17,6 @@ use crate::screenshot::ScreenshotManager;
 
 /// 系统管理器
 pub struct SystemManager {
-    /// 托盘管理器
-    tray: TrayManager,
-    /// 热键管理器
-    hotkeys: HotkeyManager,
     /// Shared settings snapshot (used for OCR config, hotkeys, etc.).
     settings: Arc<RwLock<Settings>>,
     /// OCR 引擎实例
@@ -41,8 +36,6 @@ impl SystemManager {
         events: UserEventSender<HostEvent>,
     ) -> Result<Self, SystemError> {
         Ok(Self {
-            tray: TrayManager::new(),
-            hotkeys: HotkeyManager::new(),
             settings,
             ocr_engine: Arc::new(Mutex::new(None)),
             events,
@@ -56,27 +49,30 @@ impl SystemManager {
     }
 
     /// 初始化系统集成
-    pub fn initialize(&mut self, window: WindowId) -> Result<(), SystemError> {
+    pub fn initialize(
+        &mut self,
+        window: WindowId,
+        host_platform: &dyn HostPlatform<WindowHandle = WindowId>,
+    ) -> Result<(), SystemError> {
         // Tray init should not block hotkey registration.
-        if let Err(e) = self
-            .tray
-            .initialize(window, "截图工具 - Ctrl+Alt+S 截图，右键查看菜单")
-        {
+        let (hotkey_modifiers, hotkey_key, hotkey_display) = self
+            .settings
+            .read()
+            .map(|s| (s.hotkey_modifiers, s.hotkey_key, s.get_hotkey_string()))
+            .unwrap_or((0x0003, 'S' as u32, "Ctrl+Alt+S".to_string())); // Default Ctrl+Alt+S
+
+        let tooltip = format!("截图工具 - {hotkey_display} 截图，右键查看菜单");
+        if let Err(e) = host_platform.init_tray(window, &tooltip) {
             eprintln!("Failed to initialize system tray: {e}");
         }
 
-        // Register global hotkey from shared settings.
-        let (hotkey_modifiers, hotkey_key) = self
-            .settings
-            .read()
-            .map(|s| (s.hotkey_modifiers, s.hotkey_key))
-            .unwrap_or((0x0003, 'S' as u32)); // Default Ctrl+Alt+S
-
-        if let Err(e) =
-            self.hotkeys
-                .register_hotkey(window, HOTKEY_SCREENSHOT_ID, hotkey_modifiers, hotkey_key)
-        {
-            eprintln!("Failed to register hotkey: {e:?}");
+        if let Err(e) = host_platform.set_global_hotkey(
+            window,
+            HOTKEY_SCREENSHOT_ID,
+            hotkey_modifiers,
+            hotkey_key,
+        ) {
+            eprintln!("Failed to register hotkey: {e}");
         }
 
         // 异步启动 OCR 引擎
@@ -85,10 +81,20 @@ impl SystemManager {
         Ok(())
     }
 
+    /// Cleanup platform integrations (tray/hotkeys).
+    pub fn cleanup_platform(&mut self, host_platform: &dyn HostPlatform<WindowHandle = WindowId>) {
+        if let Err(e) = host_platform.cleanup_tray() {
+            eprintln!("Failed to cleanup system tray: {e}");
+        }
+
+        if let Err(e) = host_platform.clear_global_hotkeys() {
+            eprintln!("Failed to cleanup global hotkeys: {e}");
+        }
+    }
+
     /// 清理系统资源
     pub fn cleanup(&mut self) {
-        self.tray.cleanup();
-        self.hotkeys.cleanup();
+        // Keep Drop-safe cleanup here (no HostPlatform reference).
         self.stop_ocr_engine_sync();
     }
 
@@ -217,19 +223,22 @@ impl SystemManager {
     /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // Currently no-op. Hotkey updates happen via `reregister_hotkey`.
-        self.tray.reload_settings();
     }
 
     /// 重新注册热键
-    pub fn reregister_hotkey(&mut self, window: WindowId) -> WinResult<()> {
+    pub fn reregister_hotkey(
+        &mut self,
+        window: WindowId,
+        host_platform: &dyn HostPlatform<WindowHandle = WindowId>,
+    ) -> Result<(), PlatformServicesError> {
         let (hotkey_modifiers, hotkey_key) = self
             .settings
             .read()
             .map(|s| (s.hotkey_modifiers, s.hotkey_key))
             .unwrap_or((0x0003, 'S' as u32));
 
-        self.hotkeys
-            .reregister_hotkey(window, HOTKEY_SCREENSHOT_ID, hotkey_modifiers, hotkey_key)
+        host_platform.clear_global_hotkeys()?;
+        host_platform.set_global_hotkey(window, HOTKEY_SCREENSHOT_ID, hotkey_modifiers, hotkey_key)
     }
 
     /// 从选择区域识别文本
@@ -369,9 +378,3 @@ impl std::fmt::Display for SystemError {
 }
 
 impl std::error::Error for SystemError {}
-
-impl From<WinError> for SystemError {
-    fn from(err: WinError) -> Self {
-        SystemError::TrayError(format!("Windows API error: {err:?}"))
-    }
-}

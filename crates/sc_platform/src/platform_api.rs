@@ -7,6 +7,8 @@ pub enum PlatformServicesError {
     Clipboard(String),
     Dialog(String),
     MessageBox(String),
+    Tray(String),
+    Hotkey(String),
     Other(String),
 }
 
@@ -17,6 +19,8 @@ impl fmt::Display for PlatformServicesError {
             PlatformServicesError::Clipboard(msg) => write!(f, "clipboard error: {msg}"),
             PlatformServicesError::Dialog(msg) => write!(f, "dialog error: {msg}"),
             PlatformServicesError::MessageBox(msg) => write!(f, "message box error: {msg}"),
+            PlatformServicesError::Tray(msg) => write!(f, "tray error: {msg}"),
+            PlatformServicesError::Hotkey(msg) => write!(f, "hotkey error: {msg}"),
             PlatformServicesError::Other(msg) => write!(f, "platform error: {msg}"),
         }
     }
@@ -135,4 +139,26 @@ pub trait HostPlatform {
 
     fn show_info_message(&self, window: Self::WindowHandle, title: &str, message: &str);
     fn show_error_message(&self, window: Self::WindowHandle, title: &str, message: &str);
+
+    /// Initialize the system tray icon (if supported).
+    fn init_tray(
+        &self,
+        window: Self::WindowHandle,
+        tooltip: &str,
+    ) -> Result<(), PlatformServicesError>;
+
+    /// Cleanup the system tray icon (if supported).
+    fn cleanup_tray(&self) -> Result<(), PlatformServicesError>;
+
+    /// Register a global hotkey (if supported).
+    fn set_global_hotkey(
+        &self,
+        window: Self::WindowHandle,
+        hotkey_id: i32,
+        modifiers: u32,
+        key: u32,
+    ) -> Result<(), PlatformServicesError>;
+
+    /// Unregister all global hotkeys registered by this process (if supported).
+    fn clear_global_hotkeys(&self) -> Result<(), PlatformServicesError>;
 }

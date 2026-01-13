@@ -7,9 +7,9 @@ use windows::core::Interface;
 use super::drawing::PreviewDrawingState;
 use super::types::{D2DIconBitmaps, IconCache, SvgIcon};
 use crate::constants::{
-    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR_D2D, CONTENT_BG_COLOR_D2D,
-    ICON_HOVER_BG_COLOR_D2D, ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, PIN_ACTIVE_COLOR,
-    TITLE_BAR_BG_COLOR_D2D, TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, TITLE_BAR_HEIGHT,
+    BUTTON_WIDTH_OCR, CLOSE_BUTTON_HOVER_BG_COLOR, CONTENT_BG_COLOR, ICON_HOVER_BG_COLOR,
+    ICON_HOVER_PADDING, ICON_HOVER_RADIUS, ICON_SIZE, PIN_ACTIVE_COLOR, TITLE_BAR_BG_COLOR,
+    TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT,
 };
 use crate::svg::{PixelFormat, SvgRenderOptions, apply_color_to_pixels, render_svg_to_pixels};
 use sc_platform::{Color, DrawStyle, HostPlatform, Point, Rectangle, TextStyle, WindowId};
@@ -291,12 +291,7 @@ impl PreviewRenderer {
     ) -> Result<()> {
         // 绘制标题栏背景
         let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
-        let bg_color = Color {
-            r: TITLE_BAR_BG_COLOR_D2D.r,
-            g: TITLE_BAR_BG_COLOR_D2D.g,
-            b: TITLE_BAR_BG_COLOR_D2D.b,
-            a: TITLE_BAR_BG_COLOR_D2D.a,
-        };
+        let bg_color = TITLE_BAR_BG_COLOR;
 
         let bg_style = DrawStyle {
             stroke_color: bg_color,
@@ -323,21 +318,14 @@ impl PreviewRenderer {
 
             // 绘制悬停/激活背景
             if icon.hovered {
-                let (bg_color_d2d, use_rounded) = if icon.is_title_bar_button {
+                let (hover_color, use_rounded) = if icon.is_title_bar_button {
                     if icon.name == "window-close" {
-                        (CLOSE_BUTTON_HOVER_BG_COLOR_D2D, false)
+                        (CLOSE_BUTTON_HOVER_BG_COLOR, false)
                     } else {
-                        (TITLE_BAR_BUTTON_HOVER_BG_COLOR_D2D, false)
+                        (TITLE_BAR_BUTTON_HOVER_BG_COLOR, false)
                     }
                 } else {
-                    (ICON_HOVER_BG_COLOR_D2D, true)
-                };
-
-                let hover_color = Color {
-                    r: bg_color_d2d.r,
-                    g: bg_color_d2d.g,
-                    b: bg_color_d2d.b,
-                    a: bg_color_d2d.a,
+                    (ICON_HOVER_BG_COLOR, true)
                 };
 
                 let hover_style = DrawStyle {
@@ -432,10 +420,10 @@ impl PreviewRenderer {
         self.begin_frame()?;
 
         self.clear(
-            CONTENT_BG_COLOR_D2D.r,
-            CONTENT_BG_COLOR_D2D.g,
-            CONTENT_BG_COLOR_D2D.b,
-            CONTENT_BG_COLOR_D2D.a,
+            CONTENT_BG_COLOR.r,
+            CONTENT_BG_COLOR.g,
+            CONTENT_BG_COLOR.b,
+            CONTENT_BG_COLOR.a,
         )?;
 
         // 1. 绘制标题栏

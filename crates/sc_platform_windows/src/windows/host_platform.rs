@@ -1,9 +1,16 @@
+use std::cell::RefCell;
+
 use sc_platform::{CursorIcon, HostPlatform, PlatformServicesError, WindowId};
 
 use crate::win_api;
 use crate::win32::{RECT, WM_CLOSE};
 
-use super::{clipboard, file_dialog, message_box};
+use super::{HotkeyManager, TrayManager, clipboard, file_dialog, message_box};
+
+thread_local! {
+    static TRAY: RefCell<TrayManager> = RefCell::new(TrayManager::new());
+    static HOTKEYS: RefCell<HotkeyManager> = RefCell::new(HotkeyManager::new());
+}
 
 /// Windows host-facing platform implementation.
 ///
@@ -175,5 +182,38 @@ impl HostPlatform for WindowsHostPlatform {
 
     fn show_error_message(&self, window: WindowId, title: &str, message: &str) {
         message_box::show_error(super::hwnd(window), title, message);
+    }
+
+    fn init_tray(&self, window: WindowId, tooltip: &str) -> Result<(), PlatformServicesError> {
+        TRAY.with(|tray| {
+            tray.borrow_mut()
+                .initialize(window, tooltip)
+                .map_err(|e| PlatformServicesError::Tray(e.to_string()))
+        })
+    }
+
+    fn cleanup_tray(&self) -> Result<(), PlatformServicesError> {
+        TRAY.with(|tray| tray.borrow_mut().cleanup());
+        Ok(())
+    }
+
+    fn set_global_hotkey(
+        &self,
+        window: WindowId,
+        hotkey_id: i32,
+        modifiers: u32,
+        key: u32,
+    ) -> Result<(), PlatformServicesError> {
+        HOTKEYS.with(|hotkeys| {
+            hotkeys
+                .borrow_mut()
+                .register_hotkey(window, hotkey_id, modifiers, key)
+                .map_err(|e| PlatformServicesError::Hotkey(format!("{e:?}")))
+        })
+    }
+
+    fn clear_global_hotkeys(&self) -> Result<(), PlatformServicesError> {
+        HOTKEYS.with(|hotkeys| hotkeys.borrow_mut().cleanup());
+        Ok(())
     }
 }
