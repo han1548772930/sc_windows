@@ -11,14 +11,17 @@ Windows 原生截图与标注工具（Rust + Direct2D），支持矩形/圆形/�
 
 ## 架构
 
-本项目正在重构为类似 Zed/gpui 的 **core/host split**（保持功能不变）：
+本项目已完成 **core/host split**（保持功能不变），并将 Win32 副作用尽量收口到 platform backend：
 
 - **Core（平台无关）**：`crates/sc_app`
   负责状态（model）、Action/Effect、reducer（例如 selection）。
-- **Host（Windows 宿主）**：`crates/sc_host_windows`
-  负责 Win32 事件泵、系统集成（托盘/热键/剪贴板/对话框等）、渲染后端、执行副作用（effects）。
+- **Host（Windows 宿主 / composition root）**：`crates/sc_host_windows`
+  负责输入事件桥接、执行 core effects，驱动 UI/渲染/系统集成。
+- **Host-facing Platform API**：`crates/sc_platform` 的 `HostPlatform`
+  host 通过它请求窗口/定时器/剪贴板/对话框等副作用；Windows 实现在 `crates/sc_platform_windows::windows::WindowsHostPlatform`。
+  公共 API 使用 `WindowId`（opaque）避免暴露 `HWND`。
 - **对外 crate 名保持 `sc_windows`**：`apps/sc_windows`
-  只是薄封装：binary 入口 + 对 `sc_host_windows` 的 re-export。
+  薄封装：binary 入口 + 对 `sc_host_windows` 的 re-export（保持历史 crate 名）。
 
 依赖关系（概念图）：
 
@@ -40,19 +43,32 @@ windows impl:
 ```
 
 ### 关键 crates
-- `crates/sc_app`：Core（platform-neutral）Action/Effect + reducers
-- `crates/sc_host_windows`：Host（Win32）输入事件 -> core Action，执行 effects，驱动 UI/渲染/系统集成
-- `crates/sc_platform_windows`：Windows 平台实现（D2D/GDI/system/dialog/tray/hotkeys/clipboard/win_api 等）
-- `crates/sc_ui`：平台无关 UI（ViewState -> RenderList + hit-test 数据）
-- `crates/sc_rendering`：平台无关渲染类型/RenderList/脏矩形等
+Core / platform-neutral：
+- `crates/sc_app`：core model + Action/Effect + reducers
+- `crates/sc_host_protocol`：Host 命令/消息协议（Command / UIMessage / DrawingMessage）
+- `crates/sc_rendering`：RenderList / dirty rect / 渲染基础类型
+- `crates/sc_ui`：平台无关 UI（layout/hit-test/RenderList builders）
 - `crates/sc_drawing`：绘图 core（含 windows feature 的渲染/适配）
-- `crates/sc_platform`：平台抽象（输入事件等）
+- `crates/sc_settings`：Settings 持久化 + ConfigManager
+- `crates/sc_platform`：平台抽象（InputEvent / WindowMessageHandler / HostPlatform 等）
 
-## 代码风格（Zed 风格）
+Windows backend / host components：
+- `crates/sc_platform_windows`：Win32 backend（D2D/GDI/clipboard/dialog/tray/hotkeys/win_api 等）
+- `crates/sc_highlight`：窗口/控件命中与 auto-highlight
+- `crates/sc_ocr`：OCR helpers（引擎创建、模型检测、识别等）
+- `crates/sc_drawing_host`：绘图编辑器 host 组件（DrawingManager 等）
+- `crates/sc_ui_windows`：Windows UI 组件（toolbar/preview/settings/cursor/icons）
+- `crates/sc_host_windows`：composition root（连接 core + platform + system integration）
+
+Wrapper：
+- `apps/sc_windows`：入口 + re-export（对外 crate 名保持 `sc_windows`）
+
+## 代码风格
 为了保持一致性，仓库采用以下风格约定：
 - 文件开头不保留大块头部注释（例如 `//! ...`）。
 - 所有 `use` import 统一放在文件顶部（不在函数块/测试模块里写 `use ...`）。
 - 尽量避免在代码里写内联绝对路径（`crate::...` / `sc_*::...` / `windows::...`）；优先在顶部 `use` 引入再使用短名。
+- host/UI 侧优先通过 `HostPlatform` 请求平台副作用；窗口句柄对外使用 `WindowId`（opaque）。
 
 ## 快速开始
 
@@ -80,28 +96,41 @@ sc_windows/
 ├── apps/
 │   └── sc_windows/                  # 薄封装：入口 + re-export（对外 crate 名保持 sc_windows）
 │       ├── src/                     # main.rs + lib.rs
-│       └── benches/                 # 性能基准（如果存在）
+│       ├── icons/                   # SVG/ICO 资源（编译期嵌入）
+│       ├── benches/                 # 性能基准
+│       └── tests/
 ├── crates/
-│   ├── sc_host_windows/             # Host：Win32 事件泵 / 执行副作用 / UI / 系统集成 / 渲染后端
 │   ├── sc_app/                      # Core：Action/Effect + reducers（平台无关）
-│   ├── sc_ui/                       # 平台无关 UI（ViewState -> RenderList + hit-test）
-│   ├── sc_rendering/                # RenderList / 脏矩形等（平台无关）
+│   ├── sc_host_protocol/            # Host 命令/消息协议
+│   ├── sc_rendering/                # RenderList / dirty rect / types
+│   ├── sc_ui/                       # 平台无关 UI builders
 │   ├── sc_drawing/                  # 绘图 core（含 windows feature 的渲染/适配）
-│   ├── sc_platform/                 # 平台抽象（输入事件等）
-│   ├── sc_platform_windows/         # Windows 平台实现（D2D/GDI/system/dialog 等）
-│   └── sc_highlight/                # 窗口命中/auto-highlight 相关逻辑
+│   ├── sc_settings/                 # Settings 持久化 + ConfigManager
+│   ├── sc_platform/                 # 平台抽象（InputEvent / HostPlatform 等）
+│   ├── sc_platform_windows/         # Windows backend（D2D/GDI/dialog/tray/hotkeys/clipboard/win_api 等）
+│   ├── sc_highlight/                # 窗口/控件命中与 auto-highlight
+│   ├── sc_ocr/                      # OCR helpers
+│   ├── sc_drawing_host/             # 绘图编辑器 host 组件
+│   ├── sc_ui_windows/               # Windows UI 组件（toolbar/preview/settings）
+│   └── sc_host_windows/             # composition root（连接 core + platform + system integration）
 ├── models/                          # OCR 模型与运行时资源
 ├── Cargo.toml                       # Workspace
-└── ZED_GPUI_REFACTOR_STATUS.md      # 重构进度记录
+└── README.md
 ```
+
+更详细的架构/边界说明与重构进度记录请查看根目录的状态文档。
 
 ## 常用命令
 ```bash
-cargo run -p sc_windows --release   # 运行
-cargo test                          # 测试（整个 workspace）
-cargo test -p sc_host_windows       # 只测 host
-cargo test -p sc_app                # 只测 core
-cargo check -p sc_windows --benches # benches 编译检查
+cargo fmt --all                      # 格式化
+cargo check --workspace --all-targets # 全 workspace 编译检查
+cargo test --workspace                # 全 workspace 测试
+cargo clippy --workspace --all-targets# clippy（清理/静态检查）
+
+cargo run -p sc_windows --release     # 运行
+cargo test -p sc_host_windows         # 只测 host
+cargo test -p sc_app                  # 只测 core
+cargo check -p sc_windows --benches   # benches 编译检查
 ```
 
 ## 许可
