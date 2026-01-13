@@ -1,0 +1,22 @@
+[package]
+name = "sc_host_windows"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thiserror = "2"
+
+# Internal crates
+sc_app = { path = "../sc_app" }
+sc_drawing = { path = "../sc_drawing", features = ["windows"] }
+sc_drawing_host = { path = "../sc_drawing_host" }
+sc_highlight = { path = "../sc_highlight" }
+sc_host_protocol = { path = "../sc_host_protocol" }
+sc_ocr = { path = "../sc_ocr" }
+sc_rendering = { path = "../sc_rendering" }
+sc_settings = { path = "../sc_settings" }
+sc_ui_windows = { path = "../sc_ui_windows" }
+sc_platform = { path = "../sc_platform" }
+
+[target.'cfg(windows)'.dependencies]
+sc_platform_windows = { path = "../sc_platform_windows" }

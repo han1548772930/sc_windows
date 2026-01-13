@@ -1,0 +1,47 @@
+[package]
+name = "sc_ui_windows"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Windows UI host components (toolbar/icons/preview)"
+
+[dependencies]
+anyhow = "1.0"
+usvg = "0.42"
+tiny-skia = "0.11"
+resvg = "0.42"
+thiserror = "2"
+
+sc_app = { path = "../sc_app" }
+sc_ui = { path = "../sc_ui" }
+sc_ocr = { path = "../sc_ocr" }
+sc_drawing = { path = "../sc_drawing", features = ["windows"] }
+sc_drawing_host = { path = "../sc_drawing_host" }
+sc_host_protocol = { path = "../sc_host_protocol" }
+sc_platform = { path = "../sc_platform" }
+sc_settings = { path = "../sc_settings" }
+
+[target.'cfg(windows)'.dependencies]
+sc_platform_windows = { path = "../sc_platform_windows" }
+windows = { version = "0.62", features = [
+  "Win32",
+  "Win32_Foundation",
+  "Win32_Graphics",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_UI",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Input",
+  "Win32_UI_HiDpi",
+  "Win32_Graphics_Direct2D",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System",
+  "Win32_System_Threading",
+  "Win32_Graphics_DirectWrite",
+  "Win32_Graphics_Direct2D_Common",
+  "Win32_UI_Controls_Dialogs",
+  "Win32_UI_Controls",
+  "Win32_System_DataExchange",
+] }

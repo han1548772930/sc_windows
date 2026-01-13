@@ -1,0 +1,13 @@
+[package]
+name = "sc_rendering"
+version = "0.1.0"
+edition = "2024"
+description = "Rendering optimization utilities for sc_windows"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+
+[features]
+default = []

@@ -1,0 +1,12 @@
+[package]
+name = "sc_ocr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "OCR helpers (platform-neutral)"
+
+[dependencies]
+anyhow = "1.0"
+ocr-rs = "2.0"
+image = "0.25"
+sc_app = { path = "../sc_app" }

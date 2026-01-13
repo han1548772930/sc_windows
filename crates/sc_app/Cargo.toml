@@ -1,0 +1,9 @@
+[package]
+name = "sc_app"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Core application state/actions/effects (platform-neutral)"
+
+[dependencies]
+sc_drawing = { path = "../sc_drawing" }

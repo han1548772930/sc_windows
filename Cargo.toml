@@ -1,78 +1,21 @@
-[package]
-name = "sc_windows"
-version = "0.1.0"
-edition = "2024"
-build = "build.rs"
-
-
-[dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-windows-numerics = "0.3"
-usvg = "0.42"
-tiny-skia = "0.11"
-resvg = "0.42"
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
-anyhow = "1.0"
-thiserror = "2"
-parking_lot = "0.12"
-image = "0.25"
-reqwest = { version = "0.12", features = ["json"] }
-
-ocr-rs = "2.0"
-
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
-  "Win32",
-  "Win32_Graphics",
-  "Win32_Graphics_Gdi",
-  "Win32_Graphics_Dwm",
-  "Win32_System",
-  "Win32_System_LibraryLoader",
-  "Win32_System_DataExchange",
-  "Win32_System_Ole",
-  "Win32_System_Memory",
-  "Win32_System_Com",
-  "Win32_UI",
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_Graphics_Direct2D",
-  "Win32_Graphics_Dxgi",
-  "Win32_Graphics_Dxgi_Common",
-  "Win32_Graphics_Direct3D11",
-  "Win32_Graphics_Direct3D",
-  "Win32_Media",
-  "Foundation_Numerics",
-  "Win32_System_Threading",
-  "Win32_Graphics_DirectWrite",
-  "Win32_Graphics_Direct2D_Common",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_Input",
-  "Win32_UI_HiDpi",
-  "Win32_UI_Shell",
-  "Win32_UI_Shell_Common",
-  "Win32_UI_Controls_Dialogs",
-  "Win32_UI_Controls",
-  "Win32_Graphics_Gdi",
-  "Win32_System_SystemServices",
-  "Foundation",
-  "Foundation_Collections",
-  "Foundation_Metadata",
-] }
-
-[build-dependencies]
-embed-resource = "3"
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "rendering_bench"
-harness = false
-
-[[bench]]
-name = "capture_bench"
-harness = false
+[workspace]
+resolver = "3"
+members = [
+  "apps/sc_windows",
+  "crates/sc_host_windows",
+  "crates/sc_host_protocol",
+  "crates/sc_ocr",
+  "crates/sc_ui_windows",
+  "crates/sc_settings",
+  "crates/sc_drawing",
+  "crates/sc_drawing_host",
+  "crates/sc_rendering",
+  "crates/sc_highlight",
+  "crates/sc_app",
+  "crates/sc_ui",
+  "crates/sc_platform",
+  "crates/sc_platform_windows",
+]
 
 [profile.release]
 codegen-units = 1

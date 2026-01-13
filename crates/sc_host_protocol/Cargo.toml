@@ -1,0 +1,10 @@
+[package]
+name = "sc_host_protocol"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Host command/message protocol (platform-neutral)"
+
+[dependencies]
+sc_app = { path = "../sc_app" }
+sc_drawing = { path = "../sc_drawing" }
