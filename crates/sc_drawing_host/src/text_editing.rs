@@ -1,4 +1,4 @@
-use crate::constants::{MIN_TEXT_HEIGHT, MIN_TEXT_WIDTH, TEXT_LINE_HEIGHT_SCALE, TEXT_PADDING};
+use crate::constants::{MIN_TEXT_HEIGHT, MIN_TEXT_WIDTH, TEXT_LINE_HEIGHT_SCALE};
 use sc_host_protocol::Command;
 
 use super::{DrawingAction, DrawingElement, DrawingManager, DrawingTool};
@@ -82,8 +82,9 @@ impl DrawingManager {
         let font_size = text_element.font_size;
         // 与 update_text_element_size（以及渲染器的光标定位）保持一致的行高系数
         let dynamic_line_height = (font_size * TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
+        let padding = sc_drawing::windows::text_padding_for_font_size(font_size);
         let initial_width = (font_size * 6.0) as i32; // 大约6个字符的宽度
-        let initial_height = dynamic_line_height + (TEXT_PADDING * 2.0) as i32;
+        let initial_height = dynamic_line_height + (padding * 2.0).ceil() as i32;
 
         // 设置第二个点来定义文本框尺寸
         text_element.set_end_point(x + initial_width, y + initial_height);
@@ -432,7 +433,6 @@ impl DrawingManager {
                 element,
                 MIN_TEXT_WIDTH,
                 MIN_TEXT_HEIGHT,
-                TEXT_PADDING,
                 TEXT_LINE_HEIGHT_SCALE,
             );
         }

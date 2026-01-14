@@ -200,8 +200,8 @@ pub fn recognize_from_memory(engine: &OcrEngine, image_data: &[u8]) -> Result<Ve
             text: r.text,
             confidence: r.confidence,
             bounding_box: BoundingBox {
-                x: r.bbox.rect.left() as i32,
-                y: r.bbox.rect.top() as i32,
+                x: r.bbox.rect.left(),
+                y: r.bbox.rect.top(),
                 width: r.bbox.rect.width() as i32,
                 height: r.bbox.rect.height() as i32,
             },

@@ -87,6 +87,7 @@ pub fn show_folder_picker_dialog(hwnd: HWND, title: &str) -> FolderPickerOutcome
 /// Show a Win32 ChooseFont dialog.
 ///
 /// Returns `Some(selection)` when the user confirms; `None` when cancelled.
+#[allow(clippy::too_many_arguments)]
 pub fn show_font_dialog(
     hwnd: HWND,
     font_size: f32,
@@ -98,31 +99,34 @@ pub fn show_font_dialog(
     font_color: (u8, u8, u8),
 ) -> Option<FontDialogSelection> {
     unsafe {
-        // Create LOGFONTW
-        let mut log_font = LOGFONTW::default();
-
-        log_font.lfHeight = -(font_size as i32);
-        log_font.lfWeight = font_weight;
-        log_font.lfItalic = if font_italic { 1 } else { 0 };
-        log_font.lfUnderline = if font_underline { 1 } else { 0 };
-        log_font.lfStrikeOut = if font_strikeout { 1 } else { 0 };
+        // LOGFONTW
+        let mut log_font = LOGFONTW {
+            lfHeight: -(font_size as i32),
+            lfWeight: font_weight,
+            lfItalic: if font_italic { 1 } else { 0 },
+            lfUnderline: if font_underline { 1 } else { 0 },
+            lfStrikeOut: if font_strikeout { 1 } else { 0 },
+            ..Default::default()
+        };
 
         // Copy face name (keep legacy semantics to avoid behavior change).
         let font_name_wide = to_wide_chars(font_name);
-        let copy_len = std::cmp::min(font_name_wide.len(), 31); // LF_FACESIZE - 1
-        for i in 0..copy_len {
-            log_font.lfFaceName[i] = font_name_wide[i];
-        }
+        let copy_len = std::cmp::min(font_name_wide.len(), log_font.lfFaceName.len() - 1);
+        log_font.lfFaceName[..copy_len].copy_from_slice(&font_name_wide[..copy_len]);
 
         // CHOOSEFONTW
-        let mut choose_font = CHOOSEFONTW::default();
-        choose_font.lStructSize = std::mem::size_of::<CHOOSEFONTW>() as u32;
-        choose_font.hwndOwner = hwnd;
-        choose_font.lpLogFont = &mut log_font;
-        choose_font.Flags = CF_EFFECTS | CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT;
-        choose_font.rgbColors = COLORREF(
-            (font_color.0 as u32) | ((font_color.1 as u32) << 8) | ((font_color.2 as u32) << 16),
-        );
+        let mut choose_font = CHOOSEFONTW {
+            lStructSize: std::mem::size_of::<CHOOSEFONTW>() as u32,
+            hwndOwner: hwnd,
+            lpLogFont: &mut log_font,
+            Flags: CF_EFFECTS | CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT,
+            rgbColors: COLORREF(
+                (font_color.0 as u32)
+                    | ((font_color.1 as u32) << 8)
+                    | ((font_color.2 as u32) << 16),
+            ),
+            ..Default::default()
+        };
 
         if !ChooseFontW(&mut choose_font).as_bool() {
             return None;

@@ -121,11 +121,20 @@ pub fn apply_color_to_pixels(pixels: &mut [u8], color: (u8, u8, u8), format: Pix
     };
 
     for chunk in pixels.chunks_mut(4) {
-        if chunk.len() == 4 && chunk[3] > 0 {
-            // 只修改非透明像素
-            chunk[r_idx] = r;
-            chunk[g_idx] = g;
-            chunk[b_idx] = b;
+        if chunk.len() != 4 {
+            continue;
         }
+
+        let a = chunk[3] as u16;
+        if a == 0 {
+            continue;
+        }
+
+        // Direct2D 位图这里使用的是 D2D1_ALPHA_MODE_PREMULTIPLIED。
+        // tiny-skia/resvg 渲染输出也是预乘 alpha。
+        // 所以在做颜色覆盖时必须保持预乘，否则在半透明边缘会出现发白/锯齿光晕。
+        chunk[r_idx] = ((r as u16 * a + 127) / 255) as u8;
+        chunk[g_idx] = ((g as u16 * a + 127) / 255) as u8;
+        chunk[b_idx] = ((b as u16 * a + 127) / 255) as u8;
     }
 }

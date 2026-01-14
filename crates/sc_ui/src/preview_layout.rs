@@ -26,6 +26,8 @@ impl PreviewIconLayout {
 }
 
 pub const ICON_PIN: &str = "pin";
+pub const ICON_OCR: &str = "extracttext";
+pub const ICON_SAVE: &str = "download";
 
 pub const ICON_WINDOW_CLOSE: &str = "window-close";
 pub const ICON_WINDOW_MAXIMIZE: &str = "window-maximize";
@@ -66,7 +68,7 @@ pub fn create_left_icons() -> Vec<PreviewIconLayout> {
     icon_x += ICON_SIZE + LEFT_ICON_SEPARATOR_WIDTH;
 
     // Drawing tool icons.
-    for name in PREVIEW_DRAWING_TOOL_ICONS {
+    for (i, name) in PREVIEW_DRAWING_TOOL_ICONS.iter().enumerate() {
         icons.push(PreviewIconLayout {
             name,
             rect: RectI32 {
@@ -77,8 +79,37 @@ pub fn create_left_icons() -> Vec<PreviewIconLayout> {
             },
             kind: PreviewIconKind::Left,
         });
-        icon_x += ICON_SIZE + LEFT_ICON_SPACING;
+        icon_x += ICON_SIZE;
+        if i + 1 < PREVIEW_DRAWING_TOOL_ICONS.len() {
+            icon_x += LEFT_ICON_SPACING;
+        }
     }
+
+    // OCR icon.
+    icon_x += LEFT_ICON_SEPARATOR_WIDTH;
+    icons.push(PreviewIconLayout {
+        name: ICON_OCR,
+        rect: RectI32 {
+            left: icon_x,
+            top: icon_y,
+            right: icon_x + ICON_SIZE,
+            bottom: icon_y + ICON_SIZE,
+        },
+        kind: PreviewIconKind::Left,
+    });
+    icon_x += ICON_SIZE + LEFT_ICON_SPACING;
+
+    // Save icon.
+    icons.push(PreviewIconLayout {
+        name: ICON_SAVE,
+        rect: RectI32 {
+            left: icon_x,
+            top: icon_y,
+            right: icon_x + ICON_SIZE,
+            bottom: icon_y + ICON_SIZE,
+        },
+        kind: PreviewIconKind::Left,
+    });
 
     icons
 }

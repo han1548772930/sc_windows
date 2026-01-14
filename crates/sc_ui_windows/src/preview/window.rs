@@ -1,63 +1,99 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
 use anyhow::Result;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, GetSystemMetricsForDpi, PROCESS_PER_MONITOR_DPI_AWARE, SetProcessDpiAwareness,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use sc_platform::{CursorIcon, HostPlatform, WindowId};
-use sc_platform_windows::windows::WindowsHostPlatform;
-
-use sc_ui::preview_layout;
-
-use super::drawing::PreviewDrawingState;
-use super::renderer::PreviewRenderer;
-use super::types::{MARGINS, SvgIcon};
-use crate::constants::{
-    BUTTON_WIDTH_OCR, ICON_CLICK_PADDING, ICON_HOVER_PADDING, ICON_SIZE, TITLE_BAR_HEIGHT,
-};
 use sc_app::selection::RectI32;
 use sc_drawing_host::{DragMode, DrawingConfig, DrawingTool};
 use sc_ocr::OcrResult;
+use sc_platform::{CursorIcon, HostPlatform, WindowId};
+use sc_platform_windows::windows::WindowsHostPlatform;
+use sc_settings::Settings;
+use sc_ui::preview_layout;
+
+use super::drawing::PreviewDrawingState;
+use super::hit_test::icon_contains_hover_point;
+use super::renderer::PreviewRenderer;
+use super::types::{Margins, SvgIcon};
+use crate::constants::{
+    ICON_SIZE, OCR_CONTENT_PADDING_BOTTOM, OCR_CONTENT_PADDING_TOP, OCR_CONTENT_PADDING_X,
+    OCR_PANEL_GAP, OCR_TEXT_LINE_HEIGHT, OCR_TEXT_PANEL_WIDTH, TITLE_BAR_HEIGHT,
+};
 
 /// 预览显示窗口 (支持 OCR 结果和 Pin 模式)
 pub struct PreviewWindow;
 
-struct PreviewWindowState {
-    hwnd: HWND,
-    // 原始图像数据，用于D2D位图创建
-    image_pixels: Vec<u8>,
-    image_width: i32,
-    image_height: i32,
-    text_area_rect: RECT,    // 文字显示区域
-    window_width: i32,       // 窗口宽度
-    window_height: i32,      // 窗口高度
-    is_maximized: bool,      // 是否最大化
-    svg_icons: Vec<SvgIcon>, // SVG 图标列表（包括左侧图标和标题栏按钮）
+pub(super) const WM_APP_PREVIEW_OCR_DONE: u32 = WM_APP + 300;
+
+#[derive(Debug, Clone)]
+struct OcrResponse {
+    text: String,
+}
+
+static PREVIEW_HWND: OnceLock<Mutex<Option<WindowId>>> = OnceLock::new();
+static OCR_RESPONSES: OnceLock<Mutex<HashMap<u64, OcrResponse>>> = OnceLock::new();
+static OCR_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_ocr_request_id() -> u64 {
+    OCR_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+fn preview_hwnd_store() -> &'static Mutex<Option<WindowId>> {
+    PREVIEW_HWND.get_or_init(|| Mutex::new(None))
+}
+
+fn ocr_response_store() -> &'static Mutex<HashMap<u64, OcrResponse>> {
+    OCR_RESPONSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) struct PreviewWindowState {
+    pub(super) hwnd: HWND,
+    // 原始图像数据，用于 D2D 位图创建
+    pub(super) image_pixels: Vec<u8>,
+    pub(super) image_width: i32,
+    pub(super) image_height: i32,
+
+    pub(super) text_area_rect: RectI32,
+    pub(super) window_width: i32,
+    pub(super) window_height: i32,
+    pub(super) is_maximized: bool,
+    pub(super) svg_icons: Vec<SvgIcon>,
 
     // 自绘文本相关
-    text_content: String,    // 文本内容
-    scroll_offset: i32,      // 垂直滚动偏移量
-    line_height: i32,        // 行高
-    text_lines: Vec<String>, // 分行后的文本
+    pub(super) text_content: String,
+    pub(super) scroll_offset: i32,
+    pub(super) line_height: i32,
+    pub(super) text_lines: Vec<String>,
 
     // 文本选择相关
-    is_selecting: bool,                      // 是否正在选择文本
-    selection_start: Option<(usize, usize)>, // 选择开始位置 (行号, 字符位置)
-    selection_end: Option<(usize, usize)>,   // 选择结束位置 (行号, 字符位置)
+    pub(super) is_selecting: bool,
+    pub(super) selection_start: Option<(usize, usize)>,
+    pub(super) selection_end: Option<(usize, usize)>,
 
     // 置顶/Pin 状态
-    is_pinned: bool,      // 是否置顶
-    show_text_area: bool, // 是否显示文本区域
+    pub(super) is_pinned: bool,
+    pub(super) show_text_area: bool,
+
+    // OCR (triggered from within the preview window)
+    pub(super) ocr_source_bmp_data: Vec<u8>,
+    pub(super) ocr_cached_text: Option<String>,
+    pub(super) ocr_in_flight: bool,
+    pub(super) ocr_request_id: u64,
 
     // Direct2D 渲染器
-    renderer: Option<PreviewRenderer>,
+    pub(super) renderer: Option<PreviewRenderer>,
 
     // 绘图功能
-    drawing_state: Option<PreviewDrawingState>,
+    pub(super) drawing_state: Option<PreviewDrawingState>,
 }
 
 impl PreviewWindow {
@@ -67,6 +103,7 @@ impl PreviewWindow {
         selection_rect: RectI32,
         is_pin_mode: bool,
         drawing_config: DrawingConfig,
+        ocr_source_bmp_data: Option<Vec<u8>>,
     ) -> Result<()> {
         PreviewWindowState::show(
             image_data,
@@ -74,11 +111,81 @@ impl PreviewWindow {
             selection_rect,
             is_pin_mode,
             drawing_config,
+            ocr_source_bmp_data,
         )
     }
 }
 
 impl PreviewWindowState {
+    pub(super) fn window_id(&self) -> WindowId {
+        sc_platform_windows::windows::window_id(self.hwnd)
+    }
+
+    pub(super) fn min_window_width_for_title_bar() -> i32 {
+        // Ensure the window is wide enough to fit all left title-bar icons and the 3 right-side
+        // title-bar buttons, plus a small gap between the groups.
+        let left_max_right = preview_layout::create_left_icons()
+            .iter()
+            .map(|i| i.rect.right)
+            .max()
+            .unwrap_or(0);
+
+        let right_buttons_width = 3 * crate::constants::BUTTON_WIDTH_OCR;
+
+        // Extra breathing room between the left icon group and the right window buttons.
+        let gap = crate::constants::LEFT_ICON_SPACING;
+
+        left_max_right + gap + right_buttons_width
+    }
+
+    fn existing_hwnd() -> Option<HWND> {
+        let window_id = preview_hwnd_store()
+            .lock()
+            .map(|g| *g)
+            .unwrap_or_else(|e| *e.into_inner());
+
+        window_id.map(sc_platform_windows::windows::hwnd)
+    }
+
+    fn set_singleton_hwnd(hwnd: HWND) {
+        let mut guard = preview_hwnd_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(sc_platform_windows::windows::window_id(hwnd));
+    }
+
+    pub(super) fn clear_singleton_hwnd(hwnd: HWND) {
+        let target_id = sc_platform_windows::windows::window_id(hwnd);
+        let mut guard = preview_hwnd_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if (*guard).map_or(false, |id| id == target_id) {
+            *guard = None;
+        }
+    }
+
+    fn take_ocr_response(request_id: u64) -> Option<OcrResponse> {
+        let mut guard = ocr_response_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.remove(&request_id)
+    }
+
+    pub(super) fn clear_ocr_responses() {
+        let mut guard = ocr_response_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+    }
+
+    fn ocr_text_from_results(ocr_results: &[OcrResult]) -> String {
+        ocr_results
+            .iter()
+            .map(|r| r.text.trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn cursor_from_drag_mode(drag_mode: DragMode) -> Option<CursorIcon> {
         match drag_mode {
             DragMode::ResizingTopLeft | DragMode::ResizingBottomRight => Some(CursorIcon::SizeNWSE),
@@ -97,14 +204,11 @@ impl PreviewWindowState {
     fn determine_cursor(&self, x: i32, y: i32) -> CursorIcon {
         // 1) Title-bar icons
         if (0..=TITLE_BAR_HEIGHT).contains(&y) {
-            let pad = ICON_HOVER_PADDING;
-            let over_icon = self.svg_icons.iter().any(|icon| {
-                x >= icon.rect.left - pad
-                    && x <= icon.rect.right + pad
-                    && y >= icon.rect.top - pad
-                    && y <= icon.rect.bottom + pad
-            });
-            if over_icon {
+            if self
+                .svg_icons
+                .iter()
+                .any(|icon| icon_contains_hover_point(icon, x, y))
+            {
                 return CursorIcon::Hand;
             }
             return CursorIcon::Arrow;
@@ -130,45 +234,43 @@ impl PreviewWindowState {
 
             // 3.2) Text editing mode
             if manager.is_text_editing() {
-                if let Some(edit_idx) = manager.get_editing_element_index() {
-                    if let Some(element) = manager.get_element_ref(edit_idx) {
-                        let handle_mode = manager.get_element_handle_at_position(
-                            x,
-                            y,
-                            &element.rect,
-                            element.tool,
-                            edit_idx,
-                        );
-                        return Self::cursor_from_drag_mode(handle_mode)
-                            .unwrap_or(CursorIcon::IBeam);
-                    }
-                }
-                return CursorIcon::IBeam;
-            }
-
-            // 3.3) Selected element handles / move
-            if let Some(sel_idx) = manager.get_selected_element_index() {
-                if let Some(element) = manager.get_element_ref(sel_idx) {
+                if let Some(edit_idx) = manager.get_editing_element_index()
+                    && let Some(element) = manager.get_element_ref(edit_idx)
+                {
                     let handle_mode = manager.get_element_handle_at_position(
                         x,
                         y,
                         &element.rect,
                         element.tool,
-                        sel_idx,
+                        edit_idx,
                     );
-                    if handle_mode != DragMode::None {
-                        return Self::cursor_from_drag_mode(handle_mode)
-                            .unwrap_or(CursorIcon::Arrow);
-                    }
+                    return Self::cursor_from_drag_mode(handle_mode).unwrap_or(CursorIcon::IBeam);
+                }
+                return CursorIcon::IBeam;
+            }
 
-                    if element.contains_point(x, y) {
-                        // Text is draggable but we keep arrow to avoid implying edit-on-click.
-                        return if element.tool == DrawingTool::Text {
-                            CursorIcon::Arrow
-                        } else {
-                            CursorIcon::SizeAll
-                        };
-                    }
+            // 3.3) Selected element handles / move
+            if let Some(sel_idx) = manager.get_selected_element_index()
+                && let Some(element) = manager.get_element_ref(sel_idx)
+            {
+                let handle_mode = manager.get_element_handle_at_position(
+                    x,
+                    y,
+                    &element.rect,
+                    element.tool,
+                    sel_idx,
+                );
+                if handle_mode != DragMode::None {
+                    return Self::cursor_from_drag_mode(handle_mode).unwrap_or(CursorIcon::Arrow);
+                }
+
+                if element.contains_point(x, y) {
+                    // Text is draggable but we keep arrow to avoid implying edit-on-click.
+                    return if element.tool == DrawingTool::Text {
+                        CursorIcon::Arrow
+                    } else {
+                        CursorIcon::SizeAll
+                    };
                 }
             }
 
@@ -200,11 +302,11 @@ impl PreviewWindowState {
         CursorIcon::Arrow
     }
 
-    fn update_cursor(&self, x: i32, y: i32) {
+    pub(super) fn update_cursor(&self, x: i32, y: i32) {
         WindowsHostPlatform::new().set_cursor(self.determine_cursor(x, y));
     }
-    // 获取窗口边框厚度
-    fn get_frame_thickness(hwnd: HWND) -> i32 {
+
+    pub(super) fn get_frame_thickness(hwnd: HWND) -> i32 {
         unsafe {
             let dpi = GetDpiForWindow(hwnd);
             let resize_frame = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi);
@@ -213,13 +315,10 @@ impl PreviewWindowState {
         }
     }
 
-    /// 清理所有资源
-    fn cleanup_all_resources(&mut self) {
-        // 清理SVG图标列表
+    pub(super) fn cleanup_all_resources(&mut self) {
         self.svg_icons.clear();
     }
 
-    /// 创建左侧图标（仅位置和名称）
     fn create_left_icons() -> Vec<SvgIcon> {
         preview_layout::create_left_icons()
             .into_iter()
@@ -233,7 +332,6 @@ impl PreviewWindowState {
             .collect()
     }
 
-    /// 更新工具栏图标选中状态
     fn update_tool_icons(&mut self) {
         let current_tool = self
             .drawing_state
@@ -246,55 +344,292 @@ impl PreviewWindowState {
                 icon.name.as_str(),
                 "square" | "circle" | "move-up-right" | "pen" | "type"
             );
+
             if is_drawing_tool_icon {
-                icon.selected = match (icon.name.as_str(), current_tool) {
-                    ("square", DrawingTool::Rectangle) => true,
-                    ("circle", DrawingTool::Circle) => true,
-                    ("move-up-right", DrawingTool::Arrow) => true,
-                    ("pen", DrawingTool::Pen) => true,
-                    ("type", DrawingTool::Text) => true,
-                    _ => false,
-                };
+                icon.selected = matches!(
+                    (icon.name.as_str(), current_tool),
+                    ("square", DrawingTool::Rectangle)
+                        | ("circle", DrawingTool::Circle)
+                        | ("move-up-right", DrawingTool::Arrow)
+                        | ("pen", DrawingTool::Pen)
+                        | ("type", DrawingTool::Text)
+                );
+                continue;
+            }
+
+            // OCR icon: selected means the right-side text panel is visible.
+            if icon.name == "extracttext" {
+                icon.selected = self.show_text_area;
             }
         }
     }
 
-    /// 切换绘图工具
-    fn switch_drawing_tool(&mut self, tool: DrawingTool) {
+    pub(super) fn switch_drawing_tool(&mut self, tool: DrawingTool) {
         if let Some(ref mut ds) = self.drawing_state {
             ds.switch_tool(tool);
         }
         self.update_tool_icons();
     }
 
-    /// 调整图标位置使其居中（简化版本，参考test.rs）
-    fn center_icons(&mut self) {
-        // 重新计算图标位置，确保在标题栏中居中
-        for icon in &mut self.svg_icons {
-            if !icon.is_title_bar_button {
-                // 对于左侧图标，重新计算Y位置使其居中
-                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-                let icon_height = icon.rect.bottom - icon.rect.top;
-                icon.rect.top = icon_y;
-                icon.rect.bottom = icon.rect.top + icon_height;
-            } else {
-                // 对于标题栏按钮，也重新计算Y位置
-                let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-                let icon_height = icon.rect.bottom - icon.rect.top;
-                icon.rect.top = icon_y;
-                icon.rect.bottom = icon.rect.top + icon_height;
+    pub(super) fn toggle_ocr_text_panel(&mut self) {
+        // Reset text selection state when toggling panel visibility.
+        self.is_selecting = false;
+        self.selection_start = None;
+        self.selection_end = None;
+
+        if self.show_text_area {
+            // Hide panel (keep cached OCR).
+            self.show_text_area = false;
+        } else {
+            // Show panel.
+            self.show_text_area = true;
+
+            // Prefer cached OCR results.
+            if let Some(cached) = self.ocr_cached_text.clone() {
+                self.text_content = cached;
+            } else if !self.ocr_in_flight {
+                // No cache: start OCR.
+                self.text_content = "识别中...".to_string();
+                self.text_lines = vec![self.text_content.clone()];
+                self.start_ocr_async();
             }
+        }
+
+        // Resize to match the two modes (same as initial window sizing in `show`).
+        // If the window is maximized, keep the current size and only toggle layout.
+        if !self.is_maximized {
+            let (mut new_width, new_height) = if self.show_text_area {
+                (
+                    self.image_width
+                        + OCR_CONTENT_PADDING_X * 2
+                        + OCR_TEXT_PANEL_WIDTH
+                        + OCR_PANEL_GAP,
+                    TITLE_BAR_HEIGHT
+                        + self.image_height
+                        + OCR_CONTENT_PADDING_TOP
+                        + OCR_CONTENT_PADDING_BOTTOM,
+                )
+            } else {
+                (self.image_width, TITLE_BAR_HEIGHT + self.image_height)
+            };
+
+            new_width = new_width.max(Self::min_window_width_for_title_bar());
+
+            self.window_width = new_width;
+            self.window_height = new_height;
+
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    0,
+                    0,
+                    new_width,
+                    new_height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+
+        self.update_title_bar_buttons();
+        self.recalculate_layout();
+
+        // Always refresh text wrapping when showing the panel (even if the rect didn't change).
+        if self.show_text_area {
+            if let Some(renderer) = &self.renderer {
+                let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
+                self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
+            } else {
+                self.text_lines = vec![self.text_content.clone()];
+            }
+        }
+
+        self.update_tool_icons();
+    }
+
+    fn start_ocr_async(&mut self) {
+        // Mark in-flight and assign a monotonically-increasing request id so stale results can be ignored.
+        self.ocr_in_flight = true;
+        let request_id = next_ocr_request_id();
+        self.ocr_request_id = request_id;
+
+        let window_id = self.window_id();
+        let image_data = self.ocr_source_bmp_data.clone();
+
+        std::thread::spawn(move || {
+            let text = Self::run_ocr_in_background(&image_data);
+
+            {
+                let mut guard = ocr_response_store()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                guard.insert(request_id, OcrResponse { text });
+            }
+
+            let hwnd = sc_platform_windows::windows::hwnd(window_id);
+            let posted = unsafe {
+                PostMessageW(
+                    Some(hwnd),
+                    WM_APP_PREVIEW_OCR_DONE,
+                    WPARAM(request_id as usize),
+                    LPARAM(0),
+                )
+                .is_ok()
+            };
+
+            // If the window is gone, drop the cached response to avoid leaking.
+            if !posted {
+                let mut guard = ocr_response_store()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let _ = guard.remove(&request_id);
+            }
+        });
+    }
+
+    fn run_ocr_in_background(image_data: &[u8]) -> String {
+        // Load settings (language selection).
+        let settings = Settings::load();
+        let config = sc_ocr::OcrConfig::new("models", settings.ocr_language);
+
+        if !sc_ocr::models_exist(&config) {
+            return "OCR 引擎不可用（缺少模型文件）".to_string();
+        }
+
+        let engine = match sc_ocr::create_engine(&config) {
+            Ok(engine) => engine,
+            Err(e) => return format!("OCR 引擎启动失败: {e}"),
+        };
+
+        match sc_ocr::recognize_from_memory(&engine, image_data) {
+            Ok(results) => {
+                let text = Self::ocr_text_from_results(&results);
+                if text.trim().is_empty() {
+                    "未识别到任何文字".to_string()
+                } else {
+                    text
+                }
+            }
+            Err(e) => format!("OCR识别失败: {e}"),
         }
     }
 
-    /// 更新标题栏按钮状态
-    fn update_title_bar_buttons(&mut self) {
+    pub(super) fn handle_ocr_done_message(&mut self, request_id: u64) {
+        let Some(resp) = Self::take_ocr_response(request_id) else {
+            return;
+        };
+
+        // Ignore stale results (window content may have changed).
+        if request_id != self.ocr_request_id {
+            return;
+        }
+
+        self.ocr_in_flight = false;
+        self.ocr_cached_text = Some(resp.text.clone());
+        self.text_content = resp.text;
+
+        // Reset selection/scroll when new OCR text arrives.
+        self.scroll_offset = 0;
+        self.is_selecting = false;
+        self.selection_start = None;
+        self.selection_end = None;
+
+        if self.show_text_area {
+            if let Some(renderer) = &self.renderer {
+                let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
+                self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
+            } else {
+                self.text_lines = vec![self.text_content.clone()];
+            }
+
+            let window_id = self.window_id();
+            let rect = self.text_area_rect;
+            let _ = WindowsHostPlatform::new().request_redraw_rect(
+                window_id,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+            );
+        }
+    }
+
+    pub(super) fn save_image_to_file(&mut self) {
+        let window_id = self.window_id();
+        let platform = WindowsHostPlatform::new();
+
+        // NOTE: current export format is BMP bytes.
+        let file_path = match platform.show_image_save_dialog(window_id, "screenshot.bmp") {
+            Ok(path) => path,
+            Err(e) => {
+                let msg = format!("无法打开保存对话框: {e}");
+                platform.show_error_message(window_id, "保存失败", &msg);
+                return;
+            }
+        };
+
+        let Some(file_path) = file_path else {
+            // User cancelled.
+            return;
+        };
+
+        let image_area_rect = self
+            .drawing_state
+            .as_ref()
+            .map(|ds| ds.image_area_rect)
+            .unwrap_or(RectI32 {
+                left: 0,
+                top: TITLE_BAR_HEIGHT,
+                right: self.image_width,
+                bottom: TITLE_BAR_HEIGHT + self.image_height,
+            });
+
+        let Some(renderer) = self.renderer.as_mut() else {
+            platform.show_error_message(window_id, "保存失败", "渲染器未初始化");
+            return;
+        };
+
+        if let Err(e) =
+            renderer.set_image_from_pixels(&self.image_pixels, self.image_width, self.image_height)
+        {
+            let msg = format!("初始化位图失败: {e:?}");
+            platform.show_error_message(window_id, "保存失败", &msg);
+            return;
+        }
+
+        let bmp_data =
+            match renderer.render_image_area_to_bmp(image_area_rect, self.drawing_state.as_mut()) {
+                Ok(data) => data,
+                Err(e) => {
+                    let msg = format!("导出图片失败: {e:?}");
+                    platform.show_error_message(window_id, "保存失败", &msg);
+                    return;
+                }
+            };
+
+        if let Err(e) = std::fs::write(&file_path, &bmp_data) {
+            let msg = format!("写入文件失败: {e}");
+            platform.show_error_message(window_id, "保存失败", &msg);
+        }
+    }
+
+    fn center_icons(&mut self) {
+        let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
+
+        for icon in &mut self.svg_icons {
+            let icon_height = icon.rect.bottom - icon.rect.top;
+            icon.rect.top = icon_y;
+            icon.rect.bottom = icon_y + icon_height;
+        }
+    }
+
+    pub(super) fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
 
         // 移除旧的标题栏按钮，保留左侧图标
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
 
-        // 确保有左侧图标并更新它们的位置
+        // 确保有左侧图标
         let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
         if !has_left_icons {
             let mut left_icons = Self::create_left_icons();
@@ -304,7 +639,6 @@ impl PreviewWindowState {
         // 更新所有左侧图标的位置
         for icon in &mut self.svg_icons {
             if !icon.is_title_bar_button {
-                // 左侧图标在标题栏内垂直居中
                 let new_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
                 let icon_height = icon.rect.bottom - icon.rect.top;
                 icon.rect.top = new_y;
@@ -315,9 +649,11 @@ impl PreviewWindowState {
         // 创建新的标题栏按钮
         let mut title_bar_buttons = self.create_title_bar_buttons(window_width, self.is_maximized);
         self.svg_icons.append(&mut title_bar_buttons);
+
+        // Keep selected states in sync after rebuilding icons.
+        self.update_tool_icons();
     }
 
-    /// 创建标题栏按钮
     fn create_title_bar_buttons(&self, window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
         preview_layout::create_title_bar_buttons(window_width, is_maximized)
             .into_iter()
@@ -331,123 +667,216 @@ impl PreviewWindowState {
             .collect()
     }
 
-    /// 重新计算窗口布局
-    fn recalculate_layout(&mut self) {
-        // 右边文字区域宽度
-        let text_area_width = if self.show_text_area { 350 } else { 0 };
-
-        // 左边图像区域宽度
-        // 注意：这里的image_area_width是为图像预留的区域宽度，不是图像实际显示宽度
-        let margin = if self.show_text_area { 20 } else { 0 };
-        let image_area_width = self.window_width - text_area_width - margin;
-
-        // 计算图片显示区域（用于绘图限制）
-        let image_area_rect = if !self.show_text_area {
-            // Pin 模式：图片占满标题栏下方
-            RECT {
-                left: 0,
-                top: TITLE_BAR_HEIGHT,
-                right: self.image_width,
-                bottom: TITLE_BAR_HEIGHT + self.image_height,
-            }
-        } else {
-            // OCR 模式：图片在左侧区域居中
-            let available_width = (image_area_width - 40) as f32;
-            let available_height = (self.window_height - TITLE_BAR_HEIGHT - 40) as f32;
-            let start_y = TITLE_BAR_HEIGHT + 10;
-
-            let scale_x = available_width / self.image_width as f32;
-            let scale_y = available_height / self.image_height as f32;
-            let scale = scale_x.min(scale_y).min(1.0);
-
-            let display_w = (self.image_width as f32 * scale) as i32;
-            let display_h = (self.image_height as f32 * scale) as i32;
-
-            let left_area_center_x = 20 + (available_width as i32) / 2;
-            let x = left_area_center_x - display_w / 2;
-            let y = start_y + ((available_height as i32) - display_h) / 2;
-
-            RECT {
-                left: x,
-                top: y,
-                right: x + display_w,
-                bottom: y + display_h,
-            }
-        };
-
-        // 更新绘图状态的图片区域
-        if let Some(ref mut ds) = self.drawing_state {
-            ds.set_image_area(image_area_rect);
-        }
-
-        if self.show_text_area {
-            // 计算文字显示区域（简化版本）
-            let title_bar_height = TITLE_BAR_HEIGHT;
-            let text_padding_left = 20;
-            let text_padding_right = 20;
-            let text_padding_top = title_bar_height + 15;
-            let text_padding_bottom = 15;
-
-            let new_text_area_rect = RECT {
-                left: image_area_width + text_padding_left,
-                top: text_padding_top,
-                right: self.window_width - text_padding_right,
-                bottom: self.window_height - text_padding_bottom,
-            };
-
-            // 只有在文本区域真正改变时才重新计算文本布局
-            if new_text_area_rect.left != self.text_area_rect.left
-                || new_text_area_rect.top != self.text_area_rect.top
-                || new_text_area_rect.right != self.text_area_rect.right
-                || new_text_area_rect.bottom != self.text_area_rect.bottom
-            {
-                self.text_area_rect = new_text_area_rect;
-
-                // 重新计算文本换行
-                if let Some(renderer) = &mut self.renderer {
-                    // 确保渲染器已初始化
-                    let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
-                    self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
-                } else {
-                    // Fallback if renderer not available
-                    self.text_lines = vec![self.text_content.clone()];
-                }
-
-                // 调整滚动偏移量，确保不超出范围
-                let max_scroll = (self.text_lines.len() as i32 * self.line_height)
-                    - (self.text_area_rect.bottom - self.text_area_rect.top);
-                if self.scroll_offset > max_scroll.max(0) {
-                    self.scroll_offset = max_scroll.max(0);
-                }
-
-                // 标记需要重绘
-                let _ = WindowsHostPlatform::new().request_redraw_rect(
-                    WindowId::from_raw(self.hwnd.0 as usize),
-                    self.text_area_rect.left,
-                    self.text_area_rect.top,
-                    self.text_area_rect.right,
-                    self.text_area_rect.bottom,
-                );
-            }
-        }
-    }
-
-    pub fn show(
+    unsafe fn update_existing_window(
+        existing_hwnd: HWND,
         image_data: Vec<u8>,
         ocr_results: Vec<OcrResult>,
         selection_rect: RectI32,
         is_pin_mode: bool,
         drawing_config: DrawingConfig,
+        ocr_source_bmp_data: Option<Vec<u8>>,
+    ) -> Result<()> {
+        if existing_hwnd.0.is_null() || !unsafe { IsWindow(Some(existing_hwnd)).as_bool() } {
+            return Err(anyhow::anyhow!("existing preview hwnd is invalid"));
+        }
+
+        let window_ptr =
+            unsafe { GetWindowLongPtrW(existing_hwnd, GWLP_USERDATA) as *mut PreviewWindowState };
+        if window_ptr.is_null() {
+            return Err(anyhow::anyhow!("existing preview window state is null"));
+        }
+
+        // 解析图片与计算尺寸
+        let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
+
+        let text_content = Self::ocr_text_from_results(&ocr_results);
+        let show_text_area = !is_pin_mode || !text_content.is_empty();
+
+        // 布局计算
+        let (mut window_width, window_height) = if show_text_area {
+            let text_area_width = OCR_TEXT_PANEL_WIDTH;
+            let image_area_width = actual_width + OCR_CONTENT_PADDING_X * 2;
+            let margin = OCR_PANEL_GAP;
+            let content_padding_top = OCR_CONTENT_PADDING_TOP;
+            let content_padding_bottom = OCR_CONTENT_PADDING_BOTTOM;
+            (
+                image_area_width + text_area_width + margin,
+                TITLE_BAR_HEIGHT + content_padding_top + actual_height + content_padding_bottom,
+            )
+        } else {
+            (actual_width, TITLE_BAR_HEIGHT + actual_height)
+        };
+
+        window_width = window_width.max(Self::min_window_width_for_title_bar());
+
+        // 计算位置
+        let (screen_width, screen_height) = WindowsHostPlatform::new().screen_size();
+        let mut window_x = selection_rect.right + 20;
+        let mut window_y = selection_rect.top;
+
+        if is_pin_mode {
+            window_x = selection_rect.left;
+            window_y = selection_rect.top;
+        } else {
+            if window_x + window_width > screen_width {
+                window_x = selection_rect.left - window_width - 20;
+                if window_x < 0 {
+                    window_x = 50;
+                }
+            }
+            if window_y + window_height > screen_height {
+                window_y = screen_height - window_height - 50;
+                if window_y < 0 {
+                    window_y = 50;
+                }
+            }
+        }
+
+        if window_x + window_width > screen_width {
+            window_x = screen_width - window_width;
+        }
+        if window_y + window_height > screen_height {
+            window_y = screen_height - window_height;
+        }
+        window_x = window_x.max(0);
+        window_y = window_y.max(0);
+
+        let window_id = sc_platform_windows::windows::window_id(existing_hwnd);
+        let platform = WindowsHostPlatform::new();
+
+        // Update topmost flag for pin mode.
+        let _ = platform.set_window_topmost_flag(window_id, is_pin_mode);
+
+        // Resize/move the window.
+        let _ = unsafe {
+            SetWindowPos(
+                existing_hwnd,
+                None,
+                window_x,
+                window_y,
+                window_width,
+                window_height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+
+        // Update in-place.
+        // SAFETY: we validated `window_ptr` is non-null above and it is owned by this window.
+        let window = unsafe { &mut *window_ptr };
+
+        window.image_pixels = image_pixels;
+        window.image_width = actual_width;
+        window.image_height = actual_height;
+
+        window.text_area_rect = RectI32 {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        window.window_width = window_width;
+        window.window_height = window_height;
+        window.scroll_offset = 0;
+        window.text_lines.clear();
+
+        window.is_selecting = false;
+        window.selection_start = None;
+        window.selection_end = None;
+
+        window.is_pinned = is_pin_mode;
+        window.show_text_area = show_text_area;
+
+        // OCR state (new content resets cache).
+        window.ocr_request_id = next_ocr_request_id();
+        window.ocr_in_flight = false;
+        window.ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
+        window.ocr_cached_text = if text_content.is_empty() {
+            None
+        } else {
+            Some(text_content.clone())
+        };
+
+        window.text_content = text_content;
+
+        // Reset icons.
+        window.svg_icons = Self::create_left_icons();
+        let mut title_bar_buttons =
+            window.create_title_bar_buttons(window_width, window.is_maximized);
+        window.svg_icons.append(&mut title_bar_buttons);
+        window.update_tool_icons();
+
+        // Reset drawing state.
+        window.drawing_state = PreviewDrawingState::new(window_id, drawing_config).ok();
+
+        // Re-init renderer state for the new image.
+        if let Some(renderer) = &mut window.renderer {
+            renderer.image_bitmap = None;
+            let _ = renderer.initialize(window_id, window_width, window_height);
+            let _ = renderer.set_image_from_pixels(
+                &window.image_pixels,
+                window.image_width,
+                window.image_height,
+            );
+        }
+
+        // Recompute layout and text wrapping.
+        window.center_icons();
+        window.recalculate_layout();
+
+        if window.show_text_area {
+            if let Some(renderer) = &window.renderer {
+                let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
+                window.text_lines = renderer.split_text_into_lines(&window.text_content, width);
+            } else {
+                window.text_lines = vec![window.text_content.clone()];
+            }
+        }
+
+        let _ = platform.show_window(window_id);
+        let _ = platform.update_window(window_id);
+        let _ = platform.request_redraw(window_id);
+
+        Ok(())
+    }
+
+    pub(super) fn show(
+        image_data: Vec<u8>,
+        ocr_results: Vec<OcrResult>,
+        selection_rect: RectI32,
+        is_pin_mode: bool,
+        drawing_config: DrawingConfig,
+        ocr_source_bmp_data: Option<Vec<u8>>,
     ) -> Result<()> {
         unsafe {
-            // 1. DPI 设置
             let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
 
-            // 2. 注册窗口类
-            let class_name = windows::core::w!("PreviewWindow");
-            let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?;
+            // If we already have a live preview window, update it in-place.
+            if let Some(existing_hwnd) = Self::existing_hwnd() {
+                if !existing_hwnd.0.is_null() && IsWindow(Some(existing_hwnd)).as_bool() {
+                    let window_ptr =
+                        GetWindowLongPtrW(existing_hwnd, GWLP_USERDATA) as *mut PreviewWindowState;
+                    if !window_ptr.is_null() {
+                        Self::update_existing_window(
+                            existing_hwnd,
+                            image_data,
+                            ocr_results,
+                            selection_rect,
+                            is_pin_mode,
+                            drawing_config,
+                            ocr_source_bmp_data,
+                        )?;
+                        return Ok(());
+                    }
+                }
 
-            // 使用新的类名注册
+                // Stale handle.
+                Self::clear_singleton_hwnd(existing_hwnd);
+            }
+
+            // Register class.
+            let class_name = windows::core::w!("PreviewWindow");
+            let instance = GetModuleHandleW(None)?;
+
             let bg_brush = CreateSolidBrush(COLORREF(0));
             let cursor = LoadCursorW(None, IDC_ARROW)?;
 
@@ -469,36 +898,48 @@ impl PreviewWindowState {
                 // ERROR_CLASS_ALREADY_EXISTS = 1410
                 if err_code.0 != 1410 {
                     eprintln!("RegisterClassW failed: {:?}", err_code);
-                    // Fallback or error?
                 }
             }
 
-            // 3. 解析图片与计算尺寸
+            // 解析图片与计算尺寸
             let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
 
-            // 布局计算
-            let (window_width, window_height) = if is_pin_mode {
-                // Pin 模式：窗口紧凑图片大小，只有标题栏
-                (actual_width, TITLE_BAR_HEIGHT + actual_height)
+            let text_content = Self::ocr_text_from_results(&ocr_results);
+            let show_text_area = !is_pin_mode || !text_content.is_empty();
+
+            let ocr_cached_text = if text_content.is_empty() {
+                None
             } else {
+                Some(text_content.clone())
+            };
+
+            // Choose OCR source image: if not provided, default to the display image.
+            let ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
+
+            // 布局计算
+            let (mut window_width, window_height) = if show_text_area {
                 // OCR 模式：有文本区域和边距
-                let text_area_width = 350;
-                let image_area_width = actual_width + 40;
-                let margin = 20;
-                let content_padding_top = 20;
-                let content_padding_bottom = 20;
+                let text_area_width = OCR_TEXT_PANEL_WIDTH;
+                let image_area_width = actual_width + OCR_CONTENT_PADDING_X * 2;
+                let margin = OCR_PANEL_GAP;
+                let content_padding_top = OCR_CONTENT_PADDING_TOP;
+                let content_padding_bottom = OCR_CONTENT_PADDING_BOTTOM;
                 (
                     image_area_width + text_area_width + margin,
                     TITLE_BAR_HEIGHT + content_padding_top + actual_height + content_padding_bottom,
                 )
+            } else {
+                // Pin/compact mode.
+                (actual_width, TITLE_BAR_HEIGHT + actual_height)
             };
 
-            // 4. 计算位置
+            window_width = window_width.max(Self::min_window_width_for_title_bar());
+
+            // 计算位置
             let (screen_width, screen_height) = WindowsHostPlatform::new().screen_size();
             let mut window_x = selection_rect.right + 20;
             let mut window_y = selection_rect.top;
 
-            // Pin 模式使用选区位置，OCR 模式在右侧弹出
             if is_pin_mode {
                 window_x = selection_rect.left;
                 window_y = selection_rect.top;
@@ -517,7 +958,6 @@ impl PreviewWindowState {
                 }
             }
 
-            // 边界检查
             if window_x + window_width > screen_width {
                 window_x = screen_width - window_width;
             }
@@ -527,7 +967,7 @@ impl PreviewWindowState {
             window_x = window_x.max(0);
             window_y = window_y.max(0);
 
-            // 5. 创建窗口 [Zed 风格核心样式]
+            // Create window.
             let dw_style = WS_THICKFRAME
                 | WS_SYSMENU
                 | WS_MAXIMIZEBOX
@@ -555,7 +995,7 @@ impl PreviewWindowState {
                 None,
             )?;
 
-            // 6. DWM 设置
+            // DWM settings.
             let dark_mode = 1_i32;
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -572,15 +1012,14 @@ impl PreviewWindowState {
                 std::mem::size_of::<i32>() as u32,
             );
 
-            let margins = MARGINS {
+            let margins = Margins {
                 cxLeftWidth: -1,
                 cxRightWidth: -1,
                 cyTopHeight: -1,
                 cyBottomHeight: -1,
             };
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const MARGINS as *const _);
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins as *const Margins as *const _);
 
-            // 触发一次 Frame 改变
             SetWindowPos(
                 hwnd,
                 None,
@@ -593,36 +1032,37 @@ impl PreviewWindowState {
 
             let svg_icons = Self::create_left_icons();
 
-            // 准备文本
-            let text_content = ocr_results
-                .iter()
-                .map(|r| r.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            // 创建绘图状态
-            let drawing_state =
-                PreviewDrawingState::new(WindowId::from_raw(hwnd.0 as usize), drawing_config).ok();
+            let window_id = sc_platform_windows::windows::window_id(hwnd);
+            let drawing_state = PreviewDrawingState::new(window_id, drawing_config).ok();
 
             let mut window = Self {
                 hwnd,
                 image_pixels,
                 image_width: actual_width,
                 image_height: actual_height,
-                text_area_rect: RECT::default(), // 将在 recalculate_layout 中计算
+                text_area_rect: RectI32 {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
                 window_width,
                 window_height,
                 is_maximized: false,
                 svg_icons,
                 text_content,
                 scroll_offset: 0,
-                line_height: 24, // 估算值，后面可能会更精确
+                line_height: OCR_TEXT_LINE_HEIGHT,
                 text_lines: Vec::new(),
                 is_selecting: false,
                 selection_start: None,
                 selection_end: None,
                 is_pinned: is_pin_mode,
-                show_text_area: !is_pin_mode,
+                show_text_area,
+                ocr_source_bmp_data,
+                ocr_cached_text,
+                ocr_in_flight: false,
+                ocr_request_id: 0,
                 renderer: PreviewRenderer::new().ok(),
                 drawing_state,
             };
@@ -630,784 +1070,39 @@ impl PreviewWindowState {
             let mut title_bar_buttons = window.create_title_bar_buttons(window_width, false);
             window.svg_icons.append(&mut title_bar_buttons);
 
-            // 存储窗口指针
+            window.update_tool_icons();
+
+            // Store window pointer
             let window_ptr = Box::into_raw(Box::new(window));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_ptr as isize);
 
-            // 初始化布局和渲染器
+            // Track singleton hwnd so future `show()` calls update this window.
+            Self::set_singleton_hwnd(hwnd);
+
+            // Initialize layout and renderer
             let window = &mut *window_ptr;
             window.center_icons();
-            window.recalculate_layout(); // 计算初始布局
+            window.recalculate_layout();
 
-            // 初始化渲染器
             if let Some(renderer) = &mut window.renderer {
-                let _ = renderer.initialize(
-                    WindowId::from_raw(hwnd.0 as usize),
-                    window_width,
-                    window_height,
-                );
+                let _ = renderer.initialize(window_id, window_width, window_height);
                 let _ = renderer.set_image_from_pixels(
                     &window.image_pixels,
                     window.image_width,
                     window.image_height,
                 );
-                // 初始化文本分行
+
                 if window.show_text_area {
                     let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
                     window.text_lines = renderer.split_text_into_lines(&window.text_content, width);
                 }
             }
 
-            let window_id = WindowId::from_raw(hwnd.0 as usize);
-            let _ = WindowsHostPlatform::new().show_window(window_id);
-            let _ = WindowsHostPlatform::new().update_window(window_id);
+            let platform = WindowsHostPlatform::new();
+            let _ = platform.show_window(window_id);
+            let _ = platform.update_window(window_id);
 
             Ok(())
-        }
-    }
-
-    fn parse_bmp_data(bmp_data: &[u8]) -> Result<(Vec<u8>, i32, i32)> {
-        // 复用 BMP 解析逻辑
-        if bmp_data.len() < 54 {
-            return Err(anyhow::anyhow!("BMP 数据太小"));
-        }
-        if bmp_data[0] != b'B' || bmp_data[1] != b'M' {
-            return Err(anyhow::anyhow!("不是有效的BMP文件"));
-        }
-        let data_offset =
-            u32::from_le_bytes([bmp_data[10], bmp_data[11], bmp_data[12], bmp_data[13]]) as usize;
-        let width = i32::from_le_bytes([bmp_data[18], bmp_data[19], bmp_data[20], bmp_data[21]]);
-        let height_raw =
-            i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]);
-        let height = height_raw.abs();
-        let is_top_down = height_raw < 0;
-        let bit_count = u16::from_le_bytes([bmp_data[28], bmp_data[29]]);
-
-        if data_offset >= bmp_data.len() {
-            return Err(anyhow::anyhow!("BMP数据偏移量无效"));
-        }
-
-        let pixel_data = &bmp_data[data_offset..];
-        let bytes_per_pixel = (bit_count / 8) as usize;
-        let row_size = (width as usize * bytes_per_pixel).div_ceil(4) * 4;
-
-        let mut rgba_pixels = vec![0u8; (width * height * 4) as usize];
-
-        for y in 0..height {
-            let src_y = if is_top_down { y } else { height - 1 - y };
-            let src_row_start = src_y as usize * row_size;
-            for x in 0..width {
-                let src_idx = src_row_start + x as usize * bytes_per_pixel;
-                let dst_idx = (y * width + x) as usize * 4;
-                if src_idx + bytes_per_pixel <= pixel_data.len() && dst_idx + 3 < rgba_pixels.len()
-                {
-                    match bit_count {
-                        24 => {
-                            rgba_pixels[dst_idx] = pixel_data[src_idx + 2];
-                            rgba_pixels[dst_idx + 1] = pixel_data[src_idx + 1];
-                            rgba_pixels[dst_idx + 2] = pixel_data[src_idx];
-                            rgba_pixels[dst_idx + 3] = 255;
-                        }
-                        32 => {
-                            rgba_pixels[dst_idx] = pixel_data[src_idx + 2];
-                            rgba_pixels[dst_idx + 1] = pixel_data[src_idx + 1];
-                            rgba_pixels[dst_idx + 2] = pixel_data[src_idx];
-                            rgba_pixels[dst_idx + 3] = 255;
-                        }
-                        _ => {
-                            rgba_pixels[dst_idx] = 255;
-                            rgba_pixels[dst_idx + 1] = 255;
-                            rgba_pixels[dst_idx + 2] = 255;
-                            rgba_pixels[dst_idx + 3] = 255;
-                        }
-                    }
-                }
-            }
-        }
-        Ok((rgba_pixels, width, height))
-    }
-
-    fn custom_caption_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        unsafe {
-            match msg {
-                WM_ERASEBKGND => LRESULT(1),
-                WM_SIZE => {
-                    let new_width = (lparam.0 & 0xFFFF) as i32;
-                    let new_height = ((lparam.0 >> 16) & 0xFFFF) as i32;
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-                        window.is_maximized = (style & WS_MAXIMIZE.0) != 0;
-                        window.window_width = new_width;
-                        window.window_height = new_height;
-                        window.update_title_bar_buttons();
-                        window.recalculate_layout();
-                    }
-                    LRESULT(0)
-                }
-                WM_PAINT => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        if let Some(renderer) = &mut window.renderer {
-                            let mut rect = RECT::default();
-                            let _ = GetClientRect(hwnd, &mut rect);
-                            let width = rect.right - rect.left;
-                            let height = rect.bottom - rect.top;
-
-                            if width > 0 && height > 0 {
-                                if let Err(e) = renderer.initialize(
-                                    WindowId::from_raw(hwnd.0 as usize),
-                                    width,
-                                    height,
-                                ) {
-                                    eprintln!("PreviewWindow: renderer.initialize failed: {:?}", e);
-                                }
-                                if let Err(e) = renderer.set_image_from_pixels(
-                                    &window.image_pixels,
-                                    window.image_width,
-                                    window.image_height,
-                                ) {
-                                    eprintln!(
-                                        "PreviewWindow: set_image_from_pixels failed: {:?}",
-                                        e
-                                    );
-                                }
-
-                                // 传递 show_text_area 和 drawing_state 参数
-                                if let Err(e) = renderer.render(
-                                    &window.text_lines,
-                                    window.text_area_rect,
-                                    width,
-                                    &window.svg_icons,
-                                    window.is_pinned,
-                                    window.is_maximized,
-                                    window.scroll_offset,
-                                    window.line_height,
-                                    window.image_width,
-                                    window.image_height,
-                                    window
-                                        .selection_start
-                                        .and_then(|s| window.selection_end.map(|e| (s, e))),
-                                    window.show_text_area,
-                                    window.drawing_state.as_mut(),
-                                ) {
-                                    eprintln!("PreviewWindow: render failed: {:?}", e);
-                                } else {
-                                    let _ = ValidateRect(Some(hwnd), None);
-                                }
-                            }
-                        }
-                    }
-                    LRESULT(0)
-                }
-                WM_NCCALCSIZE => {
-                    if wparam.0 == 1 {
-                        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
-                        if !params.is_null() {
-                            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-                            let is_maximized = (style & WS_MAXIMIZE.0) != 0;
-                            if is_maximized {
-                                let frame_thickness = Self::get_frame_thickness(hwnd);
-                                let rgrc = &mut (*params).rgrc;
-                                rgrc[0].top += frame_thickness;
-                                rgrc[0].bottom -= frame_thickness;
-                                rgrc[0].left += frame_thickness;
-                                rgrc[0].right -= frame_thickness;
-                            }
-                        }
-                        return LRESULT(0);
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_NCHITTEST => Self::hit_test_nca(hwnd, wparam, lparam),
-                _ => Self::app_window_proc(hwnd, msg, wparam, lparam),
-            }
-        }
-    }
-
-    fn hit_test_nca(hwnd: HWND, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        unsafe {
-            let pt_mouse_x = (lparam.0 as i16) as i32;
-            let pt_mouse_y = ((lparam.0 >> 16) as i16) as i32;
-
-            let mut rc_window = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut rc_window);
-
-            let client_x = pt_mouse_x - rc_window.left;
-            let client_y = pt_mouse_y - rc_window.top;
-
-            let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-            if !window_ptr.is_null() {
-                let window = &*window_ptr;
-                if (0..TITLE_BAR_HEIGHT).contains(&client_y) {
-                    for icon in &window.svg_icons {
-                        let in_click_area = if icon.is_title_bar_button {
-                            let button_width = BUTTON_WIDTH_OCR;
-                            let button_left = icon.rect.left - (button_width - ICON_SIZE) / 2;
-                            let button_right = button_left + button_width;
-                            client_x >= button_left
-                                && client_x <= button_right
-                                && (0..=TITLE_BAR_HEIGHT).contains(&client_y)
-                        } else {
-                            let click_padding = ICON_CLICK_PADDING;
-                            client_x >= (icon.rect.left - click_padding)
-                                && client_x <= (icon.rect.right + click_padding)
-                                && client_y >= (icon.rect.top - click_padding)
-                                && client_y <= (icon.rect.bottom + click_padding)
-                        };
-                        if in_click_area {
-                            return LRESULT(HTCLIENT as isize);
-                        }
-                    }
-                }
-            }
-
-            let mut rc_frame = RECT::default();
-            let _ = AdjustWindowRectEx(
-                &mut rc_frame,
-                WS_OVERLAPPEDWINDOW & !WS_CAPTION,
-                false,
-                WS_EX_OVERLAPPEDWINDOW,
-            );
-
-            let mut u_row = 1;
-            let mut u_col = 1;
-            let mut f_on_resize_border = false;
-
-            if pt_mouse_y >= rc_window.top && pt_mouse_y < rc_window.top + TITLE_BAR_HEIGHT {
-                f_on_resize_border = pt_mouse_y < (rc_window.top - rc_frame.top);
-                u_row = 0;
-            } else if pt_mouse_y < rc_window.bottom && pt_mouse_y >= rc_window.bottom - 5 {
-                u_row = 2;
-            }
-
-            if pt_mouse_x >= rc_window.left && pt_mouse_x < rc_window.left + 5 {
-                u_col = 0;
-            } else if pt_mouse_x < rc_window.right && pt_mouse_x >= rc_window.right - 5 {
-                u_col = 2;
-            }
-
-            let hit_tests = [
-                [
-                    HTTOPLEFT,
-                    if f_on_resize_border { HTTOP } else { HTCAPTION },
-                    HTTOPRIGHT,
-                ],
-                [HTLEFT, HTCLIENT, HTRIGHT],
-                [HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT],
-            ];
-
-            LRESULT(hit_tests[u_row][u_col] as isize)
-        }
-    }
-
-    unsafe extern "system" fn window_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_MOUSEMOVE {
-                let result = Self::custom_caption_proc(hwnd, msg, wparam, lparam);
-                if result.0 == 0 && msg == WM_LBUTTONDOWN {
-                    return result;
-                }
-            }
-
-            let dwm_enabled = DwmIsCompositionEnabled().unwrap_or(FALSE);
-            if dwm_enabled.as_bool() {
-                let mut lret = LRESULT(0);
-                let call_dwp = !DwmDefWindowProc(hwnd, msg, wparam, lparam, &mut lret).as_bool();
-                if call_dwp {
-                    Self::custom_caption_proc(hwnd, msg, wparam, lparam)
-                } else {
-                    lret
-                }
-            } else {
-                Self::app_window_proc(hwnd, msg, wparam, lparam)
-            }
-        }));
-
-        match result {
-            Ok(lresult) => lresult,
-            Err(_) => {
-                eprintln!("Panic in window_proc! msg={}", msg);
-                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-            }
-        }
-    }
-
-    fn app_window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        unsafe {
-            match msg {
-                WM_NCCALCSIZE => {
-                    if wparam.0 == 1 {
-                        return LRESULT(0);
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_NCPAINT => LRESULT(0),
-                WM_NCACTIVATE => LRESULT(1),
-                WM_GETMINMAXINFO => {
-                    let minmax_info = lparam.0 as *mut MINMAXINFO;
-                    if !minmax_info.is_null() {
-                        let info = &mut *minmax_info;
-                        info.ptMinTrackSize.x = 300;
-                        info.ptMinTrackSize.y = 200;
-                    }
-                    LRESULT(0)
-                }
-                WM_LBUTTONDOWN => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let x = (lparam.0 as i16) as i32;
-                        let y = ((lparam.0 >> 16) as i16) as i32;
-
-                        // 点击图标处理
-                        for icon in &mut window.svg_icons {
-                            let in_click_area = if icon.is_title_bar_button {
-                                let button_width = BUTTON_WIDTH_OCR;
-                                let button_left = icon.rect.left - (button_width - ICON_SIZE) / 2;
-                                let button_right = button_left + button_width;
-                                x >= button_left
-                                    && x <= button_right
-                                    && (0..TITLE_BAR_HEIGHT).contains(&y)
-                            } else {
-                                let click_padding = ICON_CLICK_PADDING;
-                                x >= (icon.rect.left - click_padding)
-                                    && x <= (icon.rect.right + click_padding)
-                                    && y >= (icon.rect.top - click_padding)
-                                    && y <= (icon.rect.bottom + click_padding)
-                            };
-
-                            if in_click_area {
-                                match icon.name.as_str() {
-                                    "window-minimize" => {
-                                        let _ = WindowsHostPlatform::new().minimize_window(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "pin" => {
-                                        let window_id = WindowId::from_raw(hwnd.0 as usize);
-                                        window.is_pinned = !window.is_pinned;
-                                        let _ = WindowsHostPlatform::new().set_window_topmost_flag(
-                                            window_id,
-                                            window.is_pinned,
-                                        );
-                                        let _ = WindowsHostPlatform::new().request_redraw(window_id);
-                                        return LRESULT(0);
-                                    }
-                                    "window-maximize" => {
-                                        let _ = WindowsHostPlatform::new().maximize_window(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "window-restore" => {
-                                        let _ = WindowsHostPlatform::new().restore_window(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "window-close" => {
-                                        let _ = WindowsHostPlatform::new().request_close(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    // 绘图工具图标
-                                    "square" => {
-                                        window.switch_drawing_tool(DrawingTool::Rectangle);
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "circle" => {
-                                        window.switch_drawing_tool(DrawingTool::Circle);
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "move-up-right" => {
-                                        window.switch_drawing_tool(DrawingTool::Arrow);
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "pen" => {
-                                        window.switch_drawing_tool(DrawingTool::Pen);
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    "type" => {
-                                        window.switch_drawing_tool(DrawingTool::Text);
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                        return LRESULT(0);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // 绘图交互处理
-                        if let Some(ref mut ds) = window.drawing_state {
-                            if ds.handle_mouse_down(x, y) {
-                                let _ = SetCapture(hwnd);
-                                return LRESULT(0);
-                            }
-                        }
-
-                        // 文本选择逻辑 (仅当显示文本区域时)
-                        if window.show_text_area {
-                            let text_rect = window.text_area_rect;
-                            if x >= text_rect.left
-                                && x <= text_rect.right
-                                && y >= text_rect.top
-                                && y <= text_rect.bottom
-                            {
-                                // 计算点击位置对应的行和字符
-                                let relative_y = y - text_rect.top + window.scroll_offset;
-                                let line_index = (relative_y / window.line_height) as usize;
-
-                                if line_index < window.text_lines.len() {
-                                    let relative_x = (x - text_rect.left) as f32;
-                                    let line = &window.text_lines[line_index];
-                                    let char_index = if let Some(renderer) = &window.renderer {
-                                        renderer.get_text_position_from_point(line, relative_x)
-                                    } else {
-                                        0
-                                    };
-
-                                    window.is_selecting = true;
-                                    window.selection_start = Some((line_index, char_index));
-                                    window.selection_end = Some((line_index, char_index));
-                                    let _ = SetCapture(hwnd);
-                                    let _ = WindowsHostPlatform::new().request_redraw(
-                                        WindowId::from_raw(hwnd.0 as usize),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_LBUTTONUP => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let x = (lparam.0 as i16) as i32;
-                        let y = ((lparam.0 >> 16) as i16) as i32;
-
-                        // 绘图交互处理
-                        if let Some(ref mut ds) = window.drawing_state {
-                            if ds.handle_mouse_up(x, y) {
-                                let _ = ReleaseCapture();
-                                return LRESULT(0);
-                            }
-                        }
-
-                        if window.is_selecting {
-                            window.is_selecting = false;
-                            let _ = ReleaseCapture();
-                        }
-                    }
-                    let _ = WindowsHostPlatform::new().request_redraw(WindowId::from_raw(hwnd.0 as usize));
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_MOUSEMOVE => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let x = (lparam.0 as i16) as i32;
-                        let y = ((lparam.0 >> 16) as i16) as i32;
-
-                        let mut tme = TRACKMOUSEEVENT {
-                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                            dwFlags: TME_LEAVE,
-                            hwndTrack: hwnd,
-                            dwHoverTime: 0,
-                        };
-                        let _ = TrackMouseEvent(&mut tme);
-
-                        let mut needs_repaint = false;
-                        if (0..=TITLE_BAR_HEIGHT).contains(&y) {
-                            for icon in &mut window.svg_icons {
-                                let hovered = if icon.is_title_bar_button {
-                                    let hover_padding = ICON_HOVER_PADDING;
-                                    x >= (icon.rect.left - hover_padding)
-                                        && x <= (icon.rect.right + hover_padding)
-                                        && y >= (icon.rect.top - hover_padding)
-                                        && y <= (icon.rect.bottom + hover_padding)
-                                } else {
-                                    let hover_padding = ICON_HOVER_PADDING;
-                                    x >= (icon.rect.left - hover_padding)
-                                        && x <= (icon.rect.right + hover_padding)
-                                        && y >= (icon.rect.top - hover_padding)
-                                        && y <= (icon.rect.bottom + hover_padding)
-                                };
-                                if icon.hovered != hovered {
-                                    icon.hovered = hovered;
-                                    needs_repaint = true;
-                                }
-                            }
-                        } else {
-                            for icon in &mut window.svg_icons {
-                                if icon.hovered {
-                                    icon.hovered = false;
-                                    needs_repaint = true;
-                                }
-                            }
-                        }
-
-                        // 绘图交互处理
-                        if let Some(ref mut ds) = window.drawing_state {
-                            if ds.handle_mouse_move(x, y) {
-                                needs_repaint = true;
-                            }
-                        }
-
-                        // 文本选择移动逻辑
-                        if window.is_selecting && window.show_text_area {
-                            let text_rect = window.text_area_rect;
-                            let clamped_x = x.max(text_rect.left).min(text_rect.right);
-                            let clamped_y = y.max(text_rect.top).min(text_rect.bottom);
-
-                            let relative_y = clamped_y - text_rect.top + window.scroll_offset;
-                            let line_index = ((relative_y / window.line_height) as usize)
-                                .min(window.text_lines.len().saturating_sub(1));
-
-                            let relative_x = (clamped_x - text_rect.left) as f32;
-                            let line = &window.text_lines[line_index];
-                            let char_index = if let Some(renderer) = &window.renderer {
-                                renderer.get_text_position_from_point(line, relative_x)
-                            } else {
-                                0
-                            };
-
-                            window.selection_end = Some((line_index, char_index));
-                            needs_repaint = true;
-                        }
-
-                        // Update cursor for current position (icons / text area / drawing area)
-                        window.update_cursor(x, y);
-
-                        if needs_repaint {
-                            let _ = WindowsHostPlatform::new().request_redraw(WindowId::from_raw(hwnd.0 as usize));
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_LBUTTONDBLCLK => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let x = (lparam.0 as i16) as i32;
-                        let y = ((lparam.0 >> 16) as i16) as i32;
-
-                        // 绘图双击处理（用于编辑文本元素）
-                        if let Some(ref mut ds) = window.drawing_state {
-                            if ds.handle_double_click(x, y) {
-                                return LRESULT(0);
-                            }
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_SETCURSOR => {
-                    // Only override the cursor for client-area hit tests; let Windows handle non-client
-                    // resizing cursors.
-                    let hit_test = (lparam.0 & 0xFFFF) as u16;
-                    if hit_test as u32 != HTCLIENT {
-                        return DefWindowProcW(hwnd, msg, wparam, lparam);
-                    }
-
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if window_ptr.is_null() {
-                        return DefWindowProcW(hwnd, msg, wparam, lparam);
-                    }
-
-                    let window = &mut *window_ptr;
-                    let mut pt = POINT::default();
-                    let _ = GetCursorPos(&mut pt);
-                    let _ = ScreenToClient(hwnd, &mut pt);
-                    window.update_cursor(pt.x, pt.y);
-
-                    LRESULT(1)
-                }
-                WM_MOUSEWHEEL => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        if window.show_text_area {
-                            let delta = ((wparam.0 >> 16) as i16) as i32;
-                            // 滚动...
-                            let scroll_amount = (delta / 120) * window.line_height * 3;
-                            window.scroll_offset -= scroll_amount;
-
-                            // Clamping
-                            let max_scroll = (window.text_lines.len() as i32 * window.line_height)
-                                - (window.text_area_rect.bottom - window.text_area_rect.top);
-                            window.scroll_offset = window.scroll_offset.clamp(0, max_scroll.max(0));
-
-                            let rect = window.text_area_rect;
-                            let _ = WindowsHostPlatform::new().request_redraw_rect(
-                                WindowId::from_raw(hwnd.0 as usize),
-                                rect.left,
-                                rect.top,
-                                rect.right,
-                                rect.bottom,
-                            );
-                        }
-                    }
-                    LRESULT(0)
-                }
-                0x02A3 /* WM_MOUSELEAVE */ => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let mut needs_repaint = false;
-                        for icon in &mut window.svg_icons {
-                            if icon.hovered {
-                                icon.hovered = false;
-                                needs_repaint = true;
-                            }
-                        }
-                        if needs_repaint {
-                            let _ = WindowsHostPlatform::new().request_redraw(WindowId::from_raw(hwnd.0 as usize));
-                        }
-                    }
-                    LRESULT(0)
-                }
-                WM_CHAR => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let character = char::from_u32(wparam.0 as u32);
-
-                        // 绘图文本输入处理
-                        if let Some(ch) = character {
-                            if let Some(ref mut ds) = window.drawing_state {
-                                if ds.handle_char_input(ch) {
-                                    return LRESULT(0);
-                                }
-                            }
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_KEYDOWN => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let vk = wparam.0 as u32;
-                        let ctrl_pressed =
-                            (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
-
-                        // 绘图键盘处理（文本编辑状态下的特殊键：方向键、退格、回车、Escape 等）
-                        if let Some(ref mut ds) = window.drawing_state {
-                            if ds.is_text_editing() {
-                                if ds.handle_key_input(vk) {
-                                    return LRESULT(0);
-                                }
-                            }
-                        }
-
-                        if ctrl_pressed && window.show_text_area {
-                            match vk {
-                                0x41 /* VK_A */ => {
-                                    // Ctrl+A: 全选
-                                    if !window.text_lines.is_empty() {
-                                        window.selection_start = Some((0, 0));
-                                        let last_line = window.text_lines.len() - 1;
-                                        let last_char = window.text_lines[last_line].chars().count();
-                                        window.selection_end = Some((last_line, last_char));
-                                        let _ = WindowsHostPlatform::new().request_redraw(
-                                            WindowId::from_raw(hwnd.0 as usize),
-                                        );
-                                    }
-                                    return LRESULT(0);
-                                }
-                                0x43 /* VK_C */ => {
-                                    // Ctrl+C: 复制选中文本
-                                    if let (Some(start), Some(end)) =
-                                        (window.selection_start, window.selection_end)
-                                    {
-                                        let (start, end) =
-                                            if start <= end { (start, end) } else { (end, start) };
-                                        let mut selected_text = String::new();
-
-                                        for i in start.0..=end.0 {
-                                            if i >= window.text_lines.len() {
-                                                break;
-                                            }
-                                            let line = &window.text_lines[i];
-                                            let chars: Vec<char> = line.chars().collect();
-
-                                            let start_char = if i == start.0 { start.1 } else { 0 };
-                                            let end_char =
-                                                if i == end.0 { end.1 } else { chars.len() };
-
-                                            if start_char < chars.len() {
-                                                let slice: String = chars
-                                                    [start_char..end_char.min(chars.len())]
-                                                    .iter()
-                                                    .collect();
-                                                selected_text.push_str(&slice);
-                                            }
-                                            if i < end.0 {
-                                                selected_text.push('\n');
-                                            }
-                                        }
-
-                                        if !selected_text.is_empty() {
-                                            let platform = WindowsHostPlatform::new();
-                                            let _ = platform.copy_text_to_clipboard(&selected_text);
-                                        }
-                                    }
-                                    return LRESULT(0);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    DefWindowProcW(hwnd, msg, wparam, lparam)
-                }
-                WM_TIMER => {
-                    let window_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !window_ptr.is_null() {
-                        let window = &mut *window_ptr;
-                        let timer_id = wparam.0 as u32;
-
-                        // 处理绘图光标定时器
-                        if let Some(ref mut ds) = window.drawing_state {
-                            ds.handle_cursor_timer(timer_id);
-                        }
-                    }
-                    LRESULT(0)
-                }
-                WM_DESTROY => {
-                    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                    if !ptr.is_null() {
-                        let mut window = Box::from_raw(ptr);
-                        window.cleanup_all_resources();
-                    }
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                    LRESULT(0)
-                }
-                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-            }
         }
     }
 }

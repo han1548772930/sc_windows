@@ -1,13 +1,11 @@
 use sc_platform::WindowId;
-use sc_platform_windows::win32::RECT;
 
-use crate::core_bridge;
 use crate::system::SystemError;
 use sc_app::selection as core_selection;
 use sc_drawing::{DragMode, Rect};
 use sc_highlight::{AutoHighlightMoveAction, AutoHighlightMoveArgs, AutoHighlighter};
 use sc_host_protocol::Command;
-use sc_platform_windows::windows::d2d::Direct2DRenderer;
+use sc_platform_windows::windows::Direct2DRenderer;
 
 pub mod selection;
 
@@ -441,11 +439,6 @@ impl ScreenshotManager {
     ) -> bool {
         self.auto_highlight
             .handle_mouse_up(is_click, selection_has_selection)
-    }
-
-    /// 获取当前选择区域（Win32 RECT，仅平台边界使用）
-    pub fn get_selection_win32(&self) -> Option<RECT> {
-        self.get_selection().map(core_bridge::rect_from_core)
     }
 
     /// 处理双击事件

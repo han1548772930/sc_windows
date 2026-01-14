@@ -285,11 +285,10 @@ impl Model {
                         dy,
                         interaction.start_selection,
                         MIN_BOX_SIZE,
-                    ) {
-                        if updated != current {
-                            self.phase = Phase::Editing { selection: updated };
-                            return vec![Effect::UpdateToolbarPosition { selection: updated }];
-                        }
+                    ) && updated != current
+                    {
+                        self.phase = Phase::Editing { selection: updated };
+                        return vec![Effect::UpdateToolbarPosition { selection: updated }];
                     }
                 }
 
@@ -322,29 +321,29 @@ impl Model {
 
             Action::MouseMove { x, y } => {
                 // Only update in-progress selection while selecting.
-                if let Phase::Selecting { selection } = &mut self.phase {
-                    if let Some((sx, sy)) = self.mouse_down_pos {
-                        // If we're currently in auto-highlight mode and the user hasn't started a
-                        // drag selection yet, do not begin a drag selection until the drag
-                        // threshold is exceeded. This prevents small jitter from showing a drag
-                        // box when the intent was to click-confirm the hover selection.
-                        if self.auto_highlight_active
-                            && selection.is_none()
-                            && !is_drag_threshold_exceeded(sx, sy, x, y)
-                        {
-                            return Vec::new();
-                        }
-
-                        // Drag selection has started (either auto-highlight threshold exceeded, or
-                        // auto-highlight is not active). Clear hover-highlight state so view derives
-                        // from the drag selection.
-                        if self.auto_highlight_active && selection.is_none() {
-                            self.auto_highlight_active = false;
-                            self.hover_selection = None;
-                        }
-
-                        *selection = Some(RectI32::from_points(sx, sy, x, y));
+                if let Phase::Selecting { selection } = &mut self.phase
+                    && let Some((sx, sy)) = self.mouse_down_pos
+                {
+                    // If we're currently in auto-highlight mode and the user hasn't started a
+                    // drag selection yet, do not begin a drag selection until the drag
+                    // threshold is exceeded. This prevents small jitter from showing a drag
+                    // box when the intent was to click-confirm the hover selection.
+                    if self.auto_highlight_active
+                        && selection.is_none()
+                        && !is_drag_threshold_exceeded(sx, sy, x, y)
+                    {
+                        return Vec::new();
                     }
+
+                    // Drag selection has started (either auto-highlight threshold exceeded, or
+                    // auto-highlight is not active). Clear hover-highlight state so view derives
+                    // from the drag selection.
+                    if self.auto_highlight_active && selection.is_none() {
+                        self.auto_highlight_active = false;
+                        self.hover_selection = None;
+                    }
+
+                    *selection = Some(RectI32::from_points(sx, sy, x, y));
                 }
 
                 Vec::new()
@@ -370,7 +369,7 @@ impl Model {
 
                 let mouse_down_pos = self.mouse_down_pos.take();
                 let is_click = mouse_down_pos
-                    .map_or(false, |(sx, sy)| !is_drag_threshold_exceeded(sx, sy, x, y));
+                    .is_some_and(|(sx, sy)| !is_drag_threshold_exceeded(sx, sy, x, y));
 
                 // Candidate selection:
                 // - Click: confirm hover-selection (auto-highlight) if present (no min-size rule).

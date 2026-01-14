@@ -1,5 +1,4 @@
-use windows::Win32::Foundation::RECT;
-
+use sc_app::selection::RectI32;
 use sc_drawing::Rect as DrawingRect;
 use sc_drawing_host::{DrawingConfig, DrawingManager, DrawingTool};
 use sc_host_protocol::{Command, DrawingMessage};
@@ -11,7 +10,7 @@ pub struct PreviewDrawingState {
     /// 绘图管理器
     pub manager: DrawingManager,
     /// 图片区域边界（用于限制绘图）
-    pub image_area_rect: RECT,
+    pub image_area_rect: RectI32,
     /// Preview window id.
     window: WindowId,
 }
@@ -24,13 +23,18 @@ impl PreviewDrawingState {
 
         Ok(Self {
             manager,
-            image_area_rect: RECT::default(),
+            image_area_rect: RectI32 {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
             window,
         })
     }
 
     /// 设置图片区域
-    pub fn set_image_area(&mut self, rect: RECT) {
+    pub fn set_image_area(&mut self, rect: RectI32) {
         self.image_area_rect = rect;
     }
 

@@ -97,9 +97,7 @@ impl DrawingManager {
             return None;
         }
 
-        let Some(edit_idx) = self.editing_element_index else {
-            return None;
-        };
+        let edit_idx = self.editing_element_index?;
 
         let element_id = self.elements.get_elements().get(edit_idx).map(|e| e.id)?;
 

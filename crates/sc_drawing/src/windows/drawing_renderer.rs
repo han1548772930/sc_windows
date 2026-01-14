@@ -24,7 +24,6 @@ use super::context::{BorderStyle, RenderContext, RenderOptions};
 use super::renderable::{RenderError, RenderResult, RendererRegistry};
 
 /// Text rendering constants (kept aligned with the app defaults)
-const TEXT_PADDING: f32 = 8.0;
 const TEXT_CURSOR_WIDTH: f32 = 3.0;
 const TEXT_LINE_HEIGHT_SCALE: f32 = 1.35;
 const CURSOR_COLOR: Color = Color {
@@ -93,6 +92,7 @@ impl DrawingRenderer {
     /// Renders a full frame.
     ///
     /// Returns `true` if the static layer was rebuilt.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         factory: &ID2D1Factory,
@@ -147,11 +147,11 @@ impl DrawingRenderer {
         }
 
         // Dynamic: selected element
-        if let Some(idx) = selected_index {
-            if let Some(element) = elements.get(idx) {
-                let mut ctx = RenderContext::new(factory, render_target, dwrite_factory);
-                self.draw_element(element, &mut ctx, cursor)?;
-            }
+        if let Some(idx) = selected_index
+            && let Some(element) = elements.get(idx)
+        {
+            let mut ctx = RenderContext::new(factory, render_target, dwrite_factory);
+            self.draw_element(element, &mut ctx, cursor)?;
         }
 
         // Dynamic: current element
@@ -189,6 +189,7 @@ impl DrawingRenderer {
     /// Renders all elements to an arbitrary render target with an offset transform.
     ///
     /// Used for export/compositing.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_elements_to_target_with_offset(
         &self,
         factory: &ID2D1Factory,
@@ -390,12 +391,13 @@ impl DrawingRenderer {
                         element.font_italic,
                     )?;
 
-                    let width = ((element.rect.right - element.rect.left) as f32
-                        - TEXT_PADDING * 2.0)
-                        .max(0.0);
-                    let height = ((element.rect.bottom - element.rect.top) as f32
-                        - TEXT_PADDING * 2.0)
-                        .max(0.0);
+                    let padding =
+                        super::text::text_padding_for_font_size(element.get_effective_font_size());
+
+                    let width =
+                        ((element.rect.right - element.rect.left) as f32 - padding * 2.0).max(0.0);
+                    let height =
+                        ((element.rect.bottom - element.rect.top) as f32 - padding * 2.0).max(0.0);
 
                     let layout = create_text_layout_with_style(
                         dwrite_factory,
@@ -408,9 +410,22 @@ impl DrawingRenderer {
                     )?;
 
                     let origin = Vector2 {
-                        X: element.rect.left as f32 + TEXT_PADDING,
-                        Y: element.rect.top as f32 + TEXT_PADDING,
+                        X: element.rect.left as f32 + padding,
+                        Y: element.rect.top as f32 + padding,
                     };
+
+                    // Clip to the text element bounds. Without this, when the box becomes smaller
+                    // than the laid-out text (e.g. due to rounding during resize), text/caret can
+                    // be drawn outside the selection box.
+                    let clip_rect = D2D_RECT_F {
+                        left: element.rect.left as f32,
+                        top: element.rect.top as f32,
+                        right: element.rect.right as f32,
+                        bottom: element.rect.bottom as f32,
+                    };
+
+                    ctx.render_target
+                        .PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
                     ctx.render_target.DrawTextLayout(
                         origin,
@@ -418,6 +433,8 @@ impl DrawingRenderer {
                         &brush,
                         windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
+
+                    ctx.render_target.PopAxisAlignedClip();
                 }
 
                 Ok(())
@@ -520,10 +537,11 @@ impl DrawingRenderer {
                 element.font_italic,
             )?;
 
-            let width =
-                ((element.rect.right - element.rect.left) as f32 - TEXT_PADDING * 2.0).max(0.0);
-            let height =
-                ((element.rect.bottom - element.rect.top) as f32 - TEXT_PADDING * 2.0).max(0.0);
+            let padding =
+                super::text::text_padding_for_font_size(element.get_effective_font_size());
+
+            let width = ((element.rect.right - element.rect.left) as f32 - padding * 2.0).max(0.0);
+            let height = ((element.rect.bottom - element.rect.top) as f32 - padding * 2.0).max(0.0);
 
             let layout = create_text_layout_with_style(
                 dwrite_factory,
@@ -536,9 +554,20 @@ impl DrawingRenderer {
             )?;
 
             let origin = Vector2 {
-                X: element.rect.left as f32 + TEXT_PADDING,
-                Y: element.rect.top as f32 + TEXT_PADDING,
+                X: element.rect.left as f32 + padding,
+                Y: element.rect.top as f32 + padding,
             };
+
+            // Clip to the text element bounds so reflow/rounding during resize can't draw outside.
+            let clip_rect = D2D_RECT_F {
+                left: element.rect.left as f32,
+                top: element.rect.top as f32,
+                right: element.rect.right as f32,
+                bottom: element.rect.bottom as f32,
+            };
+
+            ctx.render_target
+                .PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
             ctx.render_target.DrawTextLayout(
                 origin,
@@ -547,32 +576,39 @@ impl DrawingRenderer {
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
             );
 
-            if let Some(c) = cursor {
-                if c.visible && c.element_id == element.id {
-                    let cursor_brush = ctx
-                        .get_brush(CURSOR_COLOR)
-                        .ok_or_else(|| {
-                            RenderError::ResourceCreation("Failed to create cursor brush".into())
-                        })?
-                        .clone();
+            let cursor_res = if let Some(c) = cursor
+                && c.visible
+                && c.element_id == element.id
+            {
+                let cursor_brush = ctx
+                    .get_brush(CURSOR_COLOR)
+                    .ok_or_else(|| {
+                        RenderError::ResourceCreation("Failed to create cursor brush".into())
+                    })?
+                    .clone();
 
-                    let content_rect = D2D_RECT_F {
-                        left: element.rect.left as f32 + TEXT_PADDING,
-                        top: element.rect.top as f32 + TEXT_PADDING,
-                        right: element.rect.right as f32 - TEXT_PADDING,
-                        bottom: element.rect.bottom as f32 - TEXT_PADDING,
-                    };
+                let content_rect = D2D_RECT_F {
+                    left: element.rect.left as f32 + padding,
+                    top: element.rect.top as f32 + padding,
+                    right: element.rect.right as f32 - padding,
+                    bottom: element.rect.bottom as f32 - padding,
+                };
 
-                    draw_text_cursor(
-                        ctx.render_target,
-                        element,
-                        &layout,
-                        &content_rect,
-                        &cursor_brush,
-                        c.cursor_pos,
-                    )?;
-                }
-            }
+                draw_text_cursor(
+                    ctx.render_target,
+                    element,
+                    &layout,
+                    &content_rect,
+                    &cursor_brush,
+                    c.cursor_pos,
+                )
+            } else {
+                Ok(())
+            };
+
+            ctx.render_target.PopAxisAlignedClip();
+
+            cursor_res?;
         }
 
         Ok(())
@@ -886,7 +922,6 @@ fn draw_text_cursor(
     let mut metrics = DWRITE_HIT_TEST_METRICS::default();
 
     let font_size = element.get_effective_font_size();
-    let line_height = (font_size * TEXT_LINE_HEIGHT_SCALE).ceil();
 
     // Convert cursor char index to UTF-16 offset
     let utf16_len = element.text.encode_utf16().count();
@@ -940,9 +975,24 @@ fn draw_text_cursor(
     let abs_x = text_content_rect.left + point_x;
     let abs_y = text_content_rect.top + point_y;
 
-    // Caret height: stable and visually centered within our line box.
-    let caret_height = font_size.ceil();
-    let caret_top = abs_y + ((line_height - caret_height) / 2.0).max(0.0);
+    // Use DirectWrite's hit-test metrics to position the caret.
+    //
+    // NOTE: `point_y` returned by HitTestTextPosition is already the Y offset of the line within
+    // the layout. `metrics.top` is also layout-relative, so adding both would double-count the
+    // line offset (the bug that showed up after inserting newlines).
+    //
+    // We clamp caret height to font_size for a cleaner visual, and center it within the line box.
+    let line_box_height = if metrics.height > 0.0 {
+        metrics.height
+    } else {
+        // Fallback for edge cases (e.g. empty line / unusual hit-test results).
+        (font_size * TEXT_LINE_HEIGHT_SCALE).ceil()
+    };
+
+    let caret_height = font_size.ceil().min(line_box_height);
+
+    // Center the caret vertically within the line box.
+    let caret_top = abs_y + ((line_box_height - caret_height) / 2.0).max(0.0);
 
     let cursor_rect = D2D_RECT_F {
         left: abs_x,

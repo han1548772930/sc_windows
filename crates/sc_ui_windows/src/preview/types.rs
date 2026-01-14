@@ -25,7 +25,7 @@ pub struct SvgIcon {
 #[repr(C)]
 #[derive(Clone, Copy)]
 #[allow(non_snake_case)]
-pub struct MARGINS {
+pub struct Margins {
     pub cxLeftWidth: i32,
     pub cxRightWidth: i32,
     pub cyTopHeight: i32,

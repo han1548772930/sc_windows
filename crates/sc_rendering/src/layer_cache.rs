@@ -259,10 +259,10 @@ impl LayerCache {
         let mut result = Vec::new();
 
         for layer in CacheLayer::all_layers() {
-            if let Some(bitmap_id) = self.get_bitmap(*layer) {
-                if self.is_valid(*layer) {
-                    result.push((*layer, bitmap_id));
-                }
+            if let Some(bitmap_id) = self.get_bitmap(*layer)
+                && self.is_valid(*layer)
+            {
+                result.push((*layer, bitmap_id));
             }
         }
 

@@ -262,6 +262,12 @@ impl WindowDetector {
     }
 }
 
+impl Default for WindowDetectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowDetectionManager {
     pub fn new() -> Self {
         Self {

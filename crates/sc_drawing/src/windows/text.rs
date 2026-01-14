@@ -8,18 +8,25 @@ use windows::core::{PCWSTR, w};
 
 use crate::{DrawingElement, defaults::MIN_FONT_SIZE};
 
+pub fn text_padding_for_font_size(font_size: f32) -> f32 {
+    // Keep default padding identical to the current design at font_size=20 (=> 8px).
+    // When scaling text elements down/up, a fixed padding becomes visually too large/small,
+    // especially near the bottom edge. So we scale padding with font size.
+    (font_size * 0.4).clamp(2.0, 24.0)
+}
+
 /// Best-effort: update a text element's size based on its content using DirectWrite metrics.
 ///
-/// The sizing policy (min width/height, padding, and line-height scale) is kept in the caller.
-/// This function focuses on platform-specific measurement.
+/// The sizing policy (min width/height and line-height scale) is kept in the caller.
+/// Padding is derived from font size to stay visually consistent under proportional scaling.
 pub fn update_text_element_size_dwrite(
     element: &mut DrawingElement,
     min_width: i32,
     min_height: i32,
-    padding: f32,
     line_height_scale: f32,
 ) {
     let font_size = element.get_effective_font_size();
+    let padding = text_padding_for_font_size(font_size);
     let dynamic_line_height = (font_size * line_height_scale).ceil() as i32;
 
     let text_content = element.text.clone();
@@ -48,7 +55,8 @@ pub fn update_text_element_size_dwrite(
     }
 
     let new_width = ((max_width_f + padding * 2.0).ceil() as i32).max(min_width);
-    let new_height = (line_count * dynamic_line_height + (padding * 2.0) as i32).max(min_height);
+    let new_height =
+        (line_count * dynamic_line_height + (padding * 2.0).ceil() as i32).max(min_height);
 
     element.rect.right = element.rect.left + new_width;
     element.rect.bottom = element.rect.top + new_height;

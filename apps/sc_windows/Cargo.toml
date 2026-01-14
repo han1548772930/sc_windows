@@ -15,15 +15,15 @@ sc_ocr = { path = "../../crates/sc_ocr" }
 sc_host_protocol = { path = "../../crates/sc_host_protocol" }
 sc_settings = { path = "../../crates/sc_settings" }
 
-# Used by tests/benches.
-sc_app = { path = "../../crates/sc_app" }
-sc_drawing = { path = "../../crates/sc_drawing", features = ["windows"] }
-
 [build-dependencies]
 embed-resource = "3"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+
+# Used by tests/benches.
+sc_app = { path = "../../crates/sc_app" }
+sc_drawing = { path = "../../crates/sc_drawing", features = ["windows"] }
 
 [[bench]]
 name = "rendering_bench"
