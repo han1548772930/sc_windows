@@ -322,6 +322,7 @@ impl App {
             data.selection_rect,
             false,
             self.current_drawing_config(),
+            None,
         ) {
             eprintln!("Failed to show OCR result window: {e:?}");
         }

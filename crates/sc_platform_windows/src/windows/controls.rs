@@ -392,20 +392,20 @@ unsafe extern "system" fn tab_page_proc(
             // 转发 WM_COMMAND 到主窗口（跨越 TabsContainer）
             WM_COMMAND | WM_NOTIFY => {
                 // 查找主窗口（Tab 页面 -> TabsContainer -> 主窗口）
-                if let Ok(tabs_container) = GetParent(hwnd) {
-                    if let Ok(main_window) = GetParent(tabs_container) {
-                        return SendMessageW(main_window, msg, Some(wparam), Some(lparam));
-                    }
+                if let Ok(tabs_container) = GetParent(hwnd)
+                    && let Ok(main_window) = GetParent(tabs_container)
+                {
+                    return SendMessageW(main_window, msg, Some(wparam), Some(lparam));
                 }
                 LRESULT(0)
             }
             // 处理背景色
             WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => {
                 // 转发给主窗口处理
-                if let Ok(tabs_container) = GetParent(hwnd) {
-                    if let Ok(main_window) = GetParent(tabs_container) {
-                        return SendMessageW(main_window, msg, Some(wparam), Some(lparam));
-                    }
+                if let Ok(tabs_container) = GetParent(hwnd)
+                    && let Ok(main_window) = GetParent(tabs_container)
+                {
+                    return SendMessageW(main_window, msg, Some(wparam), Some(lparam));
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }

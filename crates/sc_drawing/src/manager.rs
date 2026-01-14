@@ -126,10 +126,10 @@ impl ElementManager {
         for element in &mut self.elements {
             element.selected = false;
         }
-        if let Some(idx) = index {
-            if idx < self.elements.len() {
-                self.elements[idx].selected = true;
-            }
+        if let Some(idx) = index
+            && idx < self.elements.len()
+        {
+            self.elements[idx].selected = true;
         }
     }
 

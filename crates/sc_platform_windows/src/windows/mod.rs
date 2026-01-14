@@ -15,6 +15,7 @@ pub mod resources;
 pub mod system;
 pub mod tray;
 pub mod tray_manager;
+mod window_event_converter;
 
 pub use app_runner::{UserEventSender, run_fullscreen_toolwindow_app, run_toolwindow_app};
 pub use d2d::Direct2DRenderer;

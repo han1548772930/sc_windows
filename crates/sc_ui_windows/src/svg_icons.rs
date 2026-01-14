@@ -5,10 +5,14 @@ use std::collections::HashMap;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 
+type IconColor = Option<(u8, u8, u8)>;
+type RenderedIconKey = (ToolbarButton, IconColor);
+type RenderedIconCache = HashMap<RenderedIconKey, ID2D1Bitmap>;
+
 #[derive(Debug)]
 pub struct SvgIconManager {
     icons: HashMap<ToolbarButton, Vec<u8>>,
-    rendered_icons: RefCell<HashMap<(ToolbarButton, Option<(u8, u8, u8)>), ID2D1Bitmap>>,
+    rendered_icons: RefCell<RenderedIconCache>,
 }
 
 impl Default for SvgIconManager {

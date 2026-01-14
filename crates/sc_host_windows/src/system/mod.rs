@@ -165,14 +165,14 @@ impl SystemManager {
 
     /// 同步停止 OCR 引擎
     fn stop_ocr_engine_sync(&self) {
-        if let Ok(mut engine_guard) = self.ocr_engine.lock() {
-            if let Some(engine) = engine_guard.take() {
-                #[cfg(debug_assertions)]
-                println!("正在停止 OCR 引擎...");
-                drop(engine);
-                #[cfg(debug_assertions)]
-                println!("OCR 引擎已停止");
-            }
+        if let Ok(mut engine_guard) = self.ocr_engine.lock()
+            && let Some(engine) = engine_guard.take()
+        {
+            #[cfg(debug_assertions)]
+            println!("正在停止 OCR 引擎...");
+            drop(engine);
+            #[cfg(debug_assertions)]
+            println!("OCR 引擎已停止");
         }
     }
 
@@ -180,10 +180,10 @@ impl SystemManager {
     pub fn stop_ocr_engine_async(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
         std::thread::spawn(move || {
-            if let Ok(mut engine_guard) = engine_arc.lock() {
-                if let Some(engine) = engine_guard.take() {
-                    drop(engine);
-                }
+            if let Ok(mut engine_guard) = engine_arc.lock()
+                && let Some(engine) = engine_guard.take()
+            {
+                drop(engine);
             }
         });
     }

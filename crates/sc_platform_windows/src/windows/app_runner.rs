@@ -8,12 +8,14 @@ use windows::Win32::UI::WindowsAndMessaging::{CREATESTRUCTW, WM_APP, WNDCLASS_ST
 use crate::EventConverter;
 use crate::win_api;
 use crate::win32::{
-    HWND, LPARAM, LRESULT, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_PAINT, WM_SETCURSOR, WPARAM,
+    HWND, LPARAM, LRESULT, RECT, SWP_NOACTIVATE, SWP_NOZORDER, WM_CLOSE, WM_CREATE, WM_DESTROY,
+    WM_DPICHANGED, WM_PAINT, WM_SETCURSOR, WPARAM,
 };
 
 use super::message_box;
 use super::system::get_screen_size;
 use super::tray_manager::{TRAY_CALLBACK_MESSAGE, tray_event_from_callback};
+use super::window_event_converter::WindowEventConverter;
 
 const USER_EVENT_MESSAGE: u32 = WM_APP + 42;
 
@@ -212,6 +214,41 @@ where
             win_api::def_window_proc(hwnd, msg, wparam, lparam)
         }
 
+        WM_DPICHANGED => {
+            let ptr = win_api::get_window_user_data(hwnd) as *mut AppState<A, A::UserEvent>;
+            if ptr.is_null() {
+                return win_api::def_window_proc(hwnd, msg, wparam, lparam);
+            }
+
+            let rect_ptr = lparam.0 as *const RECT;
+            if rect_ptr.is_null() {
+                return win_api::def_window_proc(hwnd, msg, wparam, lparam);
+            }
+
+            let rect = unsafe { *rect_ptr };
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+
+            // Apply the OS suggested window bounds for the new DPI.
+            // This will usually trigger WM_SIZE / WM_MOVE.
+            let _ = win_api::set_window_pos(
+                hwnd,
+                None,
+                rect.left,
+                rect.top,
+                width,
+                height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+
+            let state = unsafe { &mut *ptr };
+            if let Some(event) = WindowEventConverter::convert(msg, wparam, lparam) {
+                let _ = state.app.handle_window_event(super::window_id(hwnd), event);
+            }
+
+            LRESULT(0)
+        }
+
         WM_SETCURSOR => LRESULT(1),
 
         val if val == TRAY_CALLBACK_MESSAGE => {
@@ -237,21 +274,25 @@ where
             let ptr = win_api::get_window_user_data(hwnd) as *mut AppState<A, A::UserEvent>;
             if !ptr.is_null() {
                 let state = unsafe { &mut *ptr };
+                let window = super::window_id(hwnd);
 
-                if let Some(result) =
-                    state
-                        .app
-                        .handle_window_message(super::window_id(hwnd), msg, wparam.0, lparam.0)
+                if let Some(event) = WindowEventConverter::convert(msg, wparam, lparam)
+                    && let Some(result) = state.app.handle_window_event(window, event)
                 {
                     return LRESULT(result);
                 }
 
-                if let Some(event) = EventConverter::convert(msg, wparam, lparam) {
-                    if let Some(result) =
-                        state.app.handle_input_event(super::window_id(hwnd), event)
-                    {
-                        return LRESULT(result);
-                    }
+                if let Some(result) = state
+                    .app
+                    .handle_window_message(window, msg, wparam.0, lparam.0)
+                {
+                    return LRESULT(result);
+                }
+
+                if let Some(event) = EventConverter::convert(msg, wparam, lparam)
+                    && let Some(result) = state.app.handle_input_event(window, event)
+                {
+                    return LRESULT(result);
                 }
             }
 

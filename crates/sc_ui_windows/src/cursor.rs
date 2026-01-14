@@ -19,54 +19,17 @@ pub struct CursorContext {
     pub selection_handle_mode: DragMode,
 }
 
-impl CursorContext {
-    pub fn new(
-        mouse_x: i32,
-        mouse_y: i32,
-        hovered_button: ToolbarButton,
-        is_button_disabled: bool,
-        is_text_editing: bool,
-        editing_element_info: Option<(DrawingElement, usize)>,
-        current_tool: DrawingTool,
-        selection_rect: Option<RectI32>,
-        selected_element_info: Option<(DrawingElement, usize)>,
-        selection_handle_mode: DragMode,
-    ) -> Self {
-        Self {
-            mouse_x,
-            mouse_y,
-            hovered_button,
-            is_button_disabled,
-            is_text_editing,
-            editing_element_info,
-            current_tool,
-            selection_rect,
-            selected_element_info,
-            selection_handle_mode,
-        }
-    }
-}
-
 /// 光标管理器
 pub struct CursorManager;
 
 impl CursorManager {
     /// 根据应用状态确定合适的光标
-    pub fn determine_cursor(
-        x: i32,
-        y: i32,
-        hovered_button: ToolbarButton,
-        is_button_disabled: bool,
-        is_text_editing: bool,
-        editing_element_info: Option<(DrawingElement, usize)>,
-        current_tool: DrawingTool,
-        selection_rect: Option<RectI32>,
-        selected_element_info: Option<(DrawingElement, usize)>,
-        selection_handle_mode: DragMode,
-        drawing_manager: &DrawingManager,
-    ) -> CursorIcon {
+    pub fn determine_cursor(ctx: &CursorContext, drawing_manager: &DrawingManager) -> CursorIcon {
+        let x = ctx.mouse_x;
+        let y = ctx.mouse_y;
+
         // 1) 按钮悬停优先
-        if hovered_button != ToolbarButton::None && !is_button_disabled {
+        if ctx.hovered_button != ToolbarButton::None && !ctx.is_button_disabled {
             return CursorIcon::Hand;
         }
 
@@ -80,57 +43,50 @@ impl CursorManager {
         }
 
         // 2) 文本编辑状态
-        if is_text_editing {
-            if let Some((element, element_index)) = editing_element_info {
+        if ctx.is_text_editing {
+            if let Some((element, element_index)) = ctx.editing_element_info.as_ref() {
                 let handle_mode = drawing_manager.get_element_handle_at_position(
                     x,
                     y,
                     &element.rect,
                     element.tool,
-                    element_index,
+                    *element_index,
                 );
                 return Self::get_resize_cursor(handle_mode).unwrap_or(CursorIcon::IBeam);
-            } else {
-                return CursorIcon::IBeam;
             }
+            return CursorIcon::IBeam;
         }
 
         // 3) 有选择框的情况
-        if let Some(rect) = selection_rect {
+        if let Some(rect) = ctx.selection_rect {
             let inside_selection =
                 x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 
             // 3.1) 无论当前工具为何，优先检查“已选元素”的手柄命中（旧逻辑优先级）
-            if let Some((element, element_index)) = selected_element_info {
+            if let Some((element, element_index)) = ctx.selected_element_info.as_ref() {
                 let handle_mode = drawing_manager.get_element_handle_at_position(
                     x,
                     y,
                     &element.rect,
                     element.tool,
-                    element_index,
+                    *element_index,
                 );
                 if handle_mode != DragMode::None {
                     return Self::get_resize_cursor(handle_mode).unwrap_or(CursorIcon::Arrow);
                 }
-                // 选中元素内部命中（文本未编辑时箭头，编辑中或非文本显示移动）
+
+                // 选中元素内部命中（文本未编辑时箭头，非文本显示移动）
                 if element.contains_point(x, y) {
                     if element.tool == DrawingTool::Text {
-                        if is_text_editing
-                            && let Some((_, edit_idx)) = editing_element_info
-                            && edit_idx == element_index
-                        {
-                            return CursorIcon::SizeAll;
-                        }
                         return CursorIcon::Arrow;
-                    } else {
-                        return CursorIcon::SizeAll;
                     }
+                    return CursorIcon::SizeAll;
                 }
             }
 
             // 3.2) 当前选择了绘图工具：仅在选区内显示绘图光标，选区外显示禁止
             if matches!(
-                current_tool,
+                ctx.current_tool,
                 DrawingTool::Pen
                     | DrawingTool::Rectangle
                     | DrawingTool::Circle
@@ -142,7 +98,7 @@ impl CursorManager {
                     CursorIcon::NotAllowed
                 };
             }
-            if matches!(current_tool, DrawingTool::Text) {
+            if matches!(ctx.current_tool, DrawingTool::Text) {
                 return if inside_selection {
                     CursorIcon::IBeam
                 } else {
@@ -151,7 +107,7 @@ impl CursorManager {
             }
 
             // 3.3) 未选择绘图工具：检查选择框手柄
-            if let Some(cursor) = Self::get_resize_cursor(selection_handle_mode) {
+            if let Some(cursor) = Self::get_resize_cursor(ctx.selection_handle_mode) {
                 return cursor;
             }
 

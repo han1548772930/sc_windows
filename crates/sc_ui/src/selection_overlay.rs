@@ -88,9 +88,7 @@ pub fn build_selection_overlay_render_list_with_style(
         return None;
     }
 
-    let Some(selection_rect) = selection_rect else {
-        return None;
-    };
+    let selection_rect = selection_rect?;
 
     let mut render_list = RenderList::with_capacity(4);
 

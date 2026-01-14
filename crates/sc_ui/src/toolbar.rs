@@ -135,9 +135,7 @@ pub fn layout_toolbar(
     selection_rect: Option<RectI32>,
     style: &ToolbarStyle,
 ) -> Option<ToolbarLayout> {
-    let Some(selection_rect) = selection_rect else {
-        return None;
-    };
+    let selection_rect = selection_rect?;
 
     let screen_width = screen_size.0 as f32;
     let screen_height = screen_size.1 as f32;

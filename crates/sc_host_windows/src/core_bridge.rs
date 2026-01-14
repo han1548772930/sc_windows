@@ -1,27 +1,6 @@
 use sc_app::{AppModel, Effect, selection as core_selection};
-use sc_platform_windows::win32::RECT;
 
 use sc_host_protocol::{Command, DrawingMessage, UIMessage};
-
-#[inline]
-pub fn rect_to_core(rect: RECT) -> core_selection::RectI32 {
-    core_selection::RectI32 {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-    }
-}
-
-#[inline]
-pub fn rect_from_core(rect: core_selection::RectI32) -> RECT {
-    RECT {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-    }
-}
 
 pub fn command_from_effect(effect: Effect) -> Option<Command> {
     match effect {

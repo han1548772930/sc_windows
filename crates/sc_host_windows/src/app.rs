@@ -18,11 +18,14 @@ use sc_host_protocol::{Command, DrawingMessage, UIMessage};
 use sc_ocr::{OcrCompletionData, OcrResult};
 use sc_platform::{
     Color, HostPlatform, InputEvent, KeyCode, MouseButton, PlatformError, PlatformServicesError,
+    WindowEvent,
 };
+use sc_platform_windows::windows::bmp::crop_bmp;
 use sc_platform_windows::windows::{Direct2DRenderer, UserEventSender};
 use sc_rendering::Rectangle;
 use sc_rendering::{DirtyRectTracker, DirtyType};
 use sc_settings::{ConfigManager, Settings};
+use sc_ui_windows::cursor::CursorContext;
 use sc_ui_windows::{CursorManager, PreviewWindow, ToolbarButton, UIError, UIManager};
 
 use crate::HostEvent;
@@ -184,13 +187,13 @@ impl App {
         let dirty_type = self.dirty_tracker.dirty_type();
 
         #[cfg(debug_assertions)]
-        if dirty_type == DirtyType::Partial {
-            if let Some(rect) = self.dirty_tracker.get_combined_dirty_rect() {
-                eprintln!(
-                    "Partial redraw: ({}, {}) {}x{}",
-                    rect.x, rect.y, rect.width, rect.height
-                );
-            }
+        if dirty_type == DirtyType::Partial
+            && let Some(rect) = self.dirty_tracker.get_combined_dirty_rect()
+        {
+            eprintln!(
+                "Partial redraw: ({}, {}) {}x{}",
+                rect.x, rect.y, rect.width, rect.height
+            );
         }
 
         self.platform
@@ -478,9 +481,9 @@ impl App {
             let current_tool = self.drawing.get_current_tool();
             let selection_handle_mode = self.screenshot.get_handle_at_position(x, y);
 
-            CursorManager::determine_cursor(
-                x,
-                y,
+            let ctx = CursorContext {
+                mouse_x: x,
+                mouse_y: y,
                 hovered_button,
                 is_button_disabled,
                 is_text_editing,
@@ -489,8 +492,9 @@ impl App {
                 selection_rect,
                 selected_element_info,
                 selection_handle_mode,
-                &self.drawing,
-            )
+            };
+
+            CursorManager::determine_cursor(&ctx, &self.drawing)
         };
 
         self.host_platform().set_cursor(cursor);
@@ -801,6 +805,13 @@ impl App {
         // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
 
+        // OCR source: use the raw screenshot crop (no drawings) for better recognition.
+        let crop_rect: Rect = selection_rect.into();
+        let ocr_source_bmp_data = self
+            .screenshot
+            .get_current_image_data()
+            .and_then(|data| crop_bmp(data, &crop_rect).ok());
+
         // 创建固钉窗口
         if let Err(e) = PreviewWindow::show(
             bmp_data,
@@ -808,6 +819,7 @@ impl App {
             selection_rect,
             true,
             self.current_drawing_config(),
+            ocr_source_bmp_data,
         ) {
             return Err(AppError::WinApi(format!(
                 "Failed to show pin window: {e:?}"
@@ -1000,6 +1012,44 @@ impl sc_platform::WindowMessageHandler for App {
                 let commands = self.dispatch_core_action(CoreAction::OcrCancelled);
                 self.execute_command_chain(commands, window);
                 Some(0)
+            }
+        }
+    }
+
+    fn handle_window_event(&mut self, window: WindowId, event: WindowEvent) -> Option<isize> {
+        match event {
+            WindowEvent::Resized { width, height } => {
+                if width <= 0 || height <= 0 {
+                    return None;
+                }
+
+                if let Err(e) = self.platform.initialize(window, width, height) {
+                    eprintln!("Failed to resize renderer: {e}");
+                }
+
+                if self.screen_size != (width, height) {
+                    self.screen_size = (width, height);
+                    self.dirty_tracker
+                        .set_screen_size(width as f32, height as f32);
+                }
+
+                self.dirty_tracker.mark_full_redraw();
+                let _ = self.host_platform.request_redraw(window);
+
+                None
+            }
+
+            WindowEvent::DpiChanged { .. } => {
+                self.dirty_tracker.mark_full_redraw();
+                let _ = self.host_platform.request_redraw(window);
+                None
+            }
+
+            WindowEvent::DisplayChanged { .. } => {
+                let _ = self.update_screen_size_cache();
+                self.dirty_tracker.mark_full_redraw();
+                let _ = self.host_platform.request_redraw(window);
+                None
             }
         }
     }

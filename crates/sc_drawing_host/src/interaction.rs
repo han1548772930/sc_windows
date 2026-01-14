@@ -1,11 +1,14 @@
 use sc_drawing::{
     Color, HandleConfig, Point, Rect, clamp_to_rect, defaults, detect_arrow_handle,
-    detect_handle_at_position, is_drag_threshold_exceeded,
+    detect_handle_at_position, detect_handle_at_position_with_radius, is_drag_threshold_exceeded,
 };
 
 use sc_drawing::history;
 
 use super::{DragMode, DrawingElement, DrawingManager, DrawingTool, ElementInteractionMode};
+use crate::constants::{
+    MIN_TEXT_HEIGHT, MIN_TEXT_WIDTH, TEXT_HANDLE_DETECTION_RADIUS, TEXT_LINE_HEIGHT_SCALE,
+};
 use sc_host_protocol::{Command, DrawingMessage};
 
 impl DrawingManager {
@@ -238,8 +241,35 @@ impl DrawingManager {
             el.set_font_size(new_font_size);
 
             // 计算等比例缩放后的新尺寸
-            let new_width = (original_width as f32 * scale) as i32;
-            let new_height = (original_height as f32 * scale) as i32;
+            let mut new_width = (original_width as f32 * scale) as i32;
+            let mut new_height = (original_height as f32 * scale) as i32;
+
+            // Clamp to minimum box size.
+            new_width = new_width.max(MIN_TEXT_WIDTH);
+            new_height = new_height.max(MIN_TEXT_HEIGHT);
+
+            // IMPORTANT: keep the scaled rect tall enough to fit all explicit lines.
+            //
+            // During proportional resize we scale the rect using floats and then truncate to i32,
+            // while line height is derived from `ceil(font_size * TEXT_LINE_HEIGHT_SCALE)`. The
+            // truncation can under-allocate by a few pixels, which makes the last line/caret spill
+            // outside the selection box.
+            let font_size = el.get_effective_font_size();
+            let padding = sc_drawing::windows::text_padding_for_font_size(font_size);
+            let line_height = (font_size * TEXT_LINE_HEIGHT_SCALE).ceil() as i32;
+
+            let mut line_count = if el.text.is_empty() {
+                1
+            } else {
+                el.text.lines().count() as i32
+            };
+            if !el.text.is_empty() && el.text.ends_with('\n') {
+                line_count += 1;
+            }
+
+            let required_height =
+                (line_count * line_height + (padding * 2.0).ceil() as i32).max(MIN_TEXT_HEIGHT);
+            new_height = new_height.max(required_height);
 
             // 根据拖拽的角确定新矩形的位置
             let proportional_rect = match resize_mode {
@@ -294,7 +324,13 @@ impl DrawingManager {
 
         match tool {
             DrawingTool::Arrow => detect_arrow_handle(x, y, element_points),
-            DrawingTool::Text => detect_handle_at_position(x, y, rect, HandleConfig::Corners),
+            DrawingTool::Text => detect_handle_at_position_with_radius(
+                x,
+                y,
+                rect,
+                HandleConfig::Corners,
+                TEXT_HANDLE_DETECTION_RADIUS,
+            ),
             _ => detect_handle_at_position(x, y, rect, HandleConfig::Full),
         }
     }
@@ -595,55 +631,55 @@ impl DrawingManager {
                 }
             }
             ElementInteractionMode::MovingElement => {
-                if let Some(index) = self.selected_element {
-                    if let Some(element) = self.elements.get_elements().get(index) {
-                        let dx = element.rect.left - self.interaction_start_rect.left;
-                        let dy = element.rect.top - self.interaction_start_rect.top;
+                if let Some(index) = self.selected_element
+                    && let Some(element) = self.elements.get_elements().get(index)
+                {
+                    let dx = element.rect.left - self.interaction_start_rect.left;
+                    let dy = element.rect.top - self.interaction_start_rect.top;
 
-                        if dx != 0 || dy != 0 {
-                            let action = history::DrawingAction::MoveElement {
-                                index,
-                                dx,
-                                dy,
-                                old_points: self.interaction_start_points.clone(),
-                                old_rect: self.interaction_start_rect,
-                            };
-                            self.history.record_action(
-                                action,
-                                self.selected_element,
-                                self.selected_element,
-                            );
-                        }
+                    if dx != 0 || dy != 0 {
+                        let action = history::DrawingAction::MoveElement {
+                            index,
+                            dx,
+                            dy,
+                            old_points: self.interaction_start_points.clone(),
+                            old_rect: self.interaction_start_rect,
+                        };
+                        self.history.record_action(
+                            action,
+                            self.selected_element,
+                            self.selected_element,
+                        );
                     }
                 }
             }
             ElementInteractionMode::ResizingElement(_) => {
-                if let Some(index) = self.selected_element {
-                    if let Some(element) = self.elements.get_elements().get(index) {
-                        let rect_changed = element.rect.left != self.interaction_start_rect.left
-                            || element.rect.top != self.interaction_start_rect.top
-                            || element.rect.right != self.interaction_start_rect.right
-                            || element.rect.bottom != self.interaction_start_rect.bottom;
-                        let points_changed = element.points != self.interaction_start_points;
-                        let font_size_changed =
-                            (element.font_size - self.interaction_start_font_size).abs() > 0.01;
+                if let Some(index) = self.selected_element
+                    && let Some(element) = self.elements.get_elements().get(index)
+                {
+                    let rect_changed = element.rect.left != self.interaction_start_rect.left
+                        || element.rect.top != self.interaction_start_rect.top
+                        || element.rect.right != self.interaction_start_rect.right
+                        || element.rect.bottom != self.interaction_start_rect.bottom;
+                    let points_changed = element.points != self.interaction_start_points;
+                    let font_size_changed =
+                        (element.font_size - self.interaction_start_font_size).abs() > 0.01;
 
-                        if rect_changed || points_changed || font_size_changed {
-                            let action = history::DrawingAction::ResizeElement {
-                                index,
-                                old_points: self.interaction_start_points.clone(),
-                                old_rect: self.interaction_start_rect,
-                                old_font_size: self.interaction_start_font_size,
-                                new_points: element.points.clone(),
-                                new_rect: element.rect,
-                                new_font_size: element.font_size,
-                            };
-                            self.history.record_action(
-                                action,
-                                self.selected_element,
-                                self.selected_element,
-                            );
-                        }
+                    if rect_changed || points_changed || font_size_changed {
+                        let action = history::DrawingAction::ResizeElement {
+                            index,
+                            old_points: self.interaction_start_points.clone(),
+                            old_rect: self.interaction_start_rect,
+                            old_font_size: self.interaction_start_font_size,
+                            new_points: element.points.clone(),
+                            new_rect: element.rect,
+                            new_font_size: element.font_size,
+                        };
+                        self.history.record_action(
+                            action,
+                            self.selected_element,
+                            self.selected_element,
+                        );
                     }
                 }
             }

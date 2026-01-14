@@ -12,7 +12,7 @@ pub use drawing_renderer::{DrawingRenderer, TextCursorState};
 pub use elements::{ArrowRenderer, CircleRenderer, PenRenderer, RectangleRenderer, TextRenderer};
 pub use ext::{PointExt, RectExt};
 pub use renderable::{RenderError, RenderResult, Renderable, RendererRegistry};
-pub use text::update_text_element_size_dwrite;
+pub use text::{text_padding_for_font_size, update_text_element_size_dwrite};
 
 // 重新导出 Windows 类型，方便主项目使用
 pub use windows::Win32::Foundation::{POINT, RECT};
