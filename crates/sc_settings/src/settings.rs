@@ -94,19 +94,7 @@ impl Default for Settings {
 
 impl Settings {
     fn settings_dir() -> PathBuf {
-        // Prefer a user home directory.
-        let base_dir = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            })
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        base_dir.join(".ocr_screenshot_tool")
+        PathBuf::from(default_config_path()).join(".ocr_screenshot_tool")
     }
 
     fn primary_settings_path() -> PathBuf {

@@ -4,7 +4,7 @@ use sc_app::selection::{RectI32, is_drag_threshold_exceeded};
 use sc_drawing::windows::GeometryCache;
 use sc_drawing::{Rect, is_rect_valid};
 use sc_windows::drawing::{
-    DrawingAction, DrawingElement, DrawingTool, ElementManager, HistoryManager,
+    DragMode, DrawingAction, DrawingElement, DrawingTool, ElementManager, HistoryManager,
 };
 use sc_windows::screenshot::selection::SelectionState;
 
@@ -20,49 +20,36 @@ fn bench_selection_state(c: &mut Criterion) {
         });
     });
 
-    // 测试开始和结束选择（新版本：drag-create 几何由 core 计算；host 仅维护 selecting 标记 + 已确认 rect）
+    // 测试开始和结束交互（新版本：host 仅维护交互状态，不再持有确认选区）
     group.bench_function("start_end_selection", |b| {
         let mut state = SelectionState::new();
         let start_x = 100;
         let start_y = 100;
-        let end_x = 500;
-        let end_y = 500;
 
         b.iter(|| {
             state.set_mouse_pressed(true);
-            state.set_interaction_start_pos(black_box(start_x), black_box(start_y));
-
-            // Simulate confirming a selection on mouse-up.
-            let rect = RectI32::from_points(start_x, start_y, end_x, end_y);
-            state.set_confirmed_selection_rect(rect);
-            state.set_mouse_pressed(false);
+            state.start_interaction(black_box(start_x), black_box(start_y), DragMode::Moving);
+            state.end_interaction();
 
             state.reset();
         });
     });
 
-    // 测试直接设置选择矩形（作为已确认选区）
-    group.bench_function("set_confirmed_selection_rect", |b| {
+    // 测试鼠标按下状态切换
+    group.bench_function("set_mouse_pressed", |b| {
         let mut state = SelectionState::new();
-        let rect = RectI32 {
-            left: 100,
-            top: 100,
-            right: 500,
-            bottom: 500,
-        };
-
         b.iter(|| {
-            state.set_confirmed_selection_rect(black_box(rect));
+            state.set_mouse_pressed(true);
             state.clear_selection();
         });
     });
 
-    // 测试获取选择
-    group.bench_function("get_selection", |b| {
+    // 测试交互状态查询
+    group.bench_function("is_interacting", |b| {
         let mut state = SelectionState::new();
-        let rect = RectI32::from_points(100, 100, 500, 500);
-        state.set_confirmed_selection_rect(rect);
-        b.iter(|| black_box(state.get_selection()));
+        state.start_interaction(0, 0, DragMode::Moving);
+        b.iter(|| black_box(state.is_interacting()));
+        state.end_interaction();
     });
 
     group.finish();
@@ -74,22 +61,22 @@ fn bench_handle_detection(c: &mut Criterion) {
 
     // 测试手柄位置检测
     group.bench_function("get_handle_at_position_hit", |b| {
-        let mut state = SelectionState::new();
-        state.set_confirmed_selection_rect(RectI32::from_points(100, 100, 500, 500));
+        let state = SelectionState::new();
+        let rect = RectI32::from_points(100, 100, 500, 500);
 
         b.iter(|| {
             // 测试点击左上角手柄
-            black_box(state.get_handle_at_position(100, 100))
+            black_box(state.get_handle_at_position(Some(rect), 100, 100))
         });
     });
 
     group.bench_function("get_handle_at_position_miss", |b| {
-        let mut state = SelectionState::new();
-        state.set_confirmed_selection_rect(RectI32::from_points(100, 100, 500, 500));
+        let state = SelectionState::new();
+        let rect = RectI32::from_points(100, 100, 500, 500);
 
         b.iter(|| {
             // 测试点击不在任何手柄上的位置
-            black_box(state.get_handle_at_position(300, 300))
+            black_box(state.get_handle_at_position(Some(rect), 300, 300))
         });
     });
 

@@ -525,7 +525,8 @@ impl SettingsWindowState {
 
     fn load_ocr_languages(&self) {
         unsafe {
-            let available_languages = get_available_languages(std::path::Path::new("models"));
+            let available_languages =
+                get_available_languages(std::path::Path::new(sc_ocr::DEFAULT_MODELS_DIR));
 
             if available_languages.is_empty() {
                 let text = to_wide_chars("未找到 OCR 模型");

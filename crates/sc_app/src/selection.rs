@@ -41,6 +41,8 @@ pub const MIN_BOX_SIZE: i32 = 50;
 ///
 /// This is a core interaction rule so host behavior stays consistent.
 pub const DRAG_THRESHOLD: i32 = 5;
+/// Explicit alias for selection drag/click threshold (in pixels).
+pub const SELECTION_DRAG_THRESHOLD: i32 = DRAG_THRESHOLD;
 
 /// True if the pointer moved far enough to be considered a drag (vs a click).
 #[inline]
@@ -50,9 +52,22 @@ pub fn is_drag_threshold_exceeded(
     current_x: i32,
     current_y: i32,
 ) -> bool {
+    is_drag_threshold_exceeded_with(start_x, start_y, current_x, current_y, DRAG_THRESHOLD)
+}
+
+/// True if the pointer moved far enough to be considered a drag (vs a click),
+/// using a caller-provided threshold.
+#[inline]
+pub fn is_drag_threshold_exceeded_with(
+    start_x: i32,
+    start_y: i32,
+    current_x: i32,
+    current_y: i32,
+    threshold: i32,
+) -> bool {
     let dx = (current_x - start_x).abs();
     let dy = (current_y - start_y).abs();
-    dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD
+    dx > threshold || dy > threshold
 }
 
 /// Validate a selection rectangle against a minimum size.
@@ -212,6 +227,7 @@ pub struct Model {
     hover_selection: Option<RectI32>,
 
     edit_interaction: Option<EditInteraction>,
+    last_mouse_up_is_click: Option<bool>,
 }
 
 impl Model {
@@ -244,6 +260,12 @@ impl Model {
             Phase::Selecting { selection } => selection.or(self.hover_selection),
             Phase::Editing { selection } => Some(*selection),
         }
+    }
+
+    /// Returns whether the most recent `MouseUp` was classified as a click, if any.
+    /// The value is cleared after being read.
+    pub fn take_last_mouse_up_is_click(&mut self) -> Option<bool> {
+        self.last_mouse_up_is_click.take()
     }
 
     pub fn reduce(&mut self, action: Action) -> Vec<Effect> {
@@ -306,6 +328,7 @@ impl Model {
             }
 
             Action::MouseDown { x, y } => {
+                self.last_mouse_up_is_click = None;
                 self.mouse_down_pos = Some((x, y));
 
                 // Enter selecting on mouse-down when idle.
@@ -355,10 +378,12 @@ impl Model {
                 self.auto_highlight_active = false;
                 self.hover_selection = None;
                 self.edit_interaction = None;
+                self.last_mouse_up_is_click = None;
                 Vec::new()
             }
 
             Action::MouseUp { x, y } => {
+                self.last_mouse_up_is_click = None;
                 let was_selecting_phase = matches!(self.phase, Phase::Selecting { .. });
 
                 // Only meaningful in Selecting; ignore otherwise (keeps model robust if host doesn't route).
@@ -370,6 +395,7 @@ impl Model {
                 let mouse_down_pos = self.mouse_down_pos.take();
                 let is_click = mouse_down_pos
                     .is_some_and(|(sx, sy)| !is_drag_threshold_exceeded(sx, sy, x, y));
+                self.last_mouse_up_is_click = Some(is_click);
 
                 // Candidate selection:
                 // - Click: confirm hover-selection (auto-highlight) if present (no min-size rule).

@@ -114,7 +114,10 @@ impl SystemManager {
 
     fn ocr_config(&self) -> OcrConfig {
         let settings = self.settings.read().unwrap_or_else(|e| e.into_inner());
-        OcrConfig::new(PathBuf::from("models"), settings.ocr_language.clone())
+        OcrConfig::new(
+            PathBuf::from(sc_ocr::DEFAULT_MODELS_DIR),
+            settings.ocr_language.clone(),
+        )
     }
 
     /// 异步启动 OCR 引擎
@@ -316,7 +319,7 @@ impl SystemManager {
                 match sc_ocr::recognize_text_by_lines(engine, &cropped, selection_rect) {
                     Ok(results) => results,
                     Err(_) => vec![OcrResult {
-                        text: "OCR识别失败".to_string(),
+                        text: sc_ocr::OCR_FAILED_PLACEHOLDER.to_string(),
                         confidence: 0.0,
                         bounding_box: BoundingBox {
                             x: 0,

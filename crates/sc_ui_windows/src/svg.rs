@@ -90,6 +90,22 @@ pub fn render_svg_to_pixels(
     Ok((pixels, render_size, render_size))
 }
 
+/// Render SVG with common options (size/format/color override).
+pub fn render_svg_pixels(
+    svg_content: &str,
+    size: u32,
+    output_format: PixelFormat,
+    color_override: Option<(u8, u8, u8)>,
+) -> Result<(Vec<u8>, u32, u32)> {
+    let options = SvgRenderOptions {
+        size,
+        scale: 1.0,
+        color_override,
+        output_format,
+    };
+    render_svg_to_pixels(svg_content, &options)
+}
+
 /// 从文件路径加载并渲染 SVG
 pub fn render_svg_from_file(path: &str, options: &SvgRenderOptions) -> Result<(Vec<u8>, u32, u32)> {
     let svg_content = fs::read_to_string(path)?;

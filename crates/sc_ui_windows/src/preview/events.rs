@@ -10,6 +10,7 @@ use sc_platform_windows::windows::{WindowsHostPlatform, window_id as to_window_i
 use super::hit_test::{icon_contains_click_point, update_icon_hover_states};
 use super::renderer::PreviewRenderArgs;
 use super::window::{PreviewWindowState, WM_APP_PREVIEW_OCR_DONE};
+use sc_ui::preview_layout;
 
 impl PreviewWindowState {
     pub(super) unsafe extern "system" fn window_proc(
@@ -193,61 +194,61 @@ impl PreviewWindowState {
                         for icon in &mut window.svg_icons {
                             if icon_contains_click_point(icon, x, y) {
                                 match icon.name.as_str() {
-                                    "window-minimize" => {
+                                    preview_layout::ICON_WINDOW_MINIMIZE => {
                                         let _ = platform.minimize_window(window_id);
                                         return LRESULT(0);
                                     }
-                                    "pin" => {
+                                    preview_layout::ICON_PIN => {
                                         window.is_pinned = !window.is_pinned;
                                         let _ = platform.set_window_topmost_flag(window_id, window.is_pinned);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "download" => {
+                                    preview_layout::ICON_SAVE => {
                                         window.save_image_to_file();
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "extracttext" => {
+                                    preview_layout::ICON_OCR => {
                                         window.toggle_ocr_text_panel();
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "window-maximize" => {
+                                    preview_layout::ICON_WINDOW_MAXIMIZE => {
                                         let _ = platform.maximize_window(window_id);
                                         return LRESULT(0);
                                     }
-                                    "window-restore" => {
+                                    preview_layout::ICON_WINDOW_RESTORE => {
                                         let _ = platform.restore_window(window_id);
                                         return LRESULT(0);
                                     }
-                                    "window-close" => {
+                                    preview_layout::ICON_WINDOW_CLOSE => {
                                         let _ = platform.request_close(window_id);
                                         return LRESULT(0);
                                     }
 
                                     // 绘图工具图标
-                                    "square" => {
+                                    preview_layout::ICON_TOOL_SQUARE => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Rectangle);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "circle" => {
+                                    preview_layout::ICON_TOOL_CIRCLE => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Circle);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "move-up-right" => {
+                                    preview_layout::ICON_TOOL_ARROW => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Arrow);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "pen" => {
+                                    preview_layout::ICON_TOOL_PEN => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Pen);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);
                                     }
-                                    "type" => {
+                                    preview_layout::ICON_TOOL_TEXT => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Text);
                                         let _ = platform.request_redraw(window_id);
                                         return LRESULT(0);

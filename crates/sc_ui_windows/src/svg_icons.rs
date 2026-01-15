@@ -1,5 +1,6 @@
 use super::ToolbarButton;
-use crate::svg::{PixelFormat, SvgRenderOptions, render_svg_to_pixels};
+use crate::icon_assets;
+use crate::svg::{PixelFormat, render_svg_pixels};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -30,97 +31,26 @@ impl SvgIconManager {
     }
 
     pub fn load_icons(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // 使用 include_str! 宏将SVG文件嵌入到二进制文件中
-        let embedded_icons = [
-            (
-                ToolbarButton::Arrow,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/move-up-right.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Rectangle,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/square.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Circle,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/circle.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Pen,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/pen.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Text,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/type.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Undo,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/undo-2.svg"
-                )),
-            ),
-            (
-                ToolbarButton::ExtractText,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/extracttext.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Languages,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/languages.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Save,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/download.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Pin,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/pin.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Confirm,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/check.svg"
-                )),
-            ),
-            (
-                ToolbarButton::Cancel,
-                include_str!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../apps/sc_windows/icons/x.svg"
-                )),
-            ),
+        // 加载内置 SVG 图标内容
+        let buttons = [
+            ToolbarButton::Arrow,
+            ToolbarButton::Rectangle,
+            ToolbarButton::Circle,
+            ToolbarButton::Pen,
+            ToolbarButton::Text,
+            ToolbarButton::Undo,
+            ToolbarButton::ExtractText,
+            ToolbarButton::Languages,
+            ToolbarButton::Save,
+            ToolbarButton::Pin,
+            ToolbarButton::Confirm,
+            ToolbarButton::Cancel,
         ];
 
-        for (button, svg_content) in &embedded_icons {
-            let svg_data = svg_content.as_bytes().to_vec();
-            self.icons.insert(*button, svg_data);
+        for button in buttons {
+            if let Some(svg_content) = icon_assets::toolbar_icon_svg(button) {
+                self.icons.insert(button, svg_content.as_bytes().to_vec());
+            }
         }
 
         Ok(())
@@ -145,13 +75,8 @@ impl SvgIconManager {
         let svg_str = String::from_utf8_lossy(svg_data);
 
         // 使用统一的 SVG 渲染工具
-        let options = SvgRenderOptions {
-            size,
-            scale: 1.0,
-            color_override: color,
-            output_format: PixelFormat::Bgra,
-        };
-        let (bgra_data, render_size, _) = render_svg_to_pixels(&svg_str, &options)?;
+        let (bgra_data, render_size, _) =
+            render_svg_pixels(&svg_str, size, PixelFormat::Bgra, color)?;
 
         let bitmap = Self::create_d2d_bitmap(render_target, &bgra_data, render_size)?;
         self.rendered_icons

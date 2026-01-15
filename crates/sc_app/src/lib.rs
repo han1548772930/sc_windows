@@ -166,6 +166,9 @@ impl AppModel {
     pub fn selection(&self) -> &selection::Model {
         &self.selection
     }
+    pub fn take_selection_mouse_up_is_click(&mut self) -> Option<bool> {
+        self.selection.take_last_mouse_up_is_click()
+    }
 
     pub fn drawing_tool(&self) -> DrawingTool {
         self.drawing_tool

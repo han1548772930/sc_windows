@@ -22,8 +22,6 @@ pub enum AutoHighlightMoveAction {
     SetHighlight(HighlightTarget),
     /// Clear the current auto-highlight target.
     ClearHighlight,
-    /// Transition: disable auto-highlight and begin manual selection at the mouse-down position.
-    BeginManualSelection { start_x: i32, start_y: i32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,14 +31,8 @@ pub struct AutoHighlightMoveArgs {
 
     pub screen_width: i32,
     pub screen_height: i32,
-
-    /// Whether the mouse button is currently pressed.
-    pub mouse_pressed: bool,
-    /// Mouse-down position (used for drag threshold).
-    pub mouse_down_x: i32,
-    pub mouse_down_y: i32,
-    /// Drag threshold in pixels.
-    pub drag_threshold: i32,
+    /// Current hover-highlight rect from core (if any).
+    pub current_highlight: Option<RectI32>,
 
     /// Whether a manual selection is being created.
     pub selecting: bool,
@@ -54,9 +46,6 @@ pub struct AutoHighlighter {
 
     /// When disabled, hover no longer updates the selection/highlight.
     enabled: bool,
-
-    /// The current hover-highlighted target (if any).
-    active: Option<HighlightTarget>,
 }
 
 impl Default for AutoHighlighter {
@@ -70,7 +59,6 @@ impl AutoHighlighter {
         Self {
             detector: WindowDetectionManager::new(),
             enabled: true,
-            active: None,
         }
     }
 
@@ -78,19 +66,10 @@ impl AutoHighlighter {
         self.enabled
     }
 
-    /// True when we are currently showing an auto-highlight selection (hover state).
-    pub fn has_active_highlight(&self) -> bool {
-        self.active.is_some()
-    }
-
-    pub fn active_rect(&self) -> Option<RectI32> {
-        self.active.map(|t| t.rect)
-    }
 
     /// Reset to the default capture state: enable auto-highlight and clear any active highlight.
     pub fn reset(&mut self) {
         self.enabled = true;
-        self.active = None;
     }
 
     pub fn start_detection(&mut self) -> Result<()> {
@@ -107,28 +86,8 @@ impl AutoHighlighter {
             return AutoHighlightMoveAction::None;
         }
 
-        // Transition: while enabled, a drag beyond threshold begins manual selection.
-        if self.enabled && args.mouse_pressed {
-            if is_drag_threshold_exceeded(
-                args.mouse_down_x,
-                args.mouse_down_y,
-                args.x,
-                args.y,
-                args.drag_threshold,
-            ) {
-                self.enabled = false;
-                self.active = None;
-                return AutoHighlightMoveAction::BeginManualSelection {
-                    start_x: args.mouse_down_x,
-                    start_y: args.mouse_down_y,
-                };
-            }
-
-            return AutoHighlightMoveAction::None;
-        }
-
         // Hover highlight.
-        if !self.enabled || args.mouse_pressed {
+        if !self.enabled {
             return AutoHighlightMoveAction::None;
         }
 
@@ -138,26 +97,22 @@ impl AutoHighlighter {
             t
         });
 
-        match (self.active, target) {
+        match (args.current_highlight, target) {
             (None, None) => AutoHighlightMoveAction::None,
 
             (Some(_), None) => {
-                self.active = None;
                 AutoHighlightMoveAction::ClearHighlight
             }
 
             (None, Some(t)) => {
-                self.active = Some(t);
                 AutoHighlightMoveAction::SetHighlight(t)
             }
 
             (Some(prev), Some(next)) => {
-                if rect_eq(&prev.rect, &next.rect) {
+                if rect_eq(&prev, &next.rect) {
                     // No visual change.
-                    self.active = Some(next);
                     AutoHighlightMoveAction::None
                 } else {
-                    self.active = Some(next);
                     AutoHighlightMoveAction::SetHighlight(next)
                 }
             }
@@ -167,13 +122,17 @@ impl AutoHighlighter {
     /// Update auto-highlight state after mouse up.
     ///
     /// Returns `true` if this changes whether we have an active highlight (i.e. a redraw is needed).
-    pub fn handle_mouse_up(&mut self, is_click: bool, selection_has_selection: bool) -> bool {
+    pub fn handle_mouse_up(
+        &mut self,
+        is_click: bool,
+        selection_has_selection: bool,
+        had_active_highlight: bool,
+    ) -> bool {
         // If a selection exists after mouse-up, auto-highlight should be disabled.
         self.enabled = !selection_has_selection;
 
         // If a click confirms an auto-highlighted selection, we should stop treating it as auto-highlight.
-        if is_click && selection_has_selection && self.active.is_some() {
-            self.active = None;
+        if is_click && selection_has_selection && had_active_highlight {
             return true;
         }
 
@@ -198,18 +157,6 @@ fn pick_target(
     })
 }
 
-#[inline]
-fn is_drag_threshold_exceeded(
-    start_x: i32,
-    start_y: i32,
-    current_x: i32,
-    current_y: i32,
-    threshold: i32,
-) -> bool {
-    let dx = (current_x - start_x).abs();
-    let dy = (current_y - start_y).abs();
-    dx > threshold || dy > threshold
-}
 
 #[inline]
 fn clamp_rect_to_screen(rect: RectI32, screen_width: i32, screen_height: i32) -> RectI32 {

@@ -18,11 +18,6 @@ pub struct ScreenshotManager {
     /// 当前截图数据
     current_screenshot: Option<ScreenshotData>,
 
-    /// Pending click-vs-drag classification for the most recent mouse-up.
-    ///
-    /// This is used so the host can update `AutoHighlighter` only after the core reducer has
-    /// confirmed (or rejected) the selection on `Selection::MouseUp`.
-    pending_mouse_up_is_click: Option<bool>,
 
     /// 屏幕尺寸
     screen_width: i32,
@@ -63,7 +58,6 @@ impl ScreenshotManager {
         Ok(Self {
             selection: SelectionState::new(),
             current_screenshot: None,
-            pending_mouse_up_is_click: None,
 
             // 初始化从 WindowState 迁移的字段
             screen_width,
@@ -115,8 +109,6 @@ impl ScreenshotManager {
 
         // 重置选择状态
         self.selection.reset();
-
-        self.pending_mouse_up_is_click = None;
 
         // 工具状态由Drawing模块管理
 
@@ -214,7 +206,13 @@ impl ScreenshotManager {
 
     /// 处理鼠标移动（包含拖拽检测）
     /// 返回 (命令列表, 是否消费了事件)
-    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
+    pub fn handle_mouse_move(
+        &mut self,
+        x: i32,
+        y: i32,
+        selection_rect: Option<core_selection::RectI32>,
+        hover_selection: Option<core_selection::RectI32>,
+    ) -> (Vec<Command>, bool) {
         // 绘图工具处理已移至Drawing模块
 
         // 拖拽已有选择框：几何更新由 core 执行。
@@ -234,7 +232,7 @@ impl ScreenshotManager {
         // core 负责：
         // - auto-highlight 模式下的 drag-threshold gating（避免小抖动误显示 drag box）
         // - drag-create 的 selection rect 几何演算
-        if self.selection.is_mouse_pressed() && !self.selection.has_selection() {
+        if self.selection.is_mouse_pressed() && selection_rect.is_none() {
             return (
                 vec![
                     Command::Core(sc_app::Action::Selection(
@@ -247,7 +245,6 @@ impl ScreenshotManager {
         }
 
         // Hover highlight（auto-highlight）：只在非按下/非交互时更新。
-        let drag_start = self.selection.get_interaction_start_pos();
         let action = self
             .auto_highlight
             .handle_mouse_move(AutoHighlightMoveArgs {
@@ -255,10 +252,7 @@ impl ScreenshotManager {
                 y,
                 screen_width: self.screen_width,
                 screen_height: self.screen_height,
-                mouse_pressed: self.selection.is_mouse_pressed(),
-                mouse_down_x: drag_start.x,
-                mouse_down_y: drag_start.y,
-                drag_threshold: core_selection::DRAG_THRESHOLD,
+                current_highlight: hover_selection,
                 selecting: false,
                 interacting: false,
             });
@@ -291,22 +285,25 @@ impl ScreenshotManager {
                 true,
             ),
 
-            // With drag threshold handled in core, this shouldn't happen.
-            AutoHighlightMoveAction::BeginManualSelection { .. }
-            | AutoHighlightMoveAction::None => (vec![], false),
+            AutoHighlightMoveAction::None => (vec![], false),
         }
     }
 
     /// 处理鼠标按下
     /// 返回 (命令列表, 是否消费了事件)
-    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
+    pub fn handle_mouse_down(
+        &mut self,
+        x: i32,
+        y: i32,
+        selection_rect: Option<core_selection::RectI32>,
+        has_auto_highlight: bool,
+    ) -> (Vec<Command>, bool) {
         if self.current_screenshot.is_none() {
             return (vec![], false);
         }
 
         // 设置鼠标按下状态
         self.selection.set_mouse_pressed(true);
-        self.selection.set_interaction_start_pos(x, y);
 
         // 绘图工具和元素点击检查已移至Drawing模块
 
@@ -314,19 +311,19 @@ impl ScreenshotManager {
         // - 单击：确认当前高亮（在 mouse_up 中完成）
         // - 拖拽：超过阈值后转为手动框选（在 mouse_move 中完成）
         // 这里不要直接进入“移动/缩放高亮框”的交互，否则会导致无法自定义框选。
-        if self.auto_highlight.enabled() && self.auto_highlight.has_active_highlight() {
+        if has_auto_highlight {
             return (vec![], true);
         }
 
         // 第三优先级：检查工具栏点击
-        if self.selection.has_selection() {
+        if selection_rect.is_some() {
             // 工具栏点击检测需要通过UI管理器处理
             // 这里暂时跳过，让UI管理器在App层处理工具栏点击
         }
 
         // 检查手柄/内部点击：通过统一交互控制器
-        if self.selection.has_selection() {
-            let drag_mode = self.selection.get_handle_at_position(x, y);
+        if selection_rect.is_some() {
+            let drag_mode = self.selection.get_handle_at_position(selection_rect, x, y);
             if drag_mode != DragMode::None {
                 self.selection.start_interaction(x, y, drag_mode);
                 return (
@@ -374,25 +371,19 @@ impl ScreenshotManager {
 
     /// 处理鼠标释放
     /// 返回 (命令列表, 是否消费了事件)
-    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> (Vec<Command>, bool) {
+    pub fn handle_mouse_up(
+        &mut self,
+        _x: i32,
+        _y: i32,
+        selection_rect: Option<core_selection::RectI32>,
+    ) -> (Vec<Command>, bool) {
         let mut commands = Vec::new();
 
         // 绘图工具完成处理已移至Drawing模块
 
-        // 检查是否是单击（没有拖拽）
-        //
-        // This is only needed for the auto-highlight state machine during initial selection.
-        if !self.selection.has_selection() {
-            let start_pos = self.selection.get_interaction_start_pos();
-            let is_click = self.selection.is_mouse_pressed()
-                && !core_selection::is_drag_threshold_exceeded(start_pos.x, start_pos.y, x, y);
-            self.pending_mouse_up_is_click = Some(is_click);
-        }
-
         // 处理选择框创建和拖拽结束
-        let is_manual_selecting = !self.auto_highlight.enabled()
-            && self.selection.is_mouse_pressed()
-            && !self.selection.has_selection();
+        let is_manual_selecting =
+            !self.auto_highlight.enabled() && self.selection.is_mouse_pressed() && selection_rect.is_none();
 
         if is_manual_selecting {
             // 结束手动框选：确认规则完全由 core 决策；host 仅请求重绘。
@@ -413,39 +404,26 @@ impl ScreenshotManager {
         (commands, consumed)
     }
 
-    /// 获取当前选择区域（core 类型）
-    pub fn get_selection(&self) -> Option<core_selection::RectI32> {
-        self.selection.get_selection()
-    }
-
-    pub fn sync_confirmed_selection_from_core(
-        &mut self,
-        selection: Option<core_selection::RectI32>,
-    ) {
-        match selection {
-            Some(rect) => self.selection.set_confirmed_selection_rect(rect),
-            None => self.selection.clear_confirmed_selection_rect(),
-        }
-    }
-
-    pub fn take_pending_mouse_up_is_click(&mut self) -> Option<bool> {
-        self.pending_mouse_up_is_click.take()
-    }
-
     pub fn handle_auto_highlight_mouse_up(
         &mut self,
         is_click: bool,
         selection_has_selection: bool,
+        had_active_highlight: bool,
     ) -> bool {
         self.auto_highlight
-            .handle_mouse_up(is_click, selection_has_selection)
+            .handle_mouse_up(is_click, selection_has_selection, had_active_highlight)
     }
 
     /// 处理双击事件
-    pub fn handle_double_click(&mut self, _x: i32, _y: i32) -> Vec<Command> {
+    pub fn handle_double_click(
+        &mut self,
+        _x: i32,
+        _y: i32,
+        selection_rect: Option<core_selection::RectI32>,
+    ) -> Vec<Command> {
         // 双击可能用于确认选择或快速操作
         // 如果有选择区域，双击可能表示确认选择
-        if self.selection.get_selection().is_some() {
+        if selection_rect.is_some() {
             // 走 core: SaveSelectionToClipboard（由宿主命令执行隐藏窗口/重置）
             vec![Command::Core(sc_app::Action::SaveSelectionToClipboard)]
         } else {
@@ -497,15 +475,23 @@ impl std::error::Error for ScreenshotError {}
 
 impl ScreenshotManager {
     /// 代理选择状态的手柄命中检测（方便App层统一处理光标）
-    pub fn get_handle_at_position(&self, x: i32, y: i32) -> DragMode {
-        self.selection.get_handle_at_position(x, y)
+    pub fn get_handle_at_position(
+        &self,
+        selection_rect: Option<core_selection::RectI32>,
+        x: i32,
+        y: i32,
+    ) -> DragMode {
+        self.selection.get_handle_at_position(selection_rect, x, y)
     }
 }
 
 impl ScreenshotManager {
     /// 获取选区图像数据（用于前置条件检查）
-    pub fn get_selection_image(&self) -> Option<Vec<u8>> {
-        if self.selection.has_selection() && self.has_screenshot() {
+    pub fn get_selection_image(
+        &self,
+        selection_rect: Option<core_selection::RectI32>,
+    ) -> Option<Vec<u8>> {
+        if selection_rect.is_some() && self.has_screenshot() {
             self.current_screenshot.as_ref().map(|s| s.data.clone())
         } else {
             None

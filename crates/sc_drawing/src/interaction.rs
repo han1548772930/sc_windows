@@ -1,7 +1,9 @@
-use crate::{DragMode, DrawingElement, DrawingTool, Point, Rect};
+use crate::{defaults, DragMode, DrawingElement, DrawingTool, Point, Rect};
 
 /// 拖拽阈值（像素）
 pub const DRAG_THRESHOLD: i32 = 3;
+/// Explicit alias for drawing drag threshold (in pixels).
+pub const DRAWING_DRAG_THRESHOLD: i32 = DRAG_THRESHOLD;
 
 /// 手柄检测半径（像素）
 pub const HANDLE_DETECTION_RADIUS: i32 = 8;
@@ -227,6 +229,25 @@ pub fn calculate_text_proportional_resize(
     dx: i32,
     dy: i32,
 ) -> (Rect, f32) {
+    calculate_text_proportional_resize_with_min_font(
+        start_rect,
+        start_font_size,
+        mode,
+        dx,
+        dy,
+        defaults::MIN_FONT_SIZE,
+    )
+}
+
+/// Calculate proportional resize for text with an explicit minimum font size.
+pub fn calculate_text_proportional_resize_with_min_font(
+    start_rect: Rect,
+    start_font_size: f32,
+    mode: DragMode,
+    dx: i32,
+    dy: i32,
+    min_font_size: f32,
+) -> (Rect, f32) {
     let original_width = (start_rect.right - start_rect.left).max(1);
     let original_height = (start_rect.bottom - start_rect.top).max(1);
 
@@ -252,10 +273,17 @@ pub fn calculate_text_proportional_resize(
     };
 
     // 等比例缩放：取两个方向的平均值，限制最小值
-    let scale = ((scale_x + scale_y) / 2.0).max(0.7);
+    let min_scale_for_font = if start_font_size > 0.0 {
+        (min_font_size / start_font_size).min(1.0)
+    } else {
+        1.0
+    };
+    let scale = ((scale_x + scale_y) / 2.0)
+        .max(0.7)
+        .max(min_scale_for_font);
 
     // 计算新字体大小
-    let new_font_size = (start_font_size * scale).max(8.0);
+    let new_font_size = (start_font_size * scale).max(min_font_size);
 
     // 计算等比例缩放后的新尺寸
     let new_width = (original_width as f32 * scale) as i32;

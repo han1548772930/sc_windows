@@ -1,6 +1,7 @@
 use sc_drawing::{
-    Color, HandleConfig, Point, Rect, clamp_to_rect, defaults, detect_arrow_handle,
-    detect_handle_at_position, detect_handle_at_position_with_radius, is_drag_threshold_exceeded,
+    Color, HandleConfig, Point, Rect, calculate_text_proportional_resize_with_min_font,
+    clamp_to_rect, defaults, detect_arrow_handle, detect_handle_at_position,
+    detect_handle_at_position_with_radius, is_drag_threshold_exceeded,
 };
 
 use sc_drawing::history;
@@ -162,15 +163,7 @@ impl DrawingManager {
                     }
                 }
                 DrawingTool::Text => {
-                    Self::apply_text_resize(
-                        el,
-                        resize_mode,
-                        dx,
-                        dy,
-                        new_rect,
-                        start_rect,
-                        start_font_size,
-                    );
+                    Self::apply_text_resize(el, resize_mode, dx, dy, start_rect, start_font_size);
                 }
                 _ => {
                     // 其他元素按矩形调整
@@ -186,7 +179,6 @@ impl DrawingManager {
         resize_mode: DragMode,
         dx: i32,
         dy: i32,
-        new_rect: Rect,
         start_rect: Rect,
         start_font_size: f32,
     ) {
@@ -200,49 +192,20 @@ impl DrawingManager {
         );
 
         if is_corner_resize {
-            let original_width = (start_rect.right - start_rect.left).max(1);
-            let original_height = (start_rect.bottom - start_rect.top).max(1);
-
-            // 计算缩放比例
-            let (scale_x, scale_y) = match resize_mode {
-                DragMode::ResizingTopLeft => (
-                    (original_width - dx) as f32 / original_width as f32,
-                    (original_height - dy) as f32 / original_height as f32,
-                ),
-                DragMode::ResizingTopRight => (
-                    (original_width + dx) as f32 / original_width as f32,
-                    (original_height - dy) as f32 / original_height as f32,
-                ),
-                DragMode::ResizingBottomRight => (
-                    (original_width + dx) as f32 / original_width as f32,
-                    (original_height + dy) as f32 / original_height as f32,
-                ),
-                DragMode::ResizingBottomLeft => (
-                    (original_width - dx) as f32 / original_width as f32,
-                    (original_height + dy) as f32 / original_height as f32,
-                ),
-                _ => (1.0, 1.0),
-            };
-
-            // 等比例缩放：取两个方向的平均值
-            //
-            // Keep the rect scaling in sync with font scaling. When we hit the minimum font size,
-            // we must also clamp the scale, otherwise the box keeps shrinking while the text no
-            // longer does.
-            let min_scale_for_font = if start_font_size > 0.0 {
-                (defaults::MIN_FONT_SIZE / start_font_size).min(1.0)
-            } else {
-                1.0
-            };
-            let scale = ((scale_x + scale_y) / 2.0).max(0.7).max(min_scale_for_font);
-
-            // 计算新字体大小
-            let new_font_size = (start_font_size * scale).max(defaults::MIN_FONT_SIZE);
+            let (proportional_rect, new_font_size) =
+                calculate_text_proportional_resize_with_min_font(
+                    start_rect,
+                    start_font_size,
+                    resize_mode,
+                    dx,
+                    dy,
+                    defaults::MIN_FONT_SIZE,
+                );
             el.set_font_size(new_font_size);
 
             // 计算等比例缩放后的新尺寸
-            let mut new_width = (original_width as f32 * scale) as i32;
-            let mut new_height = (original_height as f32 * scale) as i32;
+            let mut new_width = (proportional_rect.right - proportional_rect.left).max(1);
+            let mut new_height = (proportional_rect.bottom - proportional_rect.top).max(1);
 
             // Clamp to minimum box size.
             new_width = new_width.max(MIN_TEXT_WIDTH);
@@ -297,7 +260,7 @@ impl DrawingManager {
                     right: start_rect.right,
                     bottom: start_rect.top + new_height,
                 },
-                _ => new_rect,
+                _ => proportional_rect,
             };
 
             el.resize(proportional_rect);

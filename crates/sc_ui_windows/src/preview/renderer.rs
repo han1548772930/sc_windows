@@ -20,7 +20,8 @@ use crate::constants::{
     OCR_TEXT_PANEL_WIDTH, OCR_TEXT_SELECTION_BG_COLOR, PIN_ACTIVE_COLOR, TITLE_BAR_BG_COLOR,
     TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT, TITLE_BAR_SEPARATOR_COLOR,
 };
-use crate::svg::{PixelFormat, SvgRenderOptions, apply_color_to_pixels, render_svg_to_pixels};
+use sc_ui::preview_layout;
+use crate::svg::{PixelFormat, apply_color_to_pixels, render_svg_pixels};
 use sc_platform::{Color, DrawStyle, HostPlatform, Point, Rectangle, TextStyle, WindowId};
 use sc_platform_windows::windows::{Direct2DRenderer, WindowsHostPlatform, bmp};
 
@@ -119,19 +120,19 @@ impl PreviewRenderer {
     /// 加载所有图标到 D2D 位图
     fn load_icons(&mut self) -> Result<()> {
         let icons = [
-            "pin",
-            "extracttext",
-            "download",
-            "window-close",
-            "window-maximize",
-            "window-minimize",
-            "window-restore",
+            preview_layout::ICON_PIN,
+            preview_layout::ICON_OCR,
+            preview_layout::ICON_SAVE,
+            preview_layout::ICON_WINDOW_CLOSE,
+            preview_layout::ICON_WINDOW_MAXIMIZE,
+            preview_layout::ICON_WINDOW_MINIMIZE,
+            preview_layout::ICON_WINDOW_RESTORE,
             // 绘图工具图标
-            "square",
-            "circle",
-            "move-up-right",
-            "pen",
-            "type",
+            preview_layout::ICON_TOOL_SQUARE,
+            preview_layout::ICON_TOOL_CIRCLE,
+            preview_layout::ICON_TOOL_ARROW,
+            preview_layout::ICON_TOOL_PEN,
+            preview_layout::ICON_TOOL_TEXT,
         ];
 
         for name in icons.iter() {
@@ -141,7 +142,7 @@ impl PreviewRenderer {
                 .create_bitmap_from_pixels(&normal_pixels, ICON_SIZE as u32, ICON_SIZE as u32)
                 .map_err(|e| anyhow::anyhow!("Failed to create bitmap for {}: {:?}", name, e))?;
 
-            let hover_pixels = if *name == "window-close" {
+            let hover_pixels = if *name == preview_layout::ICON_WINDOW_CLOSE {
                 Self::load_svg_pixels(name, ICON_SIZE, Some((255, 255, 255)))?
             } else {
                 normal_pixels.clone()
@@ -158,7 +159,13 @@ impl PreviewRenderer {
             // We currently use the same active color for pin and drawing tools.
             let supports_active_color = matches!(
                 *name,
-                "pin" | "extracttext" | "square" | "circle" | "move-up-right" | "pen" | "type"
+                preview_layout::ICON_PIN
+                    | preview_layout::ICON_OCR
+                    | preview_layout::ICON_TOOL_SQUARE
+                    | preview_layout::ICON_TOOL_CIRCLE
+                    | preview_layout::ICON_TOOL_ARROW
+                    | preview_layout::ICON_TOOL_PEN
+                    | preview_layout::ICON_TOOL_TEXT
             );
 
             let (active_normal, active_hover) = if supports_active_color {
@@ -192,61 +199,6 @@ impl PreviewRenderer {
         Ok(())
     }
 
-    /// 嵌入式 SVG 图标内容（避免运行时文件系统依赖）
-    fn get_embedded_svg(name: &str) -> Option<&'static str> {
-        match name {
-            "pin" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/pin.svg"
-            ))),
-            "extracttext" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/extracttext.svg"
-            ))),
-            "download" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/download.svg"
-            ))),
-            "window-close" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/window-close.svg"
-            ))),
-            "window-maximize" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/window-maximize.svg"
-            ))),
-            "window-minimize" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/window-minimize.svg"
-            ))),
-            "window-restore" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/window-restore.svg"
-            ))),
-            // 绘图工具图标
-            "square" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/square.svg"
-            ))),
-            "circle" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/circle.svg"
-            ))),
-            "move-up-right" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/move-up-right.svg"
-            ))),
-            "pen" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/pen.svg"
-            ))),
-            "type" => Some(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../apps/sc_windows/icons/type.svg"
-            ))),
-            _ => None,
-        }
-    }
 
     /// 加载SVG并渲染为像素数据(RGBA)
     fn load_svg_pixels(
@@ -255,17 +207,10 @@ impl PreviewRenderer {
         color_override: Option<(u8, u8, u8)>,
     ) -> Result<Vec<u8>> {
         // 使用嵌入式 SVG 内容，而非文件系统读取
-        let svg_content = Self::get_embedded_svg(filename)
+        let svg_content = crate::icon_assets::preview_icon_svg(filename)
             .ok_or_else(|| anyhow::anyhow!("Unknown embedded icon: {}", filename))?;
-
-        // 使用统一的 SVG 渲染工具
-        let options = SvgRenderOptions {
-            size: size as u32,
-            scale: 1.0,
-            color_override: None, // 先渲染原色
-            output_format: PixelFormat::Rgba,
-        };
-        let (mut pixels, _, _) = render_svg_to_pixels(svg_content, &options)?;
+        let (mut pixels, _, _) =
+            render_svg_pixels(svg_content, size as u32, PixelFormat::Rgba, None)?;
 
         // 如果需要颜色覆盖，在像素级别应用
         if let Some(color) = color_override {
@@ -330,8 +275,16 @@ impl PreviewRenderer {
 
         // 绘图工具图标是一组，在两边加上分割竖线。
         {
-            let is_tool_icon =
-                |name: &str| matches!(name, "square" | "circle" | "move-up-right" | "pen" | "type");
+            let is_tool_icon = |name: &str| {
+                matches!(
+                    name,
+                    preview_layout::ICON_TOOL_SQUARE
+                        | preview_layout::ICON_TOOL_CIRCLE
+                        | preview_layout::ICON_TOOL_ARROW
+                        | preview_layout::ICON_TOOL_PEN
+                        | preview_layout::ICON_TOOL_TEXT
+                )
+            };
 
             let mut tool_left: Option<i32> = None;
             let mut tool_right: Option<i32> = None;
@@ -411,7 +364,7 @@ impl PreviewRenderer {
             // 绘制悬停/激活背景
             if icon.hovered {
                 let (hover_color, use_rounded) = if icon.is_title_bar_button {
-                    if icon.name == "window-close" {
+                    if icon.name == preview_layout::ICON_WINDOW_CLOSE {
                         (CLOSE_BUTTON_HOVER_BG_COLOR, false)
                     } else {
                         (TITLE_BAR_BUTTON_HOVER_BG_COLOR, false)
@@ -447,7 +400,7 @@ impl PreviewRenderer {
                     button_rect.y = 0.0;
                     button_rect.height = TITLE_BAR_HEIGHT as f32;
 
-                    if icon.name == "window-close" {
+                    if icon.name == preview_layout::ICON_WINDOW_CLOSE {
                         button_rect.width = (width as f32) - button_rect.x;
                     }
 
@@ -459,7 +412,7 @@ impl PreviewRenderer {
 
             // 绘制图标本身
             if let Some(bitmaps) = self.icon_cache.get(&icon.name) {
-                let bitmap_to_use = if icon.name == "pin" && is_pinned {
+                let bitmap_to_use = if icon.name == preview_layout::ICON_PIN && is_pinned {
                     if icon.hovered {
                         bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
                     } else {

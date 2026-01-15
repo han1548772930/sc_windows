@@ -605,131 +605,18 @@ impl Direct2DRenderer {
             ));
         }
 
-        // 创建GDI兼容的离屏渲染目标
-        let size = D2D_SIZE_F {
-            width: width as f32,
-            height: height as f32,
-        };
-        let pixel_size = D2D_SIZE_U { width, height };
-        let pixel_format = D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        };
+        let (offscreen_target, gdi_target) =
+            create_gdi_offscreen_target(render_target, width, height)?;
 
-        let offscreen_target: ID2D1BitmapRenderTarget = unsafe {
-            render_target
-                .CreateCompatibleRenderTarget(
-                    Some(&size),
-                    Some(&pixel_size),
-                    Some(&pixel_format),
-                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_GDI_COMPATIBLE,
-                )
-                .map_err(|e| {
-                    PlatformError::ResourceError(format!(
-                        "Failed to create GDI compatible offscreen target: {e:?}"
-                    ))
-                })?
-        };
-
-        // 获取GDI互操作接口
-        let gdi_target: ID2D1GdiInteropRenderTarget = offscreen_target.cast().map_err(|e| {
-            PlatformError::ResourceError(format!("Failed to cast to GDI interop: {e:?}"))
-        })?;
-
-        // 开始离屏渲染
-        unsafe {
-            offscreen_target.BeginDraw();
-
-            // 清除背景
-            let clear_color = D2D1_COLOR_F {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            };
-            offscreen_target.Clear(Some(&clear_color));
-
-            // 绘制源位图（选择区域）
-            let dest_rect = D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: width as f32,
-                bottom: height as f32,
-            };
-            let source_rect = D2D_RECT_F {
-                left: selection_rect.left as f32,
-                top: selection_rect.top as f32,
-                right: selection_rect.right as f32,
-                bottom: selection_rect.bottom as f32,
-            };
-
-            offscreen_target.DrawBitmap(
-                source_bitmap,
-                Some(&dest_rect),
-                1.0,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                Some(&source_rect),
-            );
-        }
+        begin_offscreen_draw(&offscreen_target, source_bitmap, selection_rect, width, height);
 
         // 渲染绘图元素（通过回调函数）
         let offscreen_render_target: &ID2D1RenderTarget = &offscreen_target;
         render_elements_fn(offscreen_render_target, self)?;
 
         // 在EndDraw之前获取DC（这是关键！GetDC必须在BeginDraw和EndDraw之间调用）
-        let pixel_data = unsafe {
-            let hdc = gdi_target
-                .GetDC(D2D1_DC_INITIALIZE_MODE_COPY)
-                .map_err(|e| PlatformError::ResourceError(format!("Failed to get DC: {e:?}")))?;
-
-            // 创建DIB来提取像素
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32), // 负值表示自上而下
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [RGBQUAD::default(); 1],
-            };
-
-            let data_size = (width * height * 4) as usize;
-            let mut pixel_data = vec![0u8; data_size];
-
-            // 获取当前选中的位图
-            let current_obj = GetCurrentObject(hdc, OBJ_BITMAP);
-            let hbitmap = HBITMAP(current_obj.0);
-
-            let result = GetDIBits(
-                hdc,
-                hbitmap,
-                0,
-                height,
-                Some(pixel_data.as_mut_ptr() as *mut _),
-                &bmi as *const _ as *mut _,
-                DIB_RGB_COLORS,
-            );
-
-            // 释放DC（必须在EndDraw之前）
-            let _ = gdi_target.ReleaseDC(None);
-
-            if result == 0 {
-                // 仍然需要EndDraw
-                let _ = offscreen_target.EndDraw(None, None);
-                return Err(PlatformError::ResourceError(
-                    "Failed to get bitmap pixels".to_string(),
-                ));
-            }
-
-            pixel_data
-        };
+        let pixel_data =
+            read_pixels_from_gdi_target(&offscreen_target, &gdi_target, width, height)?;
 
         // 结束渲染
         unsafe {
@@ -740,37 +627,7 @@ impl Direct2DRenderer {
             }
         }
 
-        // 构建BMP文件格式
-        let row_size = (width * 4).div_ceil(4) * 4; // 4字节对齐
-        let image_size = row_size * height;
-        let file_size = 54 + image_size;
-
-        let mut bmp_data = Vec::with_capacity(file_size as usize);
-
-        // BMP 文件头 (14 字节)
-        bmp_data.extend_from_slice(b"BM"); // 签名
-        bmp_data.extend_from_slice(&file_size.to_le_bytes()); // 文件大小
-        bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留1
-        bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留2
-        bmp_data.extend_from_slice(&54u32.to_le_bytes()); // 数据偏移
-
-        // DIB 头 (40 字节)
-        bmp_data.extend_from_slice(&40u32.to_le_bytes()); // 头大小
-        bmp_data.extend_from_slice(&(width as i32).to_le_bytes()); // 宽度
-        bmp_data.extend_from_slice(&(-(height as i32)).to_le_bytes()); // 高度 (Top-Down)
-        bmp_data.extend_from_slice(&1u16.to_le_bytes()); // 颜色平面
-        bmp_data.extend_from_slice(&32u16.to_le_bytes()); // 位深度
-        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 压缩方式 (BI_RGB)
-        bmp_data.extend_from_slice(&image_size.to_le_bytes()); // 图像大小
-        bmp_data.extend_from_slice(&0i32.to_le_bytes()); // X 分辨率
-        bmp_data.extend_from_slice(&0i32.to_le_bytes()); // Y 分辨率
-        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 颜色数
-        bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 重要颜色数
-
-        // 像素数据
-        bmp_data.extend_from_slice(&pixel_data);
-
-        Ok(bmp_data)
+        Ok(build_bmp_bytes(width, height, &pixel_data))
     }
 
     /// Get or create the intermediate layer render target
@@ -826,6 +683,27 @@ impl Direct2DRenderer {
         }
         Ok(())
     }
+    fn prepare_fill_stroke_brushes(
+        &mut self,
+        style: &DrawStyle,
+    ) -> std::result::Result<
+        (Option<ID2D1SolidColorBrush>, Option<ID2D1SolidColorBrush>),
+        PlatformError,
+    > {
+        let fill_brush = if let Some(fill_color) = style.fill_color {
+            Some(self.get_or_create_brush(fill_color)?)
+        } else {
+            None
+        };
+
+        let stroke_brush = if style.stroke_width > 0.0 {
+            Some(self.get_or_create_brush(style.stroke_color)?)
+        } else {
+            None
+        };
+
+        Ok((fill_brush, stroke_brush))
+    }
 
     pub fn end_frame(&mut self) -> std::result::Result<(), PlatformError> {
         // EndDraw
@@ -863,27 +741,12 @@ impl Direct2DRenderer {
     ) -> std::result::Result<(), PlatformError> {
         // 实现Direct2D的矩形绘制
         // 先创建所有需要的画刷，避免借用冲突
-        let fill_brush = if let Some(fill_color) = style.fill_color {
-            Some(self.get_or_create_brush(fill_color)?)
-        } else {
-            None
-        };
-
-        let stroke_brush = if style.stroke_width > 0.0 {
-            Some(self.get_or_create_brush(style.stroke_color)?)
-        } else {
-            None
-        };
+        let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
         // 现在可以安全地使用render_target
         if let Some(ref render_target) = self.render_target {
             // 创建矩形
-            let d2d_rect = D2D_RECT_F {
-                left: rect.x,
-                top: rect.y,
-                right: rect.x + rect.width,
-                bottom: rect.y + rect.height,
-            };
+            let d2d_rect = rect_to_d2d(rect);
 
             // 如果有填充颜色，绘制填充
             if let Some(ref brush) = fill_brush {
@@ -910,26 +773,11 @@ impl Direct2DRenderer {
     ) -> std::result::Result<(), PlatformError> {
         // 实现Direct2D的圆角矩形绘制
         // 先创建需要的画刷，避免借用冲突
-        let fill_brush = if let Some(fill_color) = style.fill_color {
-            Some(self.get_or_create_brush(fill_color)?)
-        } else {
-            None
-        };
-
-        let stroke_brush = if style.stroke_width > 0.0 {
-            Some(self.get_or_create_brush(style.stroke_color)?)
-        } else {
-            None
-        };
+        let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
         if let Some(ref render_target) = self.render_target {
             let rounded_rect = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: rect.x,
-                    top: rect.y,
-                    right: rect.x + rect.width,
-                    bottom: rect.y + rect.height,
-                },
+                rect: rect_to_d2d(rect),
                 radiusX: radius,
                 radiusY: radius,
             };
@@ -959,16 +807,7 @@ impl Direct2DRenderer {
     ) -> std::result::Result<(), PlatformError> {
         // DrawEllipse
         // 先创建需要的画刷，避免借用冲突
-        let fill_brush = if let Some(fill_color) = style.fill_color {
-            Some(self.get_or_create_brush(fill_color)?)
-        } else {
-            None
-        };
-        let stroke_brush = if style.stroke_width > 0.0 {
-            Some(self.get_or_create_brush(style.stroke_color)?)
-        } else {
-            None
-        };
+        let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
         if let Some(ref render_target) = self.render_target {
             // 创建椭圆
@@ -1031,32 +870,10 @@ impl Direct2DRenderer {
 
         if let (Some(render_target), Some(d2d_factory)) = (&self.render_target, &self.d2d_factory) {
             unsafe {
-                // 虚线样式
-                let mut dashes: Vec<f32> = dash_pattern.to_vec();
-                if dashes.is_empty() {
-                    dashes = vec![4.0, 2.0];
-                }
-                let stroke_props = D2D1_STROKE_STYLE_PROPERTIES {
-                    startCap: D2D1_CAP_STYLE_FLAT,
-                    endCap: D2D1_CAP_STYLE_FLAT,
-                    dashCap: D2D1_CAP_STYLE_FLAT,
-                    lineJoin: D2D1_LINE_JOIN_MITER,
-                    miterLimit: 10.0,
-                    dashStyle: D2D1_DASH_STYLE_CUSTOM,
-                    dashOffset: 0.0,
-                };
-                let stroke_style = d2d_factory
-                    .CreateStrokeStyle(&stroke_props, Some(&dashes))
-                    .map_err(|e| {
-                        PlatformError::RenderError(format!("CreateStrokeStyle failed: {e:?}"))
-                    })?;
+                let stroke_style =
+                    create_dash_stroke_style(d2d_factory, dash_pattern, true)?;
 
-                let d2d_rect = D2D_RECT_F {
-                    left: rect.x,
-                    top: rect.y,
-                    right: rect.x + rect.width,
-                    bottom: rect.y + rect.height,
-                };
+                let d2d_rect = rect_to_d2d(rect);
                 render_target.DrawRectangle(
                     &d2d_rect,
                     &stroke_brush,
@@ -1136,15 +953,18 @@ impl Direct2DRenderer {
         // 使用缓存获取文本格式
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
-        unsafe {
-            // 文本 UTF-16
-            let utf16: Vec<u16> = text.encode_utf16().collect();
-            let layout = dwrite_factory
-                .CreateTextLayout(&utf16, &text_format, f32::MAX, f32::MAX)
-                .map_err(|e| {
-                    PlatformError::RenderError(format!("Failed to create text layout: {e:?}"))
-                })?;
+        // 文本 UTF-16
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let layout = create_text_layout_for_utf16(
+            dwrite_factory,
+            &text_format,
+            &utf16,
+            f32::MAX,
+            f32::MAX,
+            "Failed to create text layout",
+        )?;
 
+        unsafe {
             let mut metrics = DWRITE_TEXT_METRICS::default();
             let _ = layout.GetMetrics(&mut metrics);
             Ok((metrics.width, metrics.height))
@@ -1155,12 +975,7 @@ impl Direct2DRenderer {
     pub fn push_clip_rect(&mut self, rect: Rectangle) -> std::result::Result<(), PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                let clip_rect = D2D_RECT_F {
-                    left: rect.x,
-                    top: rect.y,
-                    right: rect.x + rect.width,
-                    bottom: rect.y + rect.height,
-                };
+                let clip_rect = rect_to_d2d(rect);
                 render_target.PushAxisAlignedClip(
                     &clip_rect,
                     windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
@@ -1195,56 +1010,58 @@ impl Direct2DRenderer {
         let mask_brush = self.get_or_create_brush(mask_color)?;
 
         if let Some(ref render_target) = self.render_target {
-            unsafe {
-                // 绘制四个矩形覆盖选区外区域
-                let left = selection_rect.x;
-                let top = selection_rect.y;
-                let right = selection_rect.x + selection_rect.width;
-                let bottom = selection_rect.y + selection_rect.height;
+            // 绘制四个矩形覆盖选区外区域
+            let left = selection_rect.x;
+            let top = selection_rect.y;
+            let right = selection_rect.x + selection_rect.width;
+            let bottom = selection_rect.y + selection_rect.height;
 
-                // 上方区域
-                if top > screen_rect.y {
-                    let rect = D2D_RECT_F {
-                        left: screen_rect.x,
-                        top: screen_rect.y,
-                        right: screen_rect.x + screen_rect.width,
-                        bottom: top,
-                    };
-                    render_target.FillRectangle(&rect, &mask_brush);
-                }
+            // 上方区域
+            if top > screen_rect.y {
+                fill_rect(
+                    render_target,
+                    &mask_brush,
+                    screen_rect.x,
+                    screen_rect.y,
+                    screen_rect.x + screen_rect.width,
+                    top,
+                );
+            }
 
-                // 下方区域
-                if bottom < screen_rect.y + screen_rect.height {
-                    let rect = D2D_RECT_F {
-                        left: screen_rect.x,
-                        top: bottom,
-                        right: screen_rect.x + screen_rect.width,
-                        bottom: screen_rect.y + screen_rect.height,
-                    };
-                    render_target.FillRectangle(&rect, &mask_brush);
-                }
+            // 下方区域
+            if bottom < screen_rect.y + screen_rect.height {
+                fill_rect(
+                    render_target,
+                    &mask_brush,
+                    screen_rect.x,
+                    bottom,
+                    screen_rect.x + screen_rect.width,
+                    screen_rect.y + screen_rect.height,
+                );
+            }
 
-                // 左侧区域
-                if left > screen_rect.x {
-                    let rect = D2D_RECT_F {
-                        left: screen_rect.x,
-                        top,
-                        right: left,
-                        bottom,
-                    };
-                    render_target.FillRectangle(&rect, &mask_brush);
-                }
+            // 左侧区域
+            if left > screen_rect.x {
+                fill_rect(
+                    render_target,
+                    &mask_brush,
+                    screen_rect.x,
+                    top,
+                    left,
+                    bottom,
+                );
+            }
 
-                // 右侧区域
-                if right < screen_rect.x + screen_rect.width {
-                    let rect = D2D_RECT_F {
-                        left: right,
-                        top,
-                        right: screen_rect.x + screen_rect.width,
-                        bottom,
-                    };
-                    render_target.FillRectangle(&rect, &mask_brush);
-                }
+            // 右侧区域
+            if right < screen_rect.x + screen_rect.width {
+                fill_rect(
+                    render_target,
+                    &mask_brush,
+                    right,
+                    top,
+                    screen_rect.x + screen_rect.width,
+                    bottom,
+                );
             }
         }
         Ok(())
@@ -1262,28 +1079,13 @@ impl Direct2DRenderer {
 
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                let d2d_rect = D2D_RECT_F {
-                    left: rect.x,
-                    top: rect.y,
-                    right: rect.x + rect.width,
-                    bottom: rect.y + rect.height,
-                };
+                let d2d_rect = rect_to_d2d(rect);
 
                 if let Some(dash) = dash_pattern {
                     // 创建虚线样式
                     if let Some(ref d2d_factory) = self.d2d_factory {
-                        let stroke_style_props = D2D1_STROKE_STYLE_PROPERTIES {
-                            startCap: D2D1_CAP_STYLE_FLAT,
-                            endCap: D2D1_CAP_STYLE_FLAT,
-                            dashCap: D2D1_CAP_STYLE_FLAT,
-                            lineJoin: D2D1_LINE_JOIN_MITER,
-                            miterLimit: 10.0,
-                            dashStyle: D2D1_DASH_STYLE_CUSTOM,
-                            dashOffset: 0.0,
-                        };
-
                         if let Ok(stroke_style) =
-                            d2d_factory.CreateStrokeStyle(&stroke_style_props, Some(dash))
+                            create_dash_stroke_style(d2d_factory, dash, false)
                         {
                             render_target.DrawRectangle(
                                 &d2d_rect,
@@ -1320,44 +1122,24 @@ impl Direct2DRenderer {
         let border_brush = self.get_or_create_brush(border_color)?;
 
         if let Some(ref render_target) = self.render_target {
-            unsafe {
-                let half = handle_size / 2.0;
-                let cx = rect.x + rect.width / 2.0;
-                let cy = rect.y + rect.height / 2.0;
+            let half = handle_size / 2.0;
+            // 8个手柄位置：4个角 + 4个边中点
+            let handle_positions = handle_positions(rect);
 
-                // 8个手柄位置：4个角 + 4个边中点
-                let handle_positions = [
-                    (rect.x, rect.y),                            // 左上
-                    (cx, rect.y),                                // 上中
-                    (rect.x + rect.width, rect.y),               // 右上
-                    (rect.x + rect.width, cy),                   // 右中
-                    (rect.x + rect.width, rect.y + rect.height), // 右下
-                    (cx, rect.y + rect.height),                  // 下中
-                    (rect.x, rect.y + rect.height),              // 左下
-                    (rect.x, cy),                                // 左中
-                ];
-
-                for (px, py) in handle_positions.iter() {
-                    let handle_rect = D2D_RECT_F {
-                        left: *px - half,
-                        top: *py - half,
-                        right: *px + half,
-                        bottom: *py + half,
-                    };
-
-                    // 绘制填充
-                    render_target.FillRectangle(&handle_rect, &fill_brush);
-
-                    // 绘制边框
-                    if border_width > 0.0 {
-                        render_target.DrawRectangle(
-                            &handle_rect,
-                            &border_brush,
-                            border_width,
-                            None,
-                        );
-                    }
-                }
+            for (px, py) in handle_positions.iter() {
+                let handle_rect = D2D_RECT_F {
+                    left: *px - half,
+                    top: *py - half,
+                    right: *px + half,
+                    bottom: *py + half,
+                };
+                draw_rect_handle(
+                    render_target,
+                    &fill_brush,
+                    &border_brush,
+                    border_width,
+                    &handle_rect,
+                );
             }
         }
         Ok(())
@@ -1376,42 +1158,22 @@ impl Direct2DRenderer {
         let border_brush = self.get_or_create_brush(border_color)?;
 
         if let Some(ref render_target) = self.render_target {
-            unsafe {
-                let cx = rect.x + rect.width / 2.0;
-                let cy = rect.y + rect.height / 2.0;
+            // 8个圆形手柄位置：4个角 + 4个边中点
+            let handle_positions = handle_positions(rect);
 
-                // 8个圆形手柄位置：4个角 + 4个边中点
-                let handle_positions = [
-                    (rect.x, rect.y),                            // 左上
-                    (cx, rect.y),                                // 上中
-                    (rect.x + rect.width, rect.y),               // 右上
-                    (rect.x + rect.width, cy),                   // 右中
-                    (rect.x + rect.width, rect.y + rect.height), // 右下
-                    (cx, rect.y + rect.height),                  // 下中
-                    (rect.x, rect.y + rect.height),              // 左下
-                    (rect.x, cy),                                // 左中
-                ];
-
-                for (px, py) in handle_positions.iter() {
-                    let handle_ellipse = D2D1_ELLIPSE {
-                        point: windows_numerics::Vector2 { X: *px, Y: *py },
-                        radiusX: handle_radius,
-                        radiusY: handle_radius,
-                    };
-
-                    // 绘制填充
-                    render_target.FillEllipse(&handle_ellipse, &fill_brush);
-
-                    // 绘制边框
-                    if border_width > 0.0 {
-                        render_target.DrawEllipse(
-                            &handle_ellipse,
-                            &border_brush,
-                            border_width,
-                            None,
-                        );
-                    }
-                }
+            for (px, py) in handle_positions.iter() {
+                let handle_ellipse = D2D1_ELLIPSE {
+                    point: windows_numerics::Vector2 { X: *px, Y: *py },
+                    radiusX: handle_radius,
+                    radiusY: handle_radius,
+                };
+                draw_ellipse_handle(
+                    render_target,
+                    &fill_brush,
+                    &border_brush,
+                    border_width,
+                    &handle_ellipse,
+                );
             }
         }
         Ok(())
@@ -1434,17 +1196,17 @@ impl Direct2DRenderer {
         };
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
-        unsafe {
-            let text_utf16: Vec<u16> = text.encode_utf16().collect();
-            let text_layout = dwrite_factory
-                .CreateTextLayout(&text_utf16, &text_format, width, f32::MAX)
-                .map_err(|e| {
-                    PlatformError::RenderError(format!(
-                        "Failed to create text layout for measure: {:?}",
-                        e
-                    ))
-                })?;
+        let text_utf16: Vec<u16> = text.encode_utf16().collect();
+        let text_layout = create_text_layout_for_utf16(
+            dwrite_factory,
+            &text_format,
+            &text_utf16,
+            width,
+            f32::MAX,
+            "Failed to create text layout for measure",
+        )?;
 
+        unsafe {
             let mut metrics = DWRITE_TEXT_METRICS::default();
             let _ = text_layout.GetMetrics(&mut metrics);
             Ok((metrics.width, metrics.height))
@@ -1466,17 +1228,17 @@ impl Direct2DRenderer {
         // Use internal helper or just create format here
         let text_format = self.get_or_create_text_format(font_family, font_size)?;
 
-        unsafe {
-            let text_utf16: Vec<u16> = text.encode_utf16().collect();
-            let text_layout = dwrite_factory
-                .CreateTextLayout(&text_utf16, &text_format, width, f32::MAX)
-                .map_err(|e| {
-                    PlatformError::RenderError(format!(
-                        "Failed to create text layout for split: {:?}",
-                        e
-                    ))
-                })?;
+        let text_utf16: Vec<u16> = text.encode_utf16().collect();
+        let text_layout = create_text_layout_for_utf16(
+            dwrite_factory,
+            &text_format,
+            &text_utf16,
+            width,
+            f32::MAX,
+            "Failed to create text layout for split",
+        )?;
 
+        unsafe {
             let mut line_count = 0;
             let _ = text_layout.GetLineMetrics(None, &mut line_count);
 
@@ -1522,18 +1284,18 @@ impl Direct2DRenderer {
         };
         let text_format = self.get_or_create_text_format(font_family, font_size)?;
 
-        unsafe {
-            let text_utf16: Vec<u16> = text.encode_utf16().collect();
-            // Layout width doesn't matter for single line hit test, make it large
-            let text_layout = dwrite_factory
-                .CreateTextLayout(&text_utf16, &text_format, 10000.0, 1000.0)
-                .map_err(|e| {
-                    PlatformError::RenderError(format!(
-                        "Failed to create text layout for hit test: {:?}",
-                        e
-                    ))
-                })?;
+        let text_utf16: Vec<u16> = text.encode_utf16().collect();
+        // Layout width doesn't matter for single line hit test, make it large
+        let text_layout = create_text_layout_for_utf16(
+            dwrite_factory,
+            &text_format,
+            &text_utf16,
+            10000.0,
+            1000.0,
+            "Failed to create text layout for hit test",
+        )?;
 
+        unsafe {
             let mut is_trailing_hit = BOOL(0);
             let mut is_inside = BOOL(0);
             let mut metrics = DWRITE_HIT_TEST_METRICS::default();
@@ -1723,6 +1485,300 @@ impl Direct2DRenderer {
     pub fn get_layer_target(&self) -> Option<&ID2D1BitmapRenderTarget> {
         self.layer_target.as_ref()
     }
+}
+
+fn handle_positions(rect: Rectangle) -> [(f32, f32); 8] {
+    let cx = rect.x + rect.width / 2.0;
+    let cy = rect.y + rect.height / 2.0;
+    [
+        (rect.x, rect.y),                            // 左上
+        (cx, rect.y),                                // 上中
+        (rect.x + rect.width, rect.y),               // 右上
+        (rect.x + rect.width, cy),                   // 右中
+        (rect.x + rect.width, rect.y + rect.height), // 右下
+        (cx, rect.y + rect.height),                  // 下中
+        (rect.x, rect.y + rect.height),              // 左下
+        (rect.x, cy),                                // 左中
+    ]
+}
+fn rect_to_d2d(rect: Rectangle) -> D2D_RECT_F {
+    D2D_RECT_F {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.width,
+        bottom: rect.y + rect.height,
+    }
+}
+fn fill_rect(
+    render_target: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+) {
+    let rect = D2D_RECT_F {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    unsafe {
+        render_target.FillRectangle(&rect, brush);
+    }
+}
+
+fn draw_rect_handle(
+    render_target: &ID2D1RenderTarget,
+    fill_brush: &ID2D1SolidColorBrush,
+    border_brush: &ID2D1SolidColorBrush,
+    border_width: f32,
+    rect: &D2D_RECT_F,
+) {
+    unsafe {
+        render_target.FillRectangle(rect, fill_brush);
+        if border_width > 0.0 {
+            render_target.DrawRectangle(rect, border_brush, border_width, None);
+        }
+    }
+}
+
+fn draw_ellipse_handle(
+    render_target: &ID2D1RenderTarget,
+    fill_brush: &ID2D1SolidColorBrush,
+    border_brush: &ID2D1SolidColorBrush,
+    border_width: f32,
+    ellipse: &D2D1_ELLIPSE,
+) {
+    unsafe {
+        render_target.FillEllipse(ellipse, fill_brush);
+        if border_width > 0.0 {
+            render_target.DrawEllipse(ellipse, border_brush, border_width, None);
+        }
+    }
+}
+
+fn normalize_dash_pattern(dash_pattern: &[f32], default_if_empty: bool) -> Vec<f32> {
+    if dash_pattern.is_empty() {
+        if default_if_empty {
+            vec![4.0, 2.0]
+        } else {
+            Vec::new()
+        }
+    } else {
+        dash_pattern.to_vec()
+    }
+}
+
+fn create_dash_stroke_style(
+    factory: &ID2D1Factory,
+    dash_pattern: &[f32],
+    default_if_empty: bool,
+) -> std::result::Result<ID2D1StrokeStyle, PlatformError> {
+    let dashes = normalize_dash_pattern(dash_pattern, default_if_empty);
+    let stroke_props = D2D1_STROKE_STYLE_PROPERTIES {
+        startCap: D2D1_CAP_STYLE_FLAT,
+        endCap: D2D1_CAP_STYLE_FLAT,
+        dashCap: D2D1_CAP_STYLE_FLAT,
+        lineJoin: D2D1_LINE_JOIN_MITER,
+        miterLimit: 10.0,
+        dashStyle: D2D1_DASH_STYLE_CUSTOM,
+        dashOffset: 0.0,
+    };
+    unsafe {
+        factory
+            .CreateStrokeStyle(&stroke_props, Some(&dashes))
+            .map_err(|e| PlatformError::RenderError(format!("CreateStrokeStyle failed: {e:?}")))
+    }
+}
+
+fn create_text_layout_for_utf16(
+    dwrite_factory: &IDWriteFactory,
+    text_format: &IDWriteTextFormat,
+    text_utf16: &[u16],
+    width: f32,
+    height: f32,
+    error_prefix: &str,
+) -> std::result::Result<IDWriteTextLayout, PlatformError> {
+    unsafe {
+        dwrite_factory
+            .CreateTextLayout(text_utf16, text_format, width, height)
+            .map_err(|e| PlatformError::RenderError(format!("{error_prefix}: {e:?}")))
+    }
+}
+
+fn create_gdi_offscreen_target(
+    render_target: &ID2D1RenderTarget,
+    width: u32,
+    height: u32,
+) -> std::result::Result<(ID2D1BitmapRenderTarget, ID2D1GdiInteropRenderTarget), PlatformError> {
+    let size = D2D_SIZE_F {
+        width: width as f32,
+        height: height as f32,
+    };
+    let pixel_size = D2D_SIZE_U { width, height };
+    let pixel_format = D2D1_PIXEL_FORMAT {
+        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+    };
+
+    let offscreen_target: ID2D1BitmapRenderTarget = unsafe {
+        render_target
+            .CreateCompatibleRenderTarget(
+                Some(&size),
+                Some(&pixel_size),
+                Some(&pixel_format),
+                D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_GDI_COMPATIBLE,
+            )
+            .map_err(|e| {
+                PlatformError::ResourceError(format!(
+                    "Failed to create GDI compatible offscreen target: {e:?}"
+                ))
+            })?
+    };
+
+    let gdi_target: ID2D1GdiInteropRenderTarget =
+        offscreen_target.cast().map_err(|e| {
+            PlatformError::ResourceError(format!("Failed to cast to GDI interop: {e:?}"))
+        })?;
+
+    Ok((offscreen_target, gdi_target))
+}
+
+fn begin_offscreen_draw(
+    offscreen_target: &ID2D1BitmapRenderTarget,
+    source_bitmap: &ID2D1Bitmap,
+    selection_rect: &Rect,
+    width: u32,
+    height: u32,
+) {
+    unsafe {
+        offscreen_target.BeginDraw();
+
+        // 清除背景
+        let clear_color = D2D1_COLOR_F {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        offscreen_target.Clear(Some(&clear_color));
+
+        // 绘制源位图（选择区域）
+        let dest_rect = D2D_RECT_F {
+            left: 0.0,
+            top: 0.0,
+            right: width as f32,
+            bottom: height as f32,
+        };
+        let source_rect = D2D_RECT_F {
+            left: selection_rect.left as f32,
+            top: selection_rect.top as f32,
+            right: selection_rect.right as f32,
+            bottom: selection_rect.bottom as f32,
+        };
+
+        offscreen_target.DrawBitmap(
+            source_bitmap,
+            Some(&dest_rect),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            Some(&source_rect),
+        );
+    }
+}
+
+fn read_pixels_from_gdi_target(
+    offscreen_target: &ID2D1BitmapRenderTarget,
+    gdi_target: &ID2D1GdiInteropRenderTarget,
+    width: u32,
+    height: u32,
+) -> std::result::Result<Vec<u8>, PlatformError> {
+    unsafe {
+        let hdc = gdi_target
+            .GetDC(D2D1_DC_INITIALIZE_MODE_COPY)
+            .map_err(|e| PlatformError::ResourceError(format!("Failed to get DC: {e:?}")))?;
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32), // 负值表示自上而下
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [RGBQUAD::default(); 1],
+        };
+
+        let data_size = (width * height * 4) as usize;
+        let mut pixel_data = vec![0u8; data_size];
+
+        // 获取当前选中的位图
+        let current_obj = GetCurrentObject(hdc, OBJ_BITMAP);
+        let hbitmap = HBITMAP(current_obj.0);
+
+        let result = GetDIBits(
+            hdc,
+            hbitmap,
+            0,
+            height,
+            Some(pixel_data.as_mut_ptr() as *mut _),
+            &bmi as *const _ as *mut _,
+            DIB_RGB_COLORS,
+        );
+
+        // 释放DC（必须在EndDraw之前）
+        let _ = gdi_target.ReleaseDC(None);
+
+        if result == 0 {
+            // 仍然需要EndDraw
+            let _ = offscreen_target.EndDraw(None, None);
+            return Err(PlatformError::ResourceError(
+                "Failed to get bitmap pixels".to_string(),
+            ));
+        }
+
+        Ok(pixel_data)
+    }
+}
+
+fn build_bmp_bytes(width: u32, height: u32, pixel_data: &[u8]) -> Vec<u8> {
+    let row_size = (width * 4).div_ceil(4) * 4; // 4字节对齐
+    let image_size = row_size * height;
+    let file_size = 54 + image_size;
+
+    let mut bmp_data = Vec::with_capacity(file_size as usize);
+
+    // BMP 文件头 (14 字节)
+    bmp_data.extend_from_slice(b"BM"); // 签名
+    bmp_data.extend_from_slice(&file_size.to_le_bytes()); // 文件大小
+    bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留1
+    bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留2
+    bmp_data.extend_from_slice(&54u32.to_le_bytes()); // 数据偏移
+
+    // DIB 头 (40 字节)
+    bmp_data.extend_from_slice(&40u32.to_le_bytes()); // 头大小
+    bmp_data.extend_from_slice(&(width as i32).to_le_bytes()); // 宽度
+    bmp_data.extend_from_slice(&(-(height as i32)).to_le_bytes()); // 高度 (Top-Down)
+    bmp_data.extend_from_slice(&1u16.to_le_bytes()); // 颜色平面
+    bmp_data.extend_from_slice(&32u16.to_le_bytes()); // 位深度
+    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 压缩方式 (BI_RGB)
+    bmp_data.extend_from_slice(&image_size.to_le_bytes()); // 图像大小
+    bmp_data.extend_from_slice(&0i32.to_le_bytes()); // X 分辨率
+    bmp_data.extend_from_slice(&0i32.to_le_bytes()); // Y 分辨率
+    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 颜色数
+    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 重要颜色数
+
+    // 像素数据
+    bmp_data.extend_from_slice(pixel_data);
+
+    bmp_data
 }
 
 impl sc_rendering::RenderBackend for Direct2DRenderer {

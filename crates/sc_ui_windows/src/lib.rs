@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod cursor;
+pub mod icon_assets;
 pub mod preview;
 pub mod settings;
 pub mod svg;

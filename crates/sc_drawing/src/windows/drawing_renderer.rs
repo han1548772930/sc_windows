@@ -274,24 +274,7 @@ impl DrawingRenderer {
             .static_layer
             .as_ref()
             .ok_or_else(|| RenderError::InvalidState("Static layer target not available".into()))?;
-
-        let bitmap: ID2D1Bitmap = unsafe {
-            layer
-                .GetBitmap()
-                .map_err(|e| RenderError::RenderFailed(format!("GetBitmap failed: {e:?}")))?
-        };
-
-        unsafe {
-            render_target.DrawBitmap(
-                &bitmap,
-                None,
-                1.0,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                None,
-            );
-        }
-
-        Ok(())
+        draw_cached_bitmap(render_target, layer)
     }
 
     fn draw_selection_ui(
@@ -372,72 +355,7 @@ impl DrawingRenderer {
                 if element.points.is_empty() {
                     return Ok(());
                 }
-
-                let Some(dwrite_factory) = ctx.dwrite_factory else {
-                    return Ok(());
-                };
-
-                let brush = ctx
-                    .get_brush(element.color)
-                    .ok_or_else(|| RenderError::ResourceCreation("Failed to create brush".into()))?
-                    .clone();
-
-                unsafe {
-                    let text_format = create_text_format_from_element(
-                        dwrite_factory,
-                        &element.font_name,
-                        element.get_effective_font_size(),
-                        element.font_weight,
-                        element.font_italic,
-                    )?;
-
-                    let padding =
-                        super::text::text_padding_for_font_size(element.get_effective_font_size());
-
-                    let width =
-                        ((element.rect.right - element.rect.left) as f32 - padding * 2.0).max(0.0);
-                    let height =
-                        ((element.rect.bottom - element.rect.top) as f32 - padding * 2.0).max(0.0);
-
-                    let layout = create_text_layout_with_style(
-                        dwrite_factory,
-                        &text_format,
-                        &element.text,
-                        width,
-                        height,
-                        element.font_underline,
-                        element.font_strikeout,
-                    )?;
-
-                    let origin = Vector2 {
-                        X: element.rect.left as f32 + padding,
-                        Y: element.rect.top as f32 + padding,
-                    };
-
-                    // Clip to the text element bounds. Without this, when the box becomes smaller
-                    // than the laid-out text (e.g. due to rounding during resize), text/caret can
-                    // be drawn outside the selection box.
-                    let clip_rect = D2D_RECT_F {
-                        left: element.rect.left as f32,
-                        top: element.rect.top as f32,
-                        right: element.rect.right as f32,
-                        bottom: element.rect.bottom as f32,
-                    };
-
-                    ctx.render_target
-                        .PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-                    ctx.render_target.DrawTextLayout(
-                        origin,
-                        &layout,
-                        &brush,
-                        windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    );
-
-                    ctx.render_target.PopAxisAlignedClip();
-                }
-
-                Ok(())
+                draw_text_layout_with_cursor(ctx, element, None, false)
             }
             _ => self.registry.render_element(element, ctx),
         }
@@ -515,103 +433,7 @@ impl DrawingRenderer {
         element: &DrawingElement,
         cursor: Option<TextCursorState>,
     ) -> RenderResult<()> {
-        if element.points.is_empty() {
-            return Ok(());
-        }
-
-        let dwrite_factory = ctx
-            .dwrite_factory
-            .ok_or_else(|| RenderError::InvalidState("DirectWrite factory not available".into()))?;
-
-        let brush = ctx
-            .get_brush(element.color)
-            .ok_or_else(|| RenderError::ResourceCreation("Failed to create brush".into()))?
-            .clone();
-
-        unsafe {
-            let text_format = create_text_format_from_element(
-                dwrite_factory,
-                &element.font_name,
-                element.get_effective_font_size(),
-                element.font_weight,
-                element.font_italic,
-            )?;
-
-            let padding =
-                super::text::text_padding_for_font_size(element.get_effective_font_size());
-
-            let width = ((element.rect.right - element.rect.left) as f32 - padding * 2.0).max(0.0);
-            let height = ((element.rect.bottom - element.rect.top) as f32 - padding * 2.0).max(0.0);
-
-            let layout = create_text_layout_with_style(
-                dwrite_factory,
-                &text_format,
-                &element.text,
-                width,
-                height,
-                element.font_underline,
-                element.font_strikeout,
-            )?;
-
-            let origin = Vector2 {
-                X: element.rect.left as f32 + padding,
-                Y: element.rect.top as f32 + padding,
-            };
-
-            // Clip to the text element bounds so reflow/rounding during resize can't draw outside.
-            let clip_rect = D2D_RECT_F {
-                left: element.rect.left as f32,
-                top: element.rect.top as f32,
-                right: element.rect.right as f32,
-                bottom: element.rect.bottom as f32,
-            };
-
-            ctx.render_target
-                .PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-            ctx.render_target.DrawTextLayout(
-                origin,
-                &layout,
-                &brush,
-                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-            );
-
-            let cursor_res = if let Some(c) = cursor
-                && c.visible
-                && c.element_id == element.id
-            {
-                let cursor_brush = ctx
-                    .get_brush(CURSOR_COLOR)
-                    .ok_or_else(|| {
-                        RenderError::ResourceCreation("Failed to create cursor brush".into())
-                    })?
-                    .clone();
-
-                let content_rect = D2D_RECT_F {
-                    left: element.rect.left as f32 + padding,
-                    top: element.rect.top as f32 + padding,
-                    right: element.rect.right as f32 - padding,
-                    bottom: element.rect.bottom as f32 - padding,
-                };
-
-                draw_text_cursor(
-                    ctx.render_target,
-                    element,
-                    &layout,
-                    &content_rect,
-                    &cursor_brush,
-                    c.cursor_pos,
-                )
-            } else {
-                Ok(())
-            };
-
-            ctx.render_target.PopAxisAlignedClip();
-
-            cursor_res?;
-        }
-
-        Ok(())
+        draw_text_layout_with_cursor(ctx, element, cursor, true)
     }
 
     fn ensure_static_layer(
@@ -626,21 +448,8 @@ impl DrawingRenderer {
         self.static_layer = None;
         self.static_layer_size = screen_size;
 
-        unsafe {
-            let target = render_target
-                .CreateCompatibleRenderTarget(
-                    None,
-                    None,
-                    None,
-                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
-                )
-                .map_err(|e| {
-                    RenderError::ResourceCreation(format!(
-                        "CreateCompatibleRenderTarget (static layer) failed: {e:?}"
-                    ))
-                })?;
-            self.static_layer = Some(target);
-        }
+        let target = create_compatible_render_target(render_target, "static layer")?;
+        self.static_layer = Some(target);
 
         Ok(())
     }
@@ -658,20 +467,9 @@ impl DrawingRenderer {
         self.pen_stroke_size = screen_size;
         self.last_drawn_point_index = 0;
 
-        unsafe {
-            let cache = render_target
-                .CreateCompatibleRenderTarget(
-                    None,
-                    None,
-                    None,
-                    D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
-                )
-                .map_err(|e| {
-                    RenderError::ResourceCreation(format!(
-                        "CreateCompatibleRenderTarget (pen cache) failed: {e:?}"
-                    ))
-                })?;
+        let cache = create_compatible_render_target(render_target, "pen cache")?;
 
+        unsafe {
             cache.BeginDraw();
             let clear = D2D1_COLOR_F {
                 r: 0.0,
@@ -683,9 +481,9 @@ impl DrawingRenderer {
             cache.EndDraw(None, None).map_err(|e| {
                 RenderError::RenderFailed(format!("Pen cache EndDraw failed: {e:?}"))
             })?;
-
-            self.pen_stroke_cache = Some(cache);
         }
+
+        self.pen_stroke_cache = Some(cache);
 
         Ok(())
     }
@@ -766,27 +564,159 @@ impl DrawingRenderer {
             Some(c) => c,
             None => return Ok(()),
         };
-
-        let bitmap: ID2D1Bitmap = unsafe {
-            cache
-                .GetBitmap()
-                .map_err(|e| RenderError::RenderFailed(format!("GetBitmap failed: {e:?}")))?
-        };
-
-        unsafe {
-            render_target.DrawBitmap(
-                &bitmap,
-                None,
-                1.0,
-                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                None,
-            );
-        }
-
-        Ok(())
+        draw_cached_bitmap(render_target, cache)
     }
 }
 
+fn create_compatible_render_target(
+    render_target: &ID2D1RenderTarget,
+    label: &str,
+) -> RenderResult<ID2D1BitmapRenderTarget> {
+    unsafe {
+        render_target
+            .CreateCompatibleRenderTarget(
+                None,
+                None,
+                None,
+                D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+            )
+            .map_err(|e| {
+                RenderError::ResourceCreation(format!(
+                    "CreateCompatibleRenderTarget ({label}) failed: {e:?}"
+                ))
+            })
+    }
+}
+
+fn draw_cached_bitmap(
+    render_target: &ID2D1RenderTarget,
+    cache_target: &ID2D1BitmapRenderTarget,
+) -> RenderResult<()> {
+    let bitmap: ID2D1Bitmap = unsafe {
+        cache_target
+            .GetBitmap()
+            .map_err(|e| RenderError::RenderFailed(format!("GetBitmap failed: {e:?}")))?
+    };
+
+    unsafe {
+        render_target.DrawBitmap(
+            &bitmap,
+            None,
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
+    }
+
+    Ok(())
+}
+
+fn draw_text_layout_with_cursor(
+    ctx: &mut RenderContext,
+    element: &DrawingElement,
+    cursor: Option<TextCursorState>,
+    require_dwrite: bool,
+) -> RenderResult<()> {
+    if element.points.is_empty() {
+        return Ok(());
+    }
+
+    let Some(dwrite_factory) = ctx.dwrite_factory else {
+        if require_dwrite {
+            return Err(RenderError::InvalidState(
+                "DirectWrite factory not available".into(),
+            ));
+        }
+        return Ok(());
+    };
+
+    let brush = ctx
+        .get_brush(element.color)
+        .ok_or_else(|| RenderError::ResourceCreation("Failed to create brush".into()))?
+        .clone();
+
+    unsafe {
+        let text_format = create_text_format_from_element(
+            dwrite_factory,
+            &element.font_name,
+            element.get_effective_font_size(),
+            element.font_weight,
+            element.font_italic,
+        )?;
+
+        let padding = super::text::text_padding_for_font_size(element.get_effective_font_size());
+
+        let width = ((element.rect.right - element.rect.left) as f32 - padding * 2.0).max(0.0);
+        let height = ((element.rect.bottom - element.rect.top) as f32 - padding * 2.0).max(0.0);
+
+        let layout = create_text_layout_with_style(
+            dwrite_factory,
+            &text_format,
+            &element.text,
+            width,
+            height,
+            element.font_underline,
+            element.font_strikeout,
+        )?;
+
+        let origin = Vector2 {
+            X: element.rect.left as f32 + padding,
+            Y: element.rect.top as f32 + padding,
+        };
+
+        // Clip to the text element bounds so reflow/rounding during resize can't draw outside.
+        let clip_rect = D2D_RECT_F {
+            left: element.rect.left as f32,
+            top: element.rect.top as f32,
+            right: element.rect.right as f32,
+            bottom: element.rect.bottom as f32,
+        };
+
+        ctx.render_target
+            .PushAxisAlignedClip(&clip_rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        ctx.render_target.DrawTextLayout(
+            origin,
+            &layout,
+            &brush,
+            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
+
+        let cursor_res = if let Some(c) = cursor
+            && c.visible
+            && c.element_id == element.id
+        {
+            let cursor_brush = ctx
+                .get_brush(CURSOR_COLOR)
+                .ok_or_else(|| RenderError::ResourceCreation("Failed to create cursor brush".into()))?
+                .clone();
+
+            let content_rect = D2D_RECT_F {
+                left: element.rect.left as f32 + padding,
+                top: element.rect.top as f32 + padding,
+                right: element.rect.right as f32 - padding,
+                bottom: element.rect.bottom as f32 - padding,
+            };
+
+            draw_text_cursor(
+                ctx.render_target,
+                element,
+                &layout,
+                &content_rect,
+                &cursor_brush,
+                c.cursor_pos,
+            )
+        } else {
+            Ok(())
+        };
+
+        ctx.render_target.PopAxisAlignedClip();
+
+        cursor_res?;
+    }
+
+    Ok(())
+}
 fn to_wide_chars(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

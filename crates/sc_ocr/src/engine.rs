@@ -210,7 +210,7 @@ pub fn recognize_from_memory(engine: &OcrEngine, image_data: &[u8]) -> Result<Ve
 
     if results.is_empty() {
         Ok(vec![OcrResult {
-            text: "未识别到任何文字".to_string(),
+            text: crate::OCR_NO_TEXT_PLACEHOLDER.to_string(),
             confidence: 0.0,
             bounding_box: BoundingBox {
                 x: 0,
@@ -313,4 +313,46 @@ pub fn recognize_text_by_lines(
     final_results.sort_by(|a, b| a.bounding_box.y.cmp(&b.bounding_box.y));
 
     Ok(final_results)
+}
+
+/// Summarize OCR results into (has_results, is_failed, text).
+///
+/// This preserves existing host semantics:
+/// - `has_results` when the vector is non-empty
+/// - `is_failed` when the only result is the failure placeholder
+/// - `text` is a newline-joined concatenation of all result texts
+pub fn summarize_results(ocr_results: &[OcrResult]) -> (bool, bool, String) {
+    summarize_outcome(ocr_results).into_summary()
+}
+
+/// Summarize OCR results into a structured outcome.
+pub fn summarize_outcome(ocr_results: &[OcrResult]) -> crate::OcrOutcome {
+    if ocr_results.is_empty() {
+        return crate::OcrOutcome::None;
+    }
+
+    if ocr_results.len() == 1 {
+        let text = ocr_results[0].text.clone();
+        if text == crate::OCR_FAILED_PLACEHOLDER {
+            return crate::OcrOutcome::Failed { text };
+        }
+        if text == crate::OCR_NO_TEXT_PLACEHOLDER {
+            return crate::OcrOutcome::Empty { text };
+        }
+    }
+
+    let text = ocr_results
+        .iter()
+        .map(|r| r.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::OcrOutcome::Success { text }
+}
+/// Join OCR result texts with newline, trimming trailing whitespace per line.
+pub fn join_result_texts_trimmed(ocr_results: &[OcrResult]) -> String {
+    ocr_results
+        .iter()
+        .map(|r| r.text.trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }

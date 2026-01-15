@@ -138,6 +138,76 @@ impl PreviewWindowState {
         left_max_right + gap + right_buttons_width
     }
 
+    fn derive_text_panel_state(
+        ocr_results: &[OcrResult],
+        is_pin_mode: bool,
+    ) -> (String, bool, Option<String>) {
+        let text_content = sc_ocr::join_result_texts_trimmed(ocr_results);
+        let show_text_area = !is_pin_mode || !text_content.is_empty();
+        let ocr_cached_text = if text_content.is_empty() {
+            None
+        } else {
+            Some(text_content.clone())
+        };
+        (text_content, show_text_area, ocr_cached_text)
+    }
+
+    fn compute_window_size(image_width: i32, image_height: i32, show_text_area: bool) -> (i32, i32) {
+        if show_text_area {
+            let text_area_width = OCR_TEXT_PANEL_WIDTH;
+            let image_area_width = image_width + OCR_CONTENT_PADDING_X * 2;
+            let margin = OCR_PANEL_GAP;
+            let content_padding_top = OCR_CONTENT_PADDING_TOP;
+            let content_padding_bottom = OCR_CONTENT_PADDING_BOTTOM;
+            (
+                image_area_width + text_area_width + margin,
+                TITLE_BAR_HEIGHT + content_padding_top + image_height + content_padding_bottom,
+            )
+        } else {
+            (image_width, TITLE_BAR_HEIGHT + image_height)
+        }
+    }
+
+    fn compute_window_position(
+        selection_rect: RectI32,
+        window_width: i32,
+        window_height: i32,
+        is_pin_mode: bool,
+        screen_size: (i32, i32),
+    ) -> (i32, i32) {
+        let (screen_width, screen_height) = screen_size;
+        let mut window_x = selection_rect.right + 20;
+        let mut window_y = selection_rect.top;
+
+        if is_pin_mode {
+            window_x = selection_rect.left;
+            window_y = selection_rect.top;
+        } else {
+            if window_x + window_width > screen_width {
+                window_x = selection_rect.left - window_width - 20;
+                if window_x < 0 {
+                    window_x = 50;
+                }
+            }
+            if window_y + window_height > screen_height {
+                window_y = screen_height - window_height - 50;
+                if window_y < 0 {
+                    window_y = 50;
+                }
+            }
+        }
+
+        if window_x + window_width > screen_width {
+            window_x = screen_width - window_width;
+        }
+        if window_y + window_height > screen_height {
+            window_y = screen_height - window_height;
+        }
+        window_x = window_x.max(0);
+        window_y = window_y.max(0);
+        (window_x, window_y)
+    }
+
     fn existing_hwnd() -> Option<HWND> {
         let window_id = preview_hwnd_store()
             .lock()
@@ -178,13 +248,6 @@ impl PreviewWindowState {
         guard.clear();
     }
 
-    fn ocr_text_from_results(ocr_results: &[OcrResult]) -> String {
-        ocr_results
-            .iter()
-            .map(|r| r.text.trim_end().to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 
     fn cursor_from_drag_mode(drag_mode: DragMode) -> Option<CursorIcon> {
         match drag_mode {
@@ -342,28 +405,46 @@ impl PreviewWindowState {
         for icon in &mut self.svg_icons {
             let is_drawing_tool_icon = matches!(
                 icon.name.as_str(),
-                "square" | "circle" | "move-up-right" | "pen" | "type"
+                preview_layout::ICON_TOOL_SQUARE
+                    | preview_layout::ICON_TOOL_CIRCLE
+                    | preview_layout::ICON_TOOL_ARROW
+                    | preview_layout::ICON_TOOL_PEN
+                    | preview_layout::ICON_TOOL_TEXT
             );
 
             if is_drawing_tool_icon {
                 icon.selected = matches!(
                     (icon.name.as_str(), current_tool),
-                    ("square", DrawingTool::Rectangle)
-                        | ("circle", DrawingTool::Circle)
-                        | ("move-up-right", DrawingTool::Arrow)
-                        | ("pen", DrawingTool::Pen)
-                        | ("type", DrawingTool::Text)
+                    (preview_layout::ICON_TOOL_SQUARE, DrawingTool::Rectangle)
+                        | (preview_layout::ICON_TOOL_CIRCLE, DrawingTool::Circle)
+                        | (preview_layout::ICON_TOOL_ARROW, DrawingTool::Arrow)
+                        | (preview_layout::ICON_TOOL_PEN, DrawingTool::Pen)
+                        | (preview_layout::ICON_TOOL_TEXT, DrawingTool::Text)
                 );
                 continue;
             }
 
             // OCR icon: selected means the right-side text panel is visible.
-            if icon.name == "extracttext" {
+            if icon.name == preview_layout::ICON_OCR {
                 icon.selected = self.show_text_area;
             }
         }
     }
 
+    fn reset_text_selection(&mut self) {
+        self.is_selecting = false;
+        self.selection_start = None;
+        self.selection_end = None;
+    }
+
+    fn refresh_text_lines(&mut self) {
+        if let Some(renderer) = &self.renderer {
+            let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
+            self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
+        } else {
+            self.text_lines = vec![self.text_content.clone()];
+        }
+    }
     pub(super) fn switch_drawing_tool(&mut self, tool: DrawingTool) {
         if let Some(ref mut ds) = self.drawing_state {
             ds.switch_tool(tool);
@@ -373,9 +454,7 @@ impl PreviewWindowState {
 
     pub(super) fn toggle_ocr_text_panel(&mut self) {
         // Reset text selection state when toggling panel visibility.
-        self.is_selecting = false;
-        self.selection_start = None;
-        self.selection_end = None;
+        self.reset_text_selection();
 
         if self.show_text_area {
             // Hide panel (keep cached OCR).
@@ -398,20 +477,11 @@ impl PreviewWindowState {
         // Resize to match the two modes (same as initial window sizing in `show`).
         // If the window is maximized, keep the current size and only toggle layout.
         if !self.is_maximized {
-            let (mut new_width, new_height) = if self.show_text_area {
-                (
-                    self.image_width
-                        + OCR_CONTENT_PADDING_X * 2
-                        + OCR_TEXT_PANEL_WIDTH
-                        + OCR_PANEL_GAP,
-                    TITLE_BAR_HEIGHT
-                        + self.image_height
-                        + OCR_CONTENT_PADDING_TOP
-                        + OCR_CONTENT_PADDING_BOTTOM,
-                )
-            } else {
-                (self.image_width, TITLE_BAR_HEIGHT + self.image_height)
-            };
+            let (mut new_width, new_height) = Self::compute_window_size(
+                self.image_width,
+                self.image_height,
+                self.show_text_area,
+            );
 
             new_width = new_width.max(Self::min_window_width_for_title_bar());
 
@@ -436,12 +506,7 @@ impl PreviewWindowState {
 
         // Always refresh text wrapping when showing the panel (even if the rect didn't change).
         if self.show_text_area {
-            if let Some(renderer) = &self.renderer {
-                let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
-                self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
-            } else {
-                self.text_lines = vec![self.text_content.clone()];
-            }
+            self.refresh_text_lines();
         }
 
         self.update_tool_icons();
@@ -490,7 +555,7 @@ impl PreviewWindowState {
     fn run_ocr_in_background(image_data: &[u8]) -> String {
         // Load settings (language selection).
         let settings = Settings::load();
-        let config = sc_ocr::OcrConfig::new("models", settings.ocr_language);
+        let config = sc_ocr::OcrConfig::new(sc_ocr::DEFAULT_MODELS_DIR, settings.ocr_language);
 
         if !sc_ocr::models_exist(&config) {
             return "OCR 引擎不可用（缺少模型文件）".to_string();
@@ -503,9 +568,9 @@ impl PreviewWindowState {
 
         match sc_ocr::recognize_from_memory(&engine, image_data) {
             Ok(results) => {
-                let text = Self::ocr_text_from_results(&results);
+                let text = sc_ocr::join_result_texts_trimmed(&results);
                 if text.trim().is_empty() {
-                    "未识别到任何文字".to_string()
+                    sc_ocr::OCR_NO_TEXT_PLACEHOLDER.to_string()
                 } else {
                     text
                 }
@@ -530,17 +595,10 @@ impl PreviewWindowState {
 
         // Reset selection/scroll when new OCR text arrives.
         self.scroll_offset = 0;
-        self.is_selecting = false;
-        self.selection_start = None;
-        self.selection_end = None;
+        self.reset_text_selection();
 
         if self.show_text_area {
-            if let Some(renderer) = &self.renderer {
-                let width = (self.text_area_rect.right - self.text_area_rect.left) as f32;
-                self.text_lines = renderer.split_text_into_lines(&self.text_content, width);
-            } else {
-                self.text_lines = vec![self.text_content.clone()];
-            }
+            self.refresh_text_lines();
 
             let window_id = self.window_id();
             let rect = self.text_area_rect;
@@ -613,14 +671,24 @@ impl PreviewWindowState {
         }
     }
 
-    fn center_icons(&mut self) {
+    fn center_icons_with<F>(&mut self, should_center: F)
+    where
+        F: Fn(&SvgIcon) -> bool,
+    {
         let icon_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
 
         for icon in &mut self.svg_icons {
+            if !should_center(icon) {
+                continue;
+            }
             let icon_height = icon.rect.bottom - icon.rect.top;
             icon.rect.top = icon_y;
             icon.rect.bottom = icon_y + icon_height;
         }
+    }
+
+    fn center_icons(&mut self) {
+        self.center_icons_with(|_| true);
     }
 
     pub(super) fn update_title_bar_buttons(&mut self) {
@@ -637,24 +705,17 @@ impl PreviewWindowState {
         }
 
         // 更新所有左侧图标的位置
-        for icon in &mut self.svg_icons {
-            if !icon.is_title_bar_button {
-                let new_y = (TITLE_BAR_HEIGHT - ICON_SIZE) / 2;
-                let icon_height = icon.rect.bottom - icon.rect.top;
-                icon.rect.top = new_y;
-                icon.rect.bottom = new_y + icon_height;
-            }
-        }
+        self.center_icons_with(|icon| !icon.is_title_bar_button);
 
         // 创建新的标题栏按钮
-        let mut title_bar_buttons = self.create_title_bar_buttons(window_width, self.is_maximized);
+        let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, self.is_maximized);
         self.svg_icons.append(&mut title_bar_buttons);
 
         // Keep selected states in sync after rebuilding icons.
         self.update_tool_icons();
     }
 
-    fn create_title_bar_buttons(&self, window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
+    fn create_title_bar_buttons(window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
         preview_layout::create_title_bar_buttons(window_width, is_maximized)
             .into_iter()
             .map(|icon| SvgIcon {
@@ -665,6 +726,13 @@ impl PreviewWindowState {
                 is_title_bar_button: icon.is_title_bar_button(),
             })
             .collect()
+    }
+
+    fn build_icon_set(window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
+        let mut icons = Self::create_left_icons();
+        let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, is_maximized);
+        icons.append(&mut title_bar_buttons);
+        icons
     }
 
     unsafe fn update_existing_window(
@@ -689,57 +757,24 @@ impl PreviewWindowState {
         // 解析图片与计算尺寸
         let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
 
-        let text_content = Self::ocr_text_from_results(&ocr_results);
-        let show_text_area = !is_pin_mode || !text_content.is_empty();
+        let (text_content, show_text_area, ocr_cached_text) =
+            Self::derive_text_panel_state(&ocr_results, is_pin_mode);
 
         // 布局计算
-        let (mut window_width, window_height) = if show_text_area {
-            let text_area_width = OCR_TEXT_PANEL_WIDTH;
-            let image_area_width = actual_width + OCR_CONTENT_PADDING_X * 2;
-            let margin = OCR_PANEL_GAP;
-            let content_padding_top = OCR_CONTENT_PADDING_TOP;
-            let content_padding_bottom = OCR_CONTENT_PADDING_BOTTOM;
-            (
-                image_area_width + text_area_width + margin,
-                TITLE_BAR_HEIGHT + content_padding_top + actual_height + content_padding_bottom,
-            )
-        } else {
-            (actual_width, TITLE_BAR_HEIGHT + actual_height)
-        };
+        let (mut window_width, window_height) =
+            Self::compute_window_size(actual_width, actual_height, show_text_area);
 
         window_width = window_width.max(Self::min_window_width_for_title_bar());
 
         // 计算位置
-        let (screen_width, screen_height) = WindowsHostPlatform::new().screen_size();
-        let mut window_x = selection_rect.right + 20;
-        let mut window_y = selection_rect.top;
-
-        if is_pin_mode {
-            window_x = selection_rect.left;
-            window_y = selection_rect.top;
-        } else {
-            if window_x + window_width > screen_width {
-                window_x = selection_rect.left - window_width - 20;
-                if window_x < 0 {
-                    window_x = 50;
-                }
-            }
-            if window_y + window_height > screen_height {
-                window_y = screen_height - window_height - 50;
-                if window_y < 0 {
-                    window_y = 50;
-                }
-            }
-        }
-
-        if window_x + window_width > screen_width {
-            window_x = screen_width - window_width;
-        }
-        if window_y + window_height > screen_height {
-            window_y = screen_height - window_height;
-        }
-        window_x = window_x.max(0);
-        window_y = window_y.max(0);
+        let screen_size = WindowsHostPlatform::new().screen_size();
+        let (window_x, window_y) = Self::compute_window_position(
+            selection_rect,
+            window_width,
+            window_height,
+            is_pin_mode,
+            screen_size,
+        );
 
         let window_id = sc_platform_windows::windows::window_id(existing_hwnd);
         let platform = WindowsHostPlatform::new();
@@ -778,10 +813,7 @@ impl PreviewWindowState {
         window.window_height = window_height;
         window.scroll_offset = 0;
         window.text_lines.clear();
-
-        window.is_selecting = false;
-        window.selection_start = None;
-        window.selection_end = None;
+        window.reset_text_selection();
 
         window.is_pinned = is_pin_mode;
         window.show_text_area = show_text_area;
@@ -790,19 +822,12 @@ impl PreviewWindowState {
         window.ocr_request_id = next_ocr_request_id();
         window.ocr_in_flight = false;
         window.ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
-        window.ocr_cached_text = if text_content.is_empty() {
-            None
-        } else {
-            Some(text_content.clone())
-        };
+        window.ocr_cached_text = ocr_cached_text;
 
         window.text_content = text_content;
 
         // Reset icons.
-        window.svg_icons = Self::create_left_icons();
-        let mut title_bar_buttons =
-            window.create_title_bar_buttons(window_width, window.is_maximized);
-        window.svg_icons.append(&mut title_bar_buttons);
+        window.svg_icons = Self::build_icon_set(window_width, window.is_maximized);
         window.update_tool_icons();
 
         // Reset drawing state.
@@ -824,12 +849,7 @@ impl PreviewWindowState {
         window.recalculate_layout();
 
         if window.show_text_area {
-            if let Some(renderer) = &window.renderer {
-                let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
-                window.text_lines = renderer.split_text_into_lines(&window.text_content, width);
-            } else {
-                window.text_lines = vec![window.text_content.clone()];
-            }
+            window.refresh_text_lines();
         }
 
         let _ = platform.show_window(window_id);
@@ -904,68 +924,27 @@ impl PreviewWindowState {
             // 解析图片与计算尺寸
             let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
 
-            let text_content = Self::ocr_text_from_results(&ocr_results);
-            let show_text_area = !is_pin_mode || !text_content.is_empty();
-
-            let ocr_cached_text = if text_content.is_empty() {
-                None
-            } else {
-                Some(text_content.clone())
-            };
+            let (text_content, show_text_area, ocr_cached_text) =
+                Self::derive_text_panel_state(&ocr_results, is_pin_mode);
 
             // Choose OCR source image: if not provided, default to the display image.
             let ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
 
             // 布局计算
-            let (mut window_width, window_height) = if show_text_area {
-                // OCR 模式：有文本区域和边距
-                let text_area_width = OCR_TEXT_PANEL_WIDTH;
-                let image_area_width = actual_width + OCR_CONTENT_PADDING_X * 2;
-                let margin = OCR_PANEL_GAP;
-                let content_padding_top = OCR_CONTENT_PADDING_TOP;
-                let content_padding_bottom = OCR_CONTENT_PADDING_BOTTOM;
-                (
-                    image_area_width + text_area_width + margin,
-                    TITLE_BAR_HEIGHT + content_padding_top + actual_height + content_padding_bottom,
-                )
-            } else {
-                // Pin/compact mode.
-                (actual_width, TITLE_BAR_HEIGHT + actual_height)
-            };
+            let (mut window_width, window_height) =
+                Self::compute_window_size(actual_width, actual_height, show_text_area);
 
             window_width = window_width.max(Self::min_window_width_for_title_bar());
 
             // 计算位置
-            let (screen_width, screen_height) = WindowsHostPlatform::new().screen_size();
-            let mut window_x = selection_rect.right + 20;
-            let mut window_y = selection_rect.top;
-
-            if is_pin_mode {
-                window_x = selection_rect.left;
-                window_y = selection_rect.top;
-            } else {
-                if window_x + window_width > screen_width {
-                    window_x = selection_rect.left - window_width - 20;
-                    if window_x < 0 {
-                        window_x = 50;
-                    }
-                }
-                if window_y + window_height > screen_height {
-                    window_y = screen_height - window_height - 50;
-                    if window_y < 0 {
-                        window_y = 50;
-                    }
-                }
-            }
-
-            if window_x + window_width > screen_width {
-                window_x = screen_width - window_width;
-            }
-            if window_y + window_height > screen_height {
-                window_y = screen_height - window_height;
-            }
-            window_x = window_x.max(0);
-            window_y = window_y.max(0);
+            let screen_size = WindowsHostPlatform::new().screen_size();
+            let (window_x, window_y) = Self::compute_window_position(
+                selection_rect,
+                window_width,
+                window_height,
+                is_pin_mode,
+                screen_size,
+            );
 
             // Create window.
             let dw_style = WS_THICKFRAME
@@ -1030,7 +1009,7 @@ impl PreviewWindowState {
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             )?;
 
-            let svg_icons = Self::create_left_icons();
+            let svg_icons = Self::build_icon_set(window_width, false);
 
             let window_id = sc_platform_windows::windows::window_id(hwnd);
             let drawing_state = PreviewDrawingState::new(window_id, drawing_config).ok();
@@ -1067,8 +1046,6 @@ impl PreviewWindowState {
                 drawing_state,
             };
 
-            let mut title_bar_buttons = window.create_title_bar_buttons(window_width, false);
-            window.svg_icons.append(&mut title_bar_buttons);
 
             window.update_tool_icons();
 
@@ -1091,11 +1068,10 @@ impl PreviewWindowState {
                     window.image_width,
                     window.image_height,
                 );
+            }
 
-                if window.show_text_area {
-                    let width = (window.text_area_rect.right - window.text_area_rect.left) as f32;
-                    window.text_lines = renderer.split_text_into_lines(&window.text_content, width);
-                }
+            if window.show_text_area {
+                window.refresh_text_lines();
             }
 
             let platform = WindowsHostPlatform::new();

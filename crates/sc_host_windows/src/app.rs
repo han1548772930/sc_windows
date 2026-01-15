@@ -153,6 +153,17 @@ impl App {
         }
     }
 
+    fn validated_selection_rect(&self) -> Option<core_selection::RectI32> {
+        let rect = self.confirmed_selection_rect()?;
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            None
+        } else {
+            Some(rect)
+        }
+    }
+
     /// 检查是否有有效的选区图像
     pub fn has_valid_selection(&self) -> bool {
         self.confirmed_selection_rect().is_some() && self.screenshot.has_screenshot()
@@ -349,26 +360,26 @@ impl App {
             sc_app::Action::Selection(core_selection::Action::MouseUp { .. })
         );
 
+        let had_active_highlight = self.core.selection().has_auto_highlight()
+            && self.core.selection().hover_selection().is_some();
+
         let mut commands = core_bridge::dispatch(&mut self.core, action);
 
-        // Keep the host-side confirmed selection rect in sync with the core phase.
-        let confirmed_selection = match self.core.selection().phase() {
-            core_selection::Phase::Editing { selection } => Some(*selection),
-            core_selection::Phase::Idle | core_selection::Phase::Selecting { .. } => None,
-        };
-        self.screenshot
-            .sync_confirmed_selection_from_core(confirmed_selection);
 
         // Auto-highlight should only be updated after core has confirmed/rejected selection.
         if is_selection_mouse_up {
             let is_click = self
-                .screenshot
-                .take_pending_mouse_up_is_click()
+                .core
+                .take_selection_mouse_up_is_click()
                 .unwrap_or(false);
-            let selection_has_selection = self.screenshot.get_selection().is_some();
+            let selection_has_selection = self.confirmed_selection_rect().is_some();
             if self
                 .screenshot
-                .handle_auto_highlight_mouse_up(is_click, selection_has_selection)
+                .handle_auto_highlight_mouse_up(
+                    is_click,
+                    selection_has_selection,
+                    had_active_highlight,
+                )
             {
                 commands.push(Command::RequestRedraw);
             }
@@ -420,33 +431,14 @@ impl App {
     /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
+        let hover_selection = self.core.selection().hover_selection();
         let commands = match phase {
             core_selection::Phase::Editing { .. } => {
-                let mut commands = Vec::new();
-
-                // UI -> Drawing -> Screenshot 的处理顺序
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_move(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let selection_rect = self.screenshot.get_selection().map(Into::into);
-                    let (drawing_commands, drawing_consumed) =
-                        self.drawing.handle_mouse_move(x, y, selection_rect);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed && !self.drawing.is_dragging() {
-                        let (screenshot_commands, _screenshot_consumed) =
-                            self.screenshot.handle_mouse_move(x, y);
-                        commands.extend(screenshot_commands);
-                    }
-                }
-
-                commands
+                self.handle_mouse_move_editing(x, y, hover_selection)
             }
 
             core_selection::Phase::Idle | core_selection::Phase::Selecting { .. } => {
-                let (cmds, _consumed) = self.screenshot.handle_mouse_move(x, y);
-                cmds
+                self.handle_mouse_move_non_editing(x, y, hover_selection)
             }
         };
 
@@ -477,9 +469,11 @@ impl App {
                     None
                 };
 
-            let selection_rect = self.screenshot.get_selection();
+            let selection_rect = self.confirmed_selection_rect();
             let current_tool = self.drawing.get_current_tool();
-            let selection_handle_mode = self.screenshot.get_handle_at_position(x, y);
+            let selection_handle_mode =
+                self.screenshot
+                    .get_handle_at_position(self.confirmed_selection_rect(), x, y);
 
             let ctx = CursorContext {
                 mouse_x: x,
@@ -504,10 +498,17 @@ impl App {
     /// 处理鼠标按下
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
+        let has_auto_highlight = self.core.selection().has_auto_highlight()
+            && self.core.selection().hover_selection().is_some();
         match phase {
             core_selection::Phase::Idle => {
                 // 从空闲进入框选状态
-                let (cmds, consumed) = self.screenshot.handle_mouse_down(x, y);
+                let (cmds, consumed) = self.screenshot.handle_mouse_down(
+                    x,
+                    y,
+                    self.confirmed_selection_rect(),
+                    has_auto_highlight,
+                );
                 if consumed || self.screenshot.has_screenshot() {
                     // Route core actions through the command pipeline.
                     let mut commands = vec![Command::Core(CoreAction::Selection(
@@ -521,37 +522,17 @@ impl App {
             }
 
             core_selection::Phase::Selecting { .. } => {
-                let (cmds, _consumed) = self.screenshot.handle_mouse_down(x, y);
+                let (cmds, _consumed) = self.screenshot.handle_mouse_down(
+                    x,
+                    y,
+                    self.confirmed_selection_rect(),
+                    has_auto_highlight,
+                );
                 cmds
             }
 
             core_selection::Phase::Editing { .. } => {
-                let mut commands = Vec::new();
-
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_down(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let selection_rect = self.screenshot.get_selection().map(Into::into);
-                    let (drawing_commands, drawing_consumed) =
-                        self.drawing.handle_mouse_down(x, y, selection_rect);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed {
-                        let (screenshot_commands, screenshot_consumed) =
-                            self.screenshot.handle_mouse_down(x, y);
-                        commands.extend(screenshot_commands);
-
-                        if !screenshot_consumed {
-                            commands.extend(
-                                self.drawing
-                                    .handle_message(DrawingMessage::SelectElement(None)),
-                            );
-                        }
-                    }
-                }
-
-                commands
+                self.handle_mouse_down_editing(x, y, has_auto_highlight)
             }
         }
     }
@@ -564,7 +545,8 @@ impl App {
 
             core_selection::Phase::Selecting { .. } => {
                 // Let the host update selection geometry / auto-highlight state.
-                let (mut commands, _consumed) = self.screenshot.handle_mouse_up(x, y);
+                let (mut commands, _consumed) =
+                    self.screenshot.handle_mouse_up(x, y, self.confirmed_selection_rect());
 
                 commands.push(Command::Core(CoreAction::Selection(
                     core_selection::Action::MouseUp { x, y },
@@ -574,25 +556,113 @@ impl App {
             }
 
             core_selection::Phase::Editing { .. } => {
-                let mut commands = Vec::new();
-
-                let (ui_commands, ui_consumed) = self.ui.handle_mouse_up(x, y);
-                commands.extend(ui_commands);
-
-                if !ui_consumed {
-                    let (drawing_commands, drawing_consumed) = self.drawing.handle_mouse_up(x, y);
-                    commands.extend(drawing_commands);
-
-                    if !drawing_consumed {
-                        let (screenshot_commands, _screenshot_consumed) =
-                            self.screenshot.handle_mouse_up(x, y);
-                        commands.extend(screenshot_commands);
-                    }
-                }
-
-                commands
+                self.handle_mouse_up_editing(x, y)
             }
         }
+    }
+
+    fn handle_mouse_move_editing(
+        &mut self,
+        x: i32,
+        y: i32,
+        hover_selection: Option<core_selection::RectI32>,
+    ) -> Vec<Command> {
+        let mut commands = Vec::new();
+
+        // UI -> Drawing -> Screenshot 的处理顺序
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_move(x, y);
+        commands.extend(ui_commands);
+
+        if !ui_consumed {
+            let selection_rect = self.confirmed_selection_rect().map(Into::into);
+            let (drawing_commands, drawing_consumed) =
+                self.drawing.handle_mouse_move(x, y, selection_rect);
+            commands.extend(drawing_commands);
+
+            if !drawing_consumed && !self.drawing.is_dragging() {
+                let (screenshot_commands, _screenshot_consumed) = self.screenshot.handle_mouse_move(
+                    x,
+                    y,
+                    self.confirmed_selection_rect(),
+                    hover_selection,
+                );
+                commands.extend(screenshot_commands);
+            }
+        }
+
+        commands
+    }
+
+    fn handle_mouse_move_non_editing(
+        &mut self,
+        x: i32,
+        y: i32,
+        hover_selection: Option<core_selection::RectI32>,
+    ) -> Vec<Command> {
+        let (cmds, _consumed) = self.screenshot.handle_mouse_move(
+            x,
+            y,
+            self.confirmed_selection_rect(),
+            hover_selection,
+        );
+        cmds
+    }
+
+    fn handle_mouse_down_editing(
+        &mut self,
+        x: i32,
+        y: i32,
+        has_auto_highlight: bool,
+    ) -> Vec<Command> {
+        let mut commands = Vec::new();
+
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_down(x, y);
+        commands.extend(ui_commands);
+
+        if !ui_consumed {
+            let selection_rect = self.confirmed_selection_rect().map(Into::into);
+            let (drawing_commands, drawing_consumed) =
+                self.drawing.handle_mouse_down(x, y, selection_rect);
+            commands.extend(drawing_commands);
+
+            if !drawing_consumed {
+                let (screenshot_commands, screenshot_consumed) = self.screenshot.handle_mouse_down(
+                    x,
+                    y,
+                    self.confirmed_selection_rect(),
+                    has_auto_highlight,
+                );
+                commands.extend(screenshot_commands);
+
+                if !screenshot_consumed {
+                    commands
+                        .extend(self.drawing.handle_message(DrawingMessage::SelectElement(None)));
+                }
+            }
+        }
+
+        commands
+    }
+
+    fn handle_mouse_up_editing(&mut self, x: i32, y: i32) -> Vec<Command> {
+        let mut commands = Vec::new();
+
+        let (ui_commands, ui_consumed) = self.ui.handle_mouse_up(x, y);
+        commands.extend(ui_commands);
+
+        if !ui_consumed {
+            let (drawing_commands, drawing_consumed) = self.drawing.handle_mouse_up(x, y);
+            commands.extend(drawing_commands);
+
+            if !drawing_consumed {
+                let (screenshot_commands, _screenshot_consumed) = self
+                    .screenshot
+                    .handle_mouse_up(x, y, self.confirmed_selection_rect());
+                commands.extend(screenshot_commands);
+            }
+        }
+
+        commands
     }
 
     /// 处理双击事件
@@ -606,14 +676,18 @@ impl App {
                 commands.extend(self.ui.handle_double_click(x, y));
 
                 if commands.is_empty() {
-                    let selection_rect = self.screenshot.get_selection().map(Into::into);
+                    let selection_rect = self.confirmed_selection_rect().map(Into::into);
                     // 优先让Drawing处理（双击文本进入编辑）
                     let dcmds = self
                         .drawing
                         .handle_double_click(x, y, selection_rect.as_ref());
                     if dcmds.is_empty() {
                         // 若未消费，再交给Screenshot（双击确认选择保存）
-                        commands.extend(self.screenshot.handle_double_click(x, y));
+                        commands.extend(self.screenshot.handle_double_click(
+                            x,
+                            y,
+                            self.confirmed_selection_rect(),
+                        ));
                     } else {
                         commands.extend(dcmds);
                     }
@@ -671,7 +745,6 @@ impl App {
         self.ui.update_toolbar_selected_tool(current_tool);
 
         // 根据当前工具状态决定是否显示选择框手柄：仅当未选择绘图工具时显示
-        let current_tool = self.drawing.get_current_tool();
         let show_handles = matches!(current_tool, DrawingTool::None);
         self.screenshot.set_show_selection_handles(show_handles);
 
@@ -714,15 +787,9 @@ impl App {
     /// 保存选择区域到剪贴板（包含绘图元素）
     pub fn save_selection_to_clipboard(&mut self, _window: WindowId) -> AppResult<()> {
         // 获取选择区域
-        let Some(selection_rect) = self.confirmed_selection_rect() else {
+        let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(());
         };
-
-        let width = selection_rect.right - selection_rect.left;
-        let height = selection_rect.bottom - selection_rect.top;
-        if width <= 0 || height <= 0 {
-            return Ok(());
-        }
 
         // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
@@ -737,15 +804,9 @@ impl App {
     /// 返回 Ok(true) 表示保存成功，Ok(false) 表示用户取消，Err 表示错误
     pub fn save_selection_to_file(&mut self, window: WindowId) -> Result<bool, AppError> {
         // 没有有效选择则直接返回
-        let Some(selection_rect) = self.confirmed_selection_rect() else {
+        let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(false);
         };
-
-        let width = selection_rect.right - selection_rect.left;
-        let height = selection_rect.bottom - selection_rect.top;
-        if width <= 0 || height <= 0 {
-            return Ok(false);
-        }
 
         // 显示文件保存对话框
         let Some(file_path) = self
@@ -791,16 +852,9 @@ impl App {
     /// 固定选择区域（包含绘图元素）
     pub fn pin_selection(&mut self, window: WindowId) -> AppResult<Vec<Command>> {
         // 检查是否有选择区域
-        let Some(selection_rect) = self.confirmed_selection_rect() else {
+        let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(vec![]);
         };
-
-        let width = selection_rect.right - selection_rect.left;
-        let height = selection_rect.bottom - selection_rect.top;
-
-        if width <= 0 || height <= 0 {
-            return Ok(vec![]);
-        }
 
         // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
@@ -923,20 +977,7 @@ impl App {
 
     /// Summarize OCR results for core (no UI side effects).
     pub fn summarize_ocr_results(&self, ocr_results: &[OcrResult]) -> (bool, bool, String) {
-        let has_results = !ocr_results.is_empty();
-        let is_ocr_failed = ocr_results.len() == 1 && ocr_results[0].text == "OCR识别失败";
-
-        let text: String = if has_results {
-            ocr_results
-                .iter()
-                .map(|r| r.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            String::new()
-        };
-
-        (has_results, is_ocr_failed, text)
+        sc_ocr::summarize_outcome(ocr_results).into_summary()
     }
 
     pub fn set_ocr_completion(&mut self, data: OcrCompletionData) {
