@@ -1,8 +1,8 @@
 # sc_windows
 
 Windows 原生截图与标注工具（Rust + Direct2D），支持矩形/圆形/箭头/画笔/文字标注、OCR 文字识别、保存/复制与固钉预览。
-<img width="1463" height="645" alt="ScreenShot_2026-01-14_160205_992" src="https://github.com/user-attachments/assets/795b7e6b-a6d0-4599-a12d-40b07d6aafe7" />
-![screenshot](https://github.com/user-attachments/assets/e8be8c05-c3c2-493c-9e77-fb1fb2f1b9fd)
+<img width="1566" height="564" alt="ScreenShot_2026-01-15_110419_517" src="https://github.com/user-attachments/assets/847a8596-fe4f-4f2a-b972-ababa84127a3" />
+<img width="1961" height="608" alt="ScreenShot_2026-01-15_110456_147" src="https://github.com/user-attachments/assets/95a1edc6-ccae-4d34-b198-01161ba5838c" />
 ![screenshot](https://github.com/user-attachments/assets/b6417c1c-4abe-4e4b-943d-1d6b1b2bc7d6)
 
 ## 功能
