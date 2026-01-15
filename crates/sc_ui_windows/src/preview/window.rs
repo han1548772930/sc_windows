@@ -39,16 +39,11 @@ struct OcrResponse {
     text: String,
 }
 
-static PREVIEW_HWND: OnceLock<Mutex<Option<WindowId>>> = OnceLock::new();
 static OCR_RESPONSES: OnceLock<Mutex<HashMap<u64, OcrResponse>>> = OnceLock::new();
 static OCR_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_ocr_request_id() -> u64 {
     OCR_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
-fn preview_hwnd_store() -> &'static Mutex<Option<WindowId>> {
-    PREVIEW_HWND.get_or_init(|| Mutex::new(None))
 }
 
 fn ocr_response_store() -> &'static Mutex<HashMap<u64, OcrResponse>> {
@@ -135,7 +130,7 @@ impl PreviewWindowState {
         // Extra breathing room between the left icon group and the right window buttons.
         let gap = crate::constants::LEFT_ICON_SPACING;
 
-        left_max_right + gap + right_buttons_width
+        left_max_right + gap + right_buttons_width + 20
     }
 
     fn derive_text_panel_state(
@@ -152,7 +147,11 @@ impl PreviewWindowState {
         (text_content, show_text_area, ocr_cached_text)
     }
 
-    fn compute_window_size(image_width: i32, image_height: i32, show_text_area: bool) -> (i32, i32) {
+    fn compute_window_size(
+        image_width: i32,
+        image_height: i32,
+        show_text_area: bool,
+    ) -> (i32, i32) {
         if show_text_area {
             let text_area_width = OCR_TEXT_PANEL_WIDTH;
             let image_area_width = image_width + OCR_CONTENT_PADDING_X * 2;
@@ -208,46 +207,12 @@ impl PreviewWindowState {
         (window_x, window_y)
     }
 
-    fn existing_hwnd() -> Option<HWND> {
-        let window_id = preview_hwnd_store()
-            .lock()
-            .map(|g| *g)
-            .unwrap_or_else(|e| *e.into_inner());
-
-        window_id.map(sc_platform_windows::windows::hwnd)
-    }
-
-    fn set_singleton_hwnd(hwnd: HWND) {
-        let mut guard = preview_hwnd_store()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *guard = Some(sc_platform_windows::windows::window_id(hwnd));
-    }
-
-    pub(super) fn clear_singleton_hwnd(hwnd: HWND) {
-        let target_id = sc_platform_windows::windows::window_id(hwnd);
-        let mut guard = preview_hwnd_store()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if (*guard).map_or(false, |id| id == target_id) {
-            *guard = None;
-        }
-    }
-
     fn take_ocr_response(request_id: u64) -> Option<OcrResponse> {
         let mut guard = ocr_response_store()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         guard.remove(&request_id)
     }
-
-    pub(super) fn clear_ocr_responses() {
-        let mut guard = ocr_response_store()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        guard.clear();
-    }
-
 
     fn cursor_from_drag_mode(drag_mode: DragMode) -> Option<CursorIcon> {
         match drag_mode {
@@ -477,11 +442,8 @@ impl PreviewWindowState {
         // Resize to match the two modes (same as initial window sizing in `show`).
         // If the window is maximized, keep the current size and only toggle layout.
         if !self.is_maximized {
-            let (mut new_width, new_height) = Self::compute_window_size(
-                self.image_width,
-                self.image_height,
-                self.show_text_area,
-            );
+            let (mut new_width, new_height) =
+                Self::compute_window_size(self.image_width, self.image_height, self.show_text_area);
 
             new_width = new_width.max(Self::min_window_width_for_title_bar());
 
@@ -735,130 +697,6 @@ impl PreviewWindowState {
         icons
     }
 
-    unsafe fn update_existing_window(
-        existing_hwnd: HWND,
-        image_data: Vec<u8>,
-        ocr_results: Vec<OcrResult>,
-        selection_rect: RectI32,
-        is_pin_mode: bool,
-        drawing_config: DrawingConfig,
-        ocr_source_bmp_data: Option<Vec<u8>>,
-    ) -> Result<()> {
-        if existing_hwnd.0.is_null() || !unsafe { IsWindow(Some(existing_hwnd)).as_bool() } {
-            return Err(anyhow::anyhow!("existing preview hwnd is invalid"));
-        }
-
-        let window_ptr =
-            unsafe { GetWindowLongPtrW(existing_hwnd, GWLP_USERDATA) as *mut PreviewWindowState };
-        if window_ptr.is_null() {
-            return Err(anyhow::anyhow!("existing preview window state is null"));
-        }
-
-        // 解析图片与计算尺寸
-        let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
-
-        let (text_content, show_text_area, ocr_cached_text) =
-            Self::derive_text_panel_state(&ocr_results, is_pin_mode);
-
-        // 布局计算
-        let (mut window_width, window_height) =
-            Self::compute_window_size(actual_width, actual_height, show_text_area);
-
-        window_width = window_width.max(Self::min_window_width_for_title_bar());
-
-        // 计算位置
-        let screen_size = WindowsHostPlatform::new().screen_size();
-        let (window_x, window_y) = Self::compute_window_position(
-            selection_rect,
-            window_width,
-            window_height,
-            is_pin_mode,
-            screen_size,
-        );
-
-        let window_id = sc_platform_windows::windows::window_id(existing_hwnd);
-        let platform = WindowsHostPlatform::new();
-
-        // Update topmost flag for pin mode.
-        let _ = platform.set_window_topmost_flag(window_id, is_pin_mode);
-
-        // Resize/move the window.
-        let _ = unsafe {
-            SetWindowPos(
-                existing_hwnd,
-                None,
-                window_x,
-                window_y,
-                window_width,
-                window_height,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            )
-        };
-
-        // Update in-place.
-        // SAFETY: we validated `window_ptr` is non-null above and it is owned by this window.
-        let window = unsafe { &mut *window_ptr };
-
-        window.image_pixels = image_pixels;
-        window.image_width = actual_width;
-        window.image_height = actual_height;
-
-        window.text_area_rect = RectI32 {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        window.window_width = window_width;
-        window.window_height = window_height;
-        window.scroll_offset = 0;
-        window.text_lines.clear();
-        window.reset_text_selection();
-
-        window.is_pinned = is_pin_mode;
-        window.show_text_area = show_text_area;
-
-        // OCR state (new content resets cache).
-        window.ocr_request_id = next_ocr_request_id();
-        window.ocr_in_flight = false;
-        window.ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
-        window.ocr_cached_text = ocr_cached_text;
-
-        window.text_content = text_content;
-
-        // Reset icons.
-        window.svg_icons = Self::build_icon_set(window_width, window.is_maximized);
-        window.update_tool_icons();
-
-        // Reset drawing state.
-        window.drawing_state = PreviewDrawingState::new(window_id, drawing_config).ok();
-
-        // Re-init renderer state for the new image.
-        if let Some(renderer) = &mut window.renderer {
-            renderer.image_bitmap = None;
-            let _ = renderer.initialize(window_id, window_width, window_height);
-            let _ = renderer.set_image_from_pixels(
-                &window.image_pixels,
-                window.image_width,
-                window.image_height,
-            );
-        }
-
-        // Recompute layout and text wrapping.
-        window.center_icons();
-        window.recalculate_layout();
-
-        if window.show_text_area {
-            window.refresh_text_lines();
-        }
-
-        let _ = platform.show_window(window_id);
-        let _ = platform.update_window(window_id);
-        let _ = platform.request_redraw(window_id);
-
-        Ok(())
-    }
-
     pub(super) fn show(
         image_data: Vec<u8>,
         ocr_results: Vec<OcrResult>,
@@ -869,29 +707,6 @@ impl PreviewWindowState {
     ) -> Result<()> {
         unsafe {
             let _ = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
-
-            // If we already have a live preview window, update it in-place.
-            if let Some(existing_hwnd) = Self::existing_hwnd() {
-                if !existing_hwnd.0.is_null() && IsWindow(Some(existing_hwnd)).as_bool() {
-                    let window_ptr =
-                        GetWindowLongPtrW(existing_hwnd, GWLP_USERDATA) as *mut PreviewWindowState;
-                    if !window_ptr.is_null() {
-                        Self::update_existing_window(
-                            existing_hwnd,
-                            image_data,
-                            ocr_results,
-                            selection_rect,
-                            is_pin_mode,
-                            drawing_config,
-                            ocr_source_bmp_data,
-                        )?;
-                        return Ok(());
-                    }
-                }
-
-                // Stale handle.
-                Self::clear_singleton_hwnd(existing_hwnd);
-            }
 
             // Register class.
             let class_name = windows::core::w!("PreviewWindow");
@@ -1046,15 +861,11 @@ impl PreviewWindowState {
                 drawing_state,
             };
 
-
             window.update_tool_icons();
 
             // Store window pointer
             let window_ptr = Box::into_raw(Box::new(window));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_ptr as isize);
-
-            // Track singleton hwnd so future `show()` calls update this window.
-            Self::set_singleton_hwnd(hwnd);
 
             // Initialize layout and renderer
             let window = &mut *window_ptr;

@@ -570,8 +570,6 @@ impl PreviewWindowState {
                 }
 
                 WM_DESTROY => {
-                    PreviewWindowState::clear_singleton_hwnd(hwnd);
-                    PreviewWindowState::clear_ocr_responses();
 
                     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewWindowState;
                     if !ptr.is_null() {
