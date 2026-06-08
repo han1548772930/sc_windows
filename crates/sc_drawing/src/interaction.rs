@@ -1,4 +1,4 @@
-use crate::{defaults, DragMode, DrawingElement, DrawingTool, Point, Rect};
+use crate::{DragMode, DrawingElement, DrawingTool, Point, Rect, defaults};
 
 /// 拖拽阈值（像素）
 pub const DRAG_THRESHOLD: i32 = 3;
@@ -278,9 +278,7 @@ pub fn calculate_text_proportional_resize_with_min_font(
     } else {
         1.0
     };
-    let scale = ((scale_x + scale_y) / 2.0)
-        .max(0.7)
-        .max(min_scale_for_font);
+    let scale = ((scale_x + scale_y) / 2.0).max(0.7).max(min_scale_for_font);
 
     // 计算新字体大小
     let new_font_size = (start_font_size * scale).max(min_font_size);

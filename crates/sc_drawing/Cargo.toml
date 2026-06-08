@@ -13,7 +13,7 @@ windows = ["dep:windows", "dep:windows-numerics"]
 sc_rendering = { path = "../sc_rendering" }
 
 [dependencies.windows]
-version = "0.62"
+workspace = true
 optional = true
 features = [
     "Win32_Foundation",
@@ -23,5 +23,5 @@ features = [
 ]
 
 [dependencies.windows-numerics]
-version = "0.3"
+workspace = true
 optional = true

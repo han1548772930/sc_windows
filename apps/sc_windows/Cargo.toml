@@ -16,10 +16,10 @@ sc_host_protocol = { path = "../../crates/sc_host_protocol" }
 sc_settings = { path = "../../crates/sc_settings" }
 
 [build-dependencies]
-embed-resource = "3"
+embed-resource = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { workspace = true }
 
 # Used by tests/benches.
 sc_app = { path = "../../crates/sc_app" }

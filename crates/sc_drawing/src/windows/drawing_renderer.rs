@@ -688,7 +688,9 @@ fn draw_text_layout_with_cursor(
         {
             let cursor_brush = ctx
                 .get_brush(CURSOR_COLOR)
-                .ok_or_else(|| RenderError::ResourceCreation("Failed to create cursor brush".into()))?
+                .ok_or_else(|| {
+                    RenderError::ResourceCreation("Failed to create cursor brush".into())
+                })?
                 .clone();
 
             let content_rect = D2D_RECT_F {

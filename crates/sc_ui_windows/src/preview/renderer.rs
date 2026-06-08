@@ -20,10 +20,10 @@ use crate::constants::{
     OCR_TEXT_PANEL_WIDTH, OCR_TEXT_SELECTION_BG_COLOR, PIN_ACTIVE_COLOR, TITLE_BAR_BG_COLOR,
     TITLE_BAR_BUTTON_HOVER_BG_COLOR, TITLE_BAR_HEIGHT, TITLE_BAR_SEPARATOR_COLOR,
 };
-use sc_ui::preview_layout;
 use crate::svg::{PixelFormat, apply_color_to_pixels, render_svg_pixels};
 use sc_platform::{Color, DrawStyle, HostPlatform, Point, Rectangle, TextStyle, WindowId};
 use sc_platform_windows::windows::{Direct2DRenderer, WindowsHostPlatform, bmp};
+use sc_ui::preview_layout;
 
 /// 预览窗口渲染器
 pub struct PreviewRenderer {
@@ -198,7 +198,6 @@ impl PreviewRenderer {
 
         Ok(())
     }
-
 
     /// 加载SVG并渲染为像素数据(RGBA)
     fn load_svg_pixels(

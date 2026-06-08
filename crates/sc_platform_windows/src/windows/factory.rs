@@ -74,7 +74,7 @@ impl SharedFactories {
 
         // SAFETY: D2D1CreateFactory 是 Windows API 的安全封装
         let d2d_factory: ID2D1Factory =
-            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+            unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None)? };
 
         // SAFETY: DWriteCreateFactory 是 Windows API 的安全封装
         let dwrite_factory: IDWriteFactory =

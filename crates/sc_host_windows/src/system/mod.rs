@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use sc_app::selection as core_selection;
@@ -21,6 +22,7 @@ pub struct SystemManager {
     settings: Arc<RwLock<Settings>>,
     /// OCR 引擎实例
     ocr_engine: Arc<Mutex<Option<OcrEngine>>>,
+    ocr_generation: Arc<AtomicU64>,
 
     /// Window-thread event sender for background tasks.
     events: UserEventSender<HostEvent>,
@@ -38,6 +40,7 @@ impl SystemManager {
         Ok(Self {
             settings,
             ocr_engine: Arc::new(Mutex::new(None)),
+            ocr_generation: Arc::new(AtomicU64::new(1)),
             events,
         })
     }
@@ -123,12 +126,16 @@ impl SystemManager {
     /// 异步启动 OCR 引擎
     pub fn start_ocr_engine_async(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
+        let generation = self.ocr_generation.load(Ordering::Acquire);
         let config = self.ocr_config();
         let events = self.events.clone();
 
         std::thread::spawn(move || {
             let success = Self::start_ocr_engine_sync_inner(&engine_arc, &config);
-            let _ = events.send(HostEvent::OcrAvailabilityChanged { available: success });
+            let _ = events.send(HostEvent::OcrAvailabilityChanged {
+                generation,
+                available: success,
+            });
         });
     }
 
@@ -168,6 +175,7 @@ impl SystemManager {
 
     /// 同步停止 OCR 引擎
     fn stop_ocr_engine_sync(&self) {
+        self.ocr_generation.fetch_add(1, Ordering::AcqRel);
         if let Ok(mut engine_guard) = self.ocr_engine.lock()
             && let Some(engine) = engine_guard.take()
         {
@@ -182,6 +190,7 @@ impl SystemManager {
     /// 异步停止 OCR 引擎
     pub fn stop_ocr_engine_async(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
+        self.ocr_generation.fetch_add(1, Ordering::AcqRel);
         std::thread::spawn(move || {
             if let Ok(mut engine_guard) = engine_arc.lock()
                 && let Some(engine) = engine_guard.take()
@@ -207,6 +216,7 @@ impl SystemManager {
     /// 启动异步 OCR 引擎状态检查
     pub fn start_async_ocr_check(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
+        let generation = self.ocr_generation.load(Ordering::Acquire);
         let config = self.ocr_config();
         let events = self.events.clone();
 
@@ -219,7 +229,10 @@ impl SystemManager {
             };
             let available = models_exist && engine_ready;
 
-            let _ = events.send(HostEvent::OcrAvailabilityChanged { available });
+            let _ = events.send(HostEvent::OcrAvailabilityChanged {
+                generation,
+                available,
+            });
         });
     }
 
@@ -268,6 +281,7 @@ impl SystemManager {
             .map(|d| d.to_vec());
 
         let engine_arc = Arc::clone(&self.ocr_engine);
+        let generation = self.ocr_generation.load(Ordering::Acquire);
 
         // 异步执行 OCR
         let events = self.events.clone();
@@ -277,14 +291,14 @@ impl SystemManager {
             let width = selection_rect.right - selection_rect.left;
             let height = selection_rect.bottom - selection_rect.top;
             if width <= 0 || height <= 0 {
-                let _ = events.send(HostEvent::OcrCancelled);
+                let _ = events.send(HostEvent::OcrCancelled { generation });
                 return;
             }
 
             // 获取图像数据
             let Some(ref data) = cached_image else {
                 eprintln!("没有缓存图像数据");
-                let _ = events.send(HostEvent::OcrCancelled);
+                let _ = events.send(HostEvent::OcrCancelled { generation });
                 return;
             };
 
@@ -294,7 +308,7 @@ impl SystemManager {
                 Ok(cropped) => cropped,
                 Err(e) => {
                     eprintln!("裁剪图像失败: {:?}", e);
-                    let _ = events.send(HostEvent::OcrCancelled);
+                    let _ = events.send(HostEvent::OcrCancelled { generation });
                     return;
                 }
             };
@@ -305,14 +319,14 @@ impl SystemManager {
                     Ok(guard) => guard,
                     Err(_) => {
                         eprintln!("OCR 引擎锁已中毒");
-                        let _ = events.send(HostEvent::OcrCancelled);
+                        let _ = events.send(HostEvent::OcrCancelled { generation });
                         return;
                     }
                 };
 
                 let Some(ref engine) = *engine_guard else {
                     eprintln!("OCR 引擎未就绪");
-                    let _ = events.send(HostEvent::OcrCancelled);
+                    let _ = events.send(HostEvent::OcrCancelled { generation });
                     return;
                 };
 
@@ -337,10 +351,17 @@ impl SystemManager {
                 selection_rect,
             };
 
-            let _ = events.send(HostEvent::OcrCompleted(completion_data));
+            let _ = events.send(HostEvent::OcrCompleted {
+                generation,
+                data: completion_data,
+            });
         });
 
         Ok(())
+    }
+
+    pub fn ocr_generation(&self) -> u64 {
+        self.ocr_generation.load(Ordering::Acquire)
     }
 }
 

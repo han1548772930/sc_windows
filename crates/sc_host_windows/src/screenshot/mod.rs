@@ -18,7 +18,6 @@ pub struct ScreenshotManager {
     /// 当前截图数据
     current_screenshot: Option<ScreenshotData>,
 
-
     /// 屏幕尺寸
     screen_width: i32,
     screen_height: i32,
@@ -382,8 +381,9 @@ impl ScreenshotManager {
         // 绘图工具完成处理已移至Drawing模块
 
         // 处理选择框创建和拖拽结束
-        let is_manual_selecting =
-            !self.auto_highlight.enabled() && self.selection.is_mouse_pressed() && selection_rect.is_none();
+        let is_manual_selecting = !self.auto_highlight.enabled()
+            && self.selection.is_mouse_pressed()
+            && selection_rect.is_none();
 
         if is_manual_selecting {
             // 结束手动框选：确认规则完全由 core 决策；host 仅请求重绘。

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-thiserror = "2"
+thiserror = { workspace = true }
 
 # Internal crates
 sc_app = { path = "../sc_app" }

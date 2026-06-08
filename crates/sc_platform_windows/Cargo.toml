@@ -9,10 +9,10 @@ description = "Windows platform implementation"
 sc_platform = { path = "../sc_platform" }
 sc_rendering = { path = "../sc_rendering" }
 sc_drawing = { path = "../sc_drawing" }
-windows-numerics = "0.3"
+windows-numerics = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Graphics_Direct2D",
   "Win32_Graphics_Direct2D_Common",

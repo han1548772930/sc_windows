@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use sc_app::selection::{RectI32, is_drag_threshold_exceeded};
 use sc_drawing::windows::GeometryCache;

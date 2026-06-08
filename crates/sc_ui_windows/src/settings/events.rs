@@ -22,7 +22,11 @@ impl SettingsWindowState {
                 WM_CREATE => {
                     let settings = Settings::load();
                     let mut window = SettingsWindowState::new(hwnd, settings);
-                    window.create_controls();
+                    if let Err(e) = window.create_controls() {
+                        eprintln!("SettingsWindow: create_controls failed: {e:?}");
+                        window.cleanup();
+                        return LRESULT(-1);
+                    }
                     window.load_values();
 
                     let window_box = Box::new(window);
@@ -32,6 +36,11 @@ impl SettingsWindowState {
                 }
 
                 WM_CLOSE => {
+                    let _ = DestroyWindow(hwnd);
+                    return LRESULT(0);
+                }
+
+                WM_DESTROY => {
                     let window_ptr =
                         GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                     if !window_ptr.is_null() {
@@ -40,12 +49,6 @@ impl SettingsWindowState {
                         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     }
 
-                    super::SETTINGS_WINDOW.store(0, Ordering::Release);
-                    let _ = DestroyWindow(hwnd);
-                    return LRESULT(0);
-                }
-
-                WM_DESTROY => {
                     super::SETTINGS_WINDOW.store(0, Ordering::Release);
                     return LRESULT(0);
                 }
@@ -96,22 +99,21 @@ impl SettingsWindowState {
                 let hdc = HDC(wparam.0 as *mut _);
                 let control_hwnd = HWND(lparam.0 as *mut _);
 
-                if control_hwnd == self.drawing_color_preview
-                    && !self.drawing_color_brush.0.is_null()
+                if control_hwnd == self.drawing_color_preview && self.drawing_color_brush.is_valid()
                 {
                     let color = (self.settings.drawing_color_red as u32)
                         | ((self.settings.drawing_color_green as u32) << 8)
                         | ((self.settings.drawing_color_blue as u32) << 16);
                     SetBkColor(hdc, COLORREF(color));
-                    return Some(LRESULT(self.drawing_color_brush.0 as isize));
+                    return Some(LRESULT(self.drawing_color_brush.handle().0 as isize));
                 }
 
-                if control_hwnd == self.text_color_preview && !self.text_color_brush.0.is_null() {
+                if control_hwnd == self.text_color_preview && self.text_color_brush.is_valid() {
                     let color = (self.settings.text_color_red as u32)
                         | ((self.settings.text_color_green as u32) << 8)
                         | ((self.settings.text_color_blue as u32) << 16);
                     SetBkColor(hdc, COLORREF(color));
-                    return Some(LRESULT(self.text_color_brush.0 as isize));
+                    return Some(LRESULT(self.text_color_brush.handle().0 as isize));
                 }
 
                 SetBkMode(hdc, TRANSPARENT);

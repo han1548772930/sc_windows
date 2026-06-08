@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::PCWSTR;
+use windows::core::{Error, HRESULT, PCWSTR};
 
 use super::{
     BUTTON_HEIGHT, ID_CANCEL, ID_CONFIG_PATH_BROWSE, ID_CONFIG_PATH_EDIT, ID_DRAWING_COLOR_BUTTON,
@@ -24,6 +24,41 @@ use super::{
 
 /// Settings window.
 pub struct SettingsWindow;
+
+#[derive(Debug, Default)]
+pub(super) struct OwnedBrush {
+    handle: HBRUSH,
+}
+
+impl OwnedBrush {
+    pub(super) fn handle(&self) -> HBRUSH {
+        self.handle
+    }
+
+    pub(super) fn is_valid(&self) -> bool {
+        !self.handle.0.is_null()
+    }
+
+    pub(super) fn reset(&mut self, handle: HBRUSH) {
+        self.clear();
+        self.handle = handle;
+    }
+
+    pub(super) fn clear(&mut self) {
+        if self.is_valid() {
+            unsafe {
+                let _ = DeleteObject(self.handle.into());
+            }
+            self.handle = HBRUSH::default();
+        }
+    }
+}
+
+impl Drop for OwnedBrush {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
 
 pub(super) struct SettingsWindowState {
     pub(super) hwnd: HWND,
@@ -63,8 +98,8 @@ pub(super) struct SettingsWindowState {
 
     // Resources.
     pub(super) font: HFONT,
-    pub(super) drawing_color_brush: HBRUSH,
-    pub(super) text_color_brush: HBRUSH,
+    pub(super) drawing_color_brush: OwnedBrush,
+    pub(super) text_color_brush: OwnedBrush,
 }
 
 impl SettingsWindow {
@@ -104,8 +139,8 @@ impl SettingsWindowState {
             ok_button: HWND::default(),
             cancel_button: HWND::default(),
             font: HFONT::default(),
-            drawing_color_brush: HBRUSH::default(),
-            text_color_brush: HBRUSH::default(),
+            drawing_color_brush: OwnedBrush::default(),
+            text_color_brush: OwnedBrush::default(),
         }
     }
 
@@ -208,6 +243,13 @@ impl SettingsWindowState {
             // Modal loop: process messages until window destroyed.
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                if IsDialogMessageW(hwnd, &msg).as_bool() {
+                    if !IsWindow(Some(hwnd)).as_bool() {
+                        break;
+                    }
+                    continue;
+                }
+
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
 
@@ -220,9 +262,9 @@ impl SettingsWindowState {
         }
     }
 
-    pub(super) fn create_controls(&mut self) {
+    pub(super) fn create_controls(&mut self) -> windows::core::Result<()> {
         unsafe {
-            let instance: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
+            let instance: HINSTANCE = GetModuleHandleW(None)?.into();
 
             self.font = HFONT(GetStockObject(DEFAULT_GUI_FONT).0);
 
@@ -236,27 +278,25 @@ impl SettingsWindowState {
                 .position(MARGIN, MARGIN)
                 .size(window_width - MARGIN * 2, tabs_height)
                 .parent(self.hwnd)
-                .build()
-                .unwrap();
+                .build()?;
             tabs.set_font(&Font { handle: self.font });
             self.tabs_container = tabs.handle;
 
             let tab_drawing = Tab::builder()
                 .text("绘图设置")
                 .parent(self.hwnd)
-                .build(&tabs)
-                .unwrap();
+                .build(&tabs)?;
             self.tab_drawing = tab_drawing.handle;
 
             let tab_system = Tab::builder()
                 .text("系统设置")
                 .parent(self.hwnd)
-                .build(&tabs)
-                .unwrap();
+                .build(&tabs)?;
             self.tab_system = tab_system.handle;
 
             // Drawing tab.
-            self.line_thickness_label = self.create_label("线条粗细:", self.tab_drawing, instance);
+            self.line_thickness_label =
+                self.create_label("线条粗细:", self.tab_drawing, instance)?;
 
             self.line_thickness_edit = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
@@ -271,8 +311,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_LINE_THICKNESS as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.line_thickness_edit,
                 WM_SETFONT,
@@ -280,7 +319,7 @@ impl SettingsWindowState {
                 None,
             );
 
-            self.font_label = self.create_label("字体设置:", self.tab_drawing, instance);
+            self.font_label = self.create_label("字体设置:", self.tab_drawing, instance)?;
 
             self.font_choose_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -295,8 +334,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_FONT_CHOOSE_BUTTON as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.font_choose_button,
                 WM_SETFONT,
@@ -304,7 +342,8 @@ impl SettingsWindowState {
                 None,
             );
 
-            self.drawing_color_label = self.create_label("绘图颜色:", self.tab_drawing, instance);
+            self.drawing_color_label =
+                self.create_label("绘图颜色:", self.tab_drawing, instance)?;
 
             self.drawing_color_preview = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
@@ -319,8 +358,7 @@ impl SettingsWindowState {
                 None,
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
 
             self.drawing_color_button = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -335,8 +373,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_DRAWING_COLOR_BUTTON as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.drawing_color_button,
                 WM_SETFONT,
@@ -345,7 +382,7 @@ impl SettingsWindowState {
             );
 
             // System tab.
-            self.hotkey_label = self.create_label("截图热键:", self.tab_system, instance);
+            self.hotkey_label = self.create_label("截图热键:", self.tab_system, instance)?;
 
             self.hotkey_edit = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
@@ -360,8 +397,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_HOTKEY_EDIT as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.hotkey_edit,
                 WM_SETFONT,
@@ -370,15 +406,9 @@ impl SettingsWindowState {
             );
             Self::set_modern_theme(self.hotkey_edit);
 
-            #[allow(clippy::fn_to_numeric_cast)]
-            let original_proc = SetWindowLongPtrW(
-                self.hotkey_edit,
-                GWLP_WNDPROC,
-                Self::hotkey_edit_proc as isize,
-            );
-            SetWindowLongPtrW(self.hotkey_edit, GWLP_USERDATA, original_proc);
+            Self::subclass_hotkey_edit(self.hotkey_edit)?;
 
-            self.config_path_label = self.create_label("保存路径:", self.tab_system, instance);
+            self.config_path_label = self.create_label("保存路径:", self.tab_system, instance)?;
 
             self.config_path_edit = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
@@ -393,8 +423,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_CONFIG_PATH_EDIT as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.config_path_edit,
                 WM_SETFONT,
@@ -416,8 +445,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_CONFIG_PATH_BROWSE as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.config_path_browse_button,
                 WM_SETFONT,
@@ -425,7 +453,7 @@ impl SettingsWindowState {
                 None,
             );
 
-            self.ocr_language_label = self.create_label("OCR语言", self.tab_system, instance);
+            self.ocr_language_label = self.create_label("OCR语言", self.tab_system, instance)?;
 
             self.ocr_language_combo = CreateWindowExW(
                 WS_EX_CLIENTEDGE,
@@ -440,8 +468,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_OCR_LANGUAGE_COMBO as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.ocr_language_combo,
                 WM_SETFONT,
@@ -466,8 +493,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_OK as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.ok_button,
                 WM_SETFONT,
@@ -488,8 +514,7 @@ impl SettingsWindowState {
                 Some(HMENU(ID_CANCEL as *mut _)),
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(
                 self.cancel_button,
                 WM_SETFONT,
@@ -498,10 +523,16 @@ impl SettingsWindowState {
             );
 
             self.layout_controls();
+            Ok(())
         }
     }
 
-    fn create_label(&self, text: &str, parent: HWND, instance: HINSTANCE) -> HWND {
+    fn create_label(
+        &self,
+        text: &str,
+        parent: HWND,
+        instance: HINSTANCE,
+    ) -> windows::core::Result<HWND> {
         unsafe {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
@@ -516,10 +547,9 @@ impl SettingsWindowState {
                 None,
                 Some(instance),
                 None,
-            )
-            .unwrap_or_default();
+            )?;
             SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), None);
-            hwnd
+            Ok(hwnd)
         }
     }
 
@@ -714,22 +744,17 @@ impl SettingsWindowState {
 
     fn update_color_brushes(&mut self) {
         unsafe {
-            if !self.drawing_color_brush.0.is_null() {
-                let _ = DeleteObject(self.drawing_color_brush.into());
-            }
-            if !self.text_color_brush.0.is_null() {
-                let _ = DeleteObject(self.text_color_brush.into());
-            }
-
             let drawing_color = (self.settings.drawing_color_red as u32)
                 | ((self.settings.drawing_color_green as u32) << 8)
                 | ((self.settings.drawing_color_blue as u32) << 16);
-            self.drawing_color_brush = CreateSolidBrush(COLORREF(drawing_color));
+            self.drawing_color_brush
+                .reset(CreateSolidBrush(COLORREF(drawing_color)));
 
             let text_color = (self.settings.text_color_red as u32)
                 | ((self.settings.text_color_green as u32) << 8)
                 | ((self.settings.text_color_blue as u32) << 16);
-            self.text_color_brush = CreateSolidBrush(COLORREF(text_color));
+            self.text_color_brush
+                .reset(CreateSolidBrush(COLORREF(text_color)));
         }
     }
 
@@ -842,26 +867,13 @@ impl SettingsWindowState {
                 }
             }
 
-            // Free stored original text prop if still present.
-            let prop_name = to_wide_chars("OriginalText");
-            let text_handle = GetPropW(self.hotkey_edit, PCWSTR(prop_name.as_ptr()));
-            if !text_handle.is_invalid() {
-                let text_ptr = text_handle.0 as *mut Vec<u16>;
-                if !text_ptr.is_null() {
-                    let _ = Box::from_raw(text_ptr);
-                }
-                let _ = RemovePropW(self.hotkey_edit, PCWSTR(prop_name.as_ptr()));
-            }
-
-            // Free brushes.
-            if !self.drawing_color_brush.0.is_null() {
-                let _ = DeleteObject(self.drawing_color_brush.into());
-                self.drawing_color_brush = HBRUSH::default();
-            }
-            if !self.text_color_brush.0.is_null() {
-                let _ = DeleteObject(self.text_color_brush.into());
-                self.text_color_brush = HBRUSH::default();
-            }
+            Self::unsubclass_hotkey_edit(self.hotkey_edit);
+            self.drawing_color_brush.clear();
+            self.text_color_brush.clear();
         }
+    }
+
+    pub(super) fn win32_error(message: &str) -> Error {
+        Error::new(HRESULT(-1), message)
     }
 }

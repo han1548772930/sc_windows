@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::fmt;
 
-use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -36,114 +36,104 @@ impl fmt::Display for ClipboardError {
 
 impl std::error::Error for ClipboardError {}
 
-/// 将 BMP 数据复制到剪贴板（使用 CF_DIB 格式）
-pub fn copy_bmp_data_to_clipboard(bmp_data: &[u8]) -> Result<(), ClipboardError> {
-    // BMP 文件头是 14 字节，CF_DIB 格式不需要文件头，只需要 BITMAPINFO + 像素数据
-    if bmp_data.len() < 54 {
-        return Err(ClipboardError::BmpDataTooSmall);
+struct ClipboardSession;
+
+impl ClipboardSession {
+    fn open() -> Result<Self, ClipboardError> {
+        unsafe {
+            OpenClipboard(Some(HWND(std::ptr::null_mut())))
+                .map_err(|_| ClipboardError::OpenClipboardFailed)?;
+        }
+        Ok(Self)
     }
 
-    // 跳过 BMP 文件头 (14 字节)，获取 DIB 数据
-    let dib_data = &bmp_data[14..];
-    let data_size = dib_data.len();
+    fn empty(&self) -> Result<(), ClipboardError> {
+        unsafe { EmptyClipboard().map_err(|_| ClipboardError::EmptyClipboardFailed) }
+    }
+}
 
-    unsafe {
-        // 打开剪贴板
-        if OpenClipboard(Some(HWND(std::ptr::null_mut()))).is_err() {
-            return Err(ClipboardError::OpenClipboardFailed);
-        }
-
-        // 清空剪贴板
-        if EmptyClipboard().is_err() {
+impl Drop for ClipboardSession {
+    fn drop(&mut self) {
+        unsafe {
             let _ = CloseClipboard();
-            return Err(ClipboardError::EmptyClipboardFailed);
         }
+    }
+}
 
-        // 分配全局内存
-        let h_mem = match GlobalAlloc(GMEM_MOVEABLE, data_size) {
-            Ok(mem) => mem,
-            Err(_) => {
-                let _ = CloseClipboard();
-                return Err(ClipboardError::AllocateGlobalMemoryFailed);
+struct ClipboardMemory {
+    handle: HGLOBAL,
+}
+
+impl ClipboardMemory {
+    fn allocate(size: usize) -> Result<Self, ClipboardError> {
+        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, size) }
+            .map_err(|_| ClipboardError::AllocateGlobalMemoryFailed)?;
+        Ok(Self { handle })
+    }
+
+    fn copy_from(&self, bytes: &[u8]) -> Result<(), ClipboardError> {
+        unsafe {
+            let mem_ptr = GlobalLock(self.handle);
+            if mem_ptr.is_null() {
+                return Err(ClipboardError::LockGlobalMemoryFailed);
             }
-        };
 
-        // 锁定内存并复制数据
-        let mem_ptr = GlobalLock(h_mem);
-        if mem_ptr.is_null() {
-            let _ = CloseClipboard();
-            return Err(ClipboardError::LockGlobalMemoryFailed);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_void, mem_ptr, bytes.len());
+            let _ = GlobalUnlock(self.handle);
         }
 
-        std::ptr::copy_nonoverlapping(dib_data.as_ptr() as *const c_void, mem_ptr, data_size);
+        Ok(())
+    }
 
-        let _ = GlobalUnlock(h_mem);
-
-        // 设置剪贴板数据 (CF_DIB = 8)
-        if SetClipboardData(8u32, Some(HANDLE(h_mem.0))).is_err() {
-            let _ = CloseClipboard();
-            return Err(ClipboardError::SetClipboardDataFailed);
+    fn transfer_to_clipboard(mut self, format: u32) -> Result<(), ClipboardError> {
+        unsafe {
+            SetClipboardData(format, Some(HANDLE(self.handle.0)))
+                .map_err(|_| ClipboardError::SetClipboardDataFailed)?;
         }
 
-        // 关闭剪贴板
-        if CloseClipboard().is_err() {
-            return Err(ClipboardError::CloseClipboardFailed);
-        }
-
+        self.handle = HGLOBAL::default();
         Ok(())
     }
 }
 
-/// 复制文本到剪贴板
-pub fn copy_text_to_clipboard(text: &str) -> Result<(), ClipboardError> {
-    unsafe {
-        // 打开剪贴板
-        if OpenClipboard(Some(HWND(std::ptr::null_mut()))).is_err() {
-            return Err(ClipboardError::OpenClipboardFailed);
-        }
-
-        // 清空剪贴板
-        if EmptyClipboard().is_err() {
-            let _ = CloseClipboard();
-            return Err(ClipboardError::EmptyClipboardFailed);
-        }
-
-        // 转换文本为 UTF-16 (Windows 使用 UTF-16 格式)
-        let mut wide_text: Vec<u16> = text.encode_utf16().collect();
-        wide_text.push(0); // 添加空终止符
-        let data_size = wide_text.len() * std::mem::size_of::<u16>();
-
-        // 分配全局内存
-        let h_mem = match GlobalAlloc(GMEM_MOVEABLE, data_size) {
-            Ok(mem) => mem,
-            Err(_) => {
-                let _ = CloseClipboard();
-                return Err(ClipboardError::AllocateGlobalMemoryFailed);
+impl Drop for ClipboardMemory {
+    fn drop(&mut self) {
+        if !self.handle.is_invalid() {
+            unsafe {
+                let _ = GlobalFree(Some(self.handle));
             }
-        };
-
-        // 锁定内存并复制数据
-        let mem_ptr = GlobalLock(h_mem);
-        if mem_ptr.is_null() {
-            let _ = CloseClipboard();
-            return Err(ClipboardError::LockGlobalMemoryFailed);
         }
-
-        std::ptr::copy_nonoverlapping(wide_text.as_ptr() as *const c_void, mem_ptr, data_size);
-
-        let _ = GlobalUnlock(h_mem);
-
-        // 设置剪贴板数据 (CF_UNICODETEXT = 13)
-        if SetClipboardData(13u32, Some(HANDLE(h_mem.0))).is_err() {
-            let _ = CloseClipboard();
-            return Err(ClipboardError::SetClipboardDataFailed);
-        }
-
-        // 关闭剪贴板
-        if CloseClipboard().is_err() {
-            return Err(ClipboardError::CloseClipboardFailed);
-        }
-
-        Ok(())
     }
+}
+
+pub fn copy_bmp_data_to_clipboard(bmp_data: &[u8]) -> Result<(), ClipboardError> {
+    if bmp_data.len() < 54 {
+        return Err(ClipboardError::BmpDataTooSmall);
+    }
+
+    let dib_data = &bmp_data[14..];
+    copy_bytes_to_clipboard(8, dib_data)
+}
+
+pub fn copy_text_to_clipboard(text: &str) -> Result<(), ClipboardError> {
+    let mut wide_text: Vec<u16> = text.encode_utf16().collect();
+    wide_text.push(0);
+
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            wide_text.as_ptr() as *const u8,
+            wide_text.len() * std::mem::size_of::<u16>(),
+        )
+    };
+
+    copy_bytes_to_clipboard(13, bytes)
+}
+
+fn copy_bytes_to_clipboard(format: u32, bytes: &[u8]) -> Result<(), ClipboardError> {
+    let session = ClipboardSession::open()?;
+    session.empty()?;
+
+    let memory = ClipboardMemory::allocate(bytes.len())?;
+    memory.copy_from(bytes)?;
+    memory.transfer_to_clipboard(format)
 }

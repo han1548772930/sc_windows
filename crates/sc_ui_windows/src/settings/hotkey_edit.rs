@@ -9,10 +9,89 @@ use windows::core::PCWSTR;
 
 use super::window::SettingsWindowState;
 
+const ORIGINAL_TEXT_PROP: &str = "SC_HotkeyOriginalText";
+const ORIGINAL_PROC_PROP: &str = "SC_HotkeyOriginalProc";
+const HOTKEY_PLACEHOLDER: &str = "按下快捷键";
+
 impl SettingsWindowState {
     pub(super) unsafe fn set_modern_theme(hwnd: HWND) {
         let theme_name = to_wide_chars("Explorer");
         let _ = unsafe { SetWindowTheme(hwnd, PCWSTR(theme_name.as_ptr()), PCWSTR::null()) };
+    }
+
+    pub(super) unsafe fn subclass_hotkey_edit(hwnd: HWND) -> windows::core::Result<()> {
+        unsafe {
+            let original_proc = SetWindowLongPtrW(
+                hwnd,
+                GWLP_WNDPROC,
+                Self::hotkey_edit_proc as *const () as isize,
+            );
+
+            if original_proc == 0 {
+                return Err(Self::win32_error("Failed to subclass hotkey edit"));
+            }
+
+            let prop_name = to_wide_chars(ORIGINAL_PROC_PROP);
+            if let Err(e) = SetPropW(
+                hwnd,
+                PCWSTR(prop_name.as_ptr()),
+                Some(HANDLE(original_proc as *mut c_void)),
+            ) {
+                let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original_proc);
+                return Err(e);
+            }
+
+            Ok(())
+        }
+    }
+
+    pub(super) unsafe fn unsubclass_hotkey_edit(hwnd: HWND) {
+        unsafe {
+            if hwnd.is_invalid() {
+                return;
+            }
+
+            let prop_name = to_wide_chars(ORIGINAL_PROC_PROP);
+            if let Ok(proc_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
+                if !proc_handle.is_invalid() {
+                    let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc_handle.0 as isize);
+                }
+            }
+
+            Self::clear_original_hotkey_text(hwnd);
+        }
+    }
+
+    pub(super) unsafe fn clear_original_hotkey_text(hwnd: HWND) {
+        unsafe {
+            let prop_name = to_wide_chars(ORIGINAL_TEXT_PROP);
+            if let Ok(text_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
+                if !text_handle.is_invalid() {
+                    let text_ptr = text_handle.0 as *mut Vec<u16>;
+                    if !text_ptr.is_null() {
+                        let _ = Box::from_raw(text_ptr);
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe fn call_original_hotkey_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe {
+            let prop_name = to_wide_chars(ORIGINAL_PROC_PROP);
+            let proc_handle = GetPropW(hwnd, PCWSTR(prop_name.as_ptr()));
+            if proc_handle.is_invalid() {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+
+            let wndproc: WNDPROC = std::mem::transmute(proc_handle.0);
+            CallWindowProcW(wndproc, hwnd, msg, wparam, lparam)
+        }
     }
 
     pub(super) unsafe extern "system" fn hotkey_edit_proc(
@@ -24,30 +103,34 @@ impl SettingsWindowState {
         unsafe {
             match msg {
                 WM_LBUTTONDOWN => {
-                    // Save current text.
                     let mut buffer = [0u16; 64];
                     let len = GetWindowTextW(hwnd, &mut buffer);
                     if len > 0 {
+                        Self::clear_original_hotkey_text(hwnd);
+
                         let current_text = String::from_utf16_lossy(&buffer[..len as usize]);
                         let text_wide = to_wide_chars(&current_text);
-                        let prop_name = to_wide_chars("OriginalText");
                         let text_box = Box::new(text_wide);
                         let text_ptr = Box::into_raw(text_box);
-                        let _ = SetPropW(
+                        let prop_name = to_wide_chars(ORIGINAL_TEXT_PROP);
+                        if SetPropW(
                             hwnd,
                             PCWSTR(prop_name.as_ptr()),
                             Some(HANDLE(text_ptr as *mut c_void)),
-                        );
+                        )
+                        .is_err()
+                        {
+                            let _ = Box::from_raw(text_ptr);
+                        }
                     }
 
-                    let placeholder_text = to_wide_chars("按下快捷键");
+                    let placeholder_text = to_wide_chars(HOTKEY_PLACEHOLDER);
                     let _ = SetWindowTextW(hwnd, PCWSTR(placeholder_text.as_ptr()));
                     let _ = SetFocus(Some(hwnd));
                     return LRESULT(0);
                 }
 
                 WM_KILLFOCUS => {
-                    // Restore original text if placeholder/empty.
                     let mut buffer = [0u16; 64];
                     let len = GetWindowTextW(hwnd, &mut buffer);
                     let current_text = if len > 0 {
@@ -56,35 +139,22 @@ impl SettingsWindowState {
                         String::new()
                     };
 
-                    let prop_name = to_wide_chars("OriginalText");
-                    if current_text.trim() == "按下快捷键" || current_text.trim().is_empty() {
-                        let text_handle = GetPropW(hwnd, PCWSTR(prop_name.as_ptr()));
-                        if !text_handle.is_invalid() {
-                            let text_ptr = text_handle.0 as *mut Vec<u16>;
-                            if !text_ptr.is_null() {
-                                let text_box = Box::from_raw(text_ptr);
-                                let _ = SetWindowTextW(hwnd, PCWSTR(text_box.as_ptr()));
-                                let _ = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr()));
+                    if current_text.trim() == HOTKEY_PLACEHOLDER || current_text.trim().is_empty() {
+                        let prop_name = to_wide_chars(ORIGINAL_TEXT_PROP);
+                        if let Ok(text_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
+                            if !text_handle.is_invalid() {
+                                let text_ptr = text_handle.0 as *mut Vec<u16>;
+                                if !text_ptr.is_null() {
+                                    let text_box = Box::from_raw(text_ptr);
+                                    let _ = SetWindowTextW(hwnd, PCWSTR(text_box.as_ptr()));
+                                }
                             }
                         }
                     } else {
-                        // Clean stored original text.
-                        let text_handle = GetPropW(hwnd, PCWSTR(prop_name.as_ptr()));
-                        if !text_handle.is_invalid() {
-                            let text_ptr = text_handle.0 as *mut Vec<u16>;
-                            if !text_ptr.is_null() {
-                                let _ = Box::from_raw(text_ptr);
-                            }
-                            let _ = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr()));
-                        }
+                        Self::clear_original_hotkey_text(hwnd);
                     }
 
-                    let original_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-                    if original_proc != 0 {
-                        let wndproc: WNDPROC = std::mem::transmute(original_proc);
-                        return CallWindowProcW(wndproc, hwnd, msg, wparam, lparam);
-                    }
-                    return LRESULT(0);
+                    return Self::call_original_hotkey_proc(hwnd, msg, wparam, lparam);
                 }
 
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -101,8 +171,8 @@ impl SettingsWindowState {
 
                     let key = wparam.0 as u32;
 
-                    if ((key >= 'A' as u32 && key <= 'Z' as u32)
-                        || (key >= '0' as u32 && key <= '9' as u32))
+                    if ((b'A' as u32..=b'Z' as u32).contains(&key)
+                        || (b'0' as u32..=b'9' as u32).contains(&key))
                         && modifiers != 0
                     {
                         let mut parts = Vec::new();
@@ -121,26 +191,17 @@ impl SettingsWindowState {
                         let hotkey_string = parts.join("+");
                         let hotkey_wide = to_wide_chars(&hotkey_string);
                         let _ = SetWindowTextW(hwnd, PCWSTR(hotkey_wide.as_ptr()));
-                        return LRESULT(0);
                     }
 
                     return LRESULT(0);
                 }
 
-                WM_CHAR => {
-                    return LRESULT(0);
-                }
+                WM_CHAR => return LRESULT(0),
 
                 _ => {}
             }
 
-            let original_proc = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if original_proc != 0 {
-                let wndproc: WNDPROC = std::mem::transmute(original_proc);
-                return CallWindowProcW(wndproc, hwnd, msg, wparam, lparam);
-            }
-
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            Self::call_original_hotkey_proc(hwnd, msg, wparam, lparam)
         }
     }
 }

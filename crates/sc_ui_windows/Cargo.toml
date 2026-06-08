@@ -6,11 +6,11 @@ license = "MIT"
 description = "Windows UI host components (toolbar/icons/preview)"
 
 [dependencies]
-anyhow = "1.0"
-usvg = "0.42"
-tiny-skia = "0.11"
-resvg = "0.42"
-thiserror = "2"
+anyhow = { workspace = true }
+usvg = { workspace = true }
+tiny-skia = { workspace = true }
+resvg = { workspace = true }
+thiserror = { workspace = true }
 
 sc_app = { path = "../sc_app" }
 sc_ui = { path = "../sc_ui" }
@@ -23,7 +23,7 @@ sc_settings = { path = "../sc_settings" }
 
 [target.'cfg(windows)'.dependencies]
 sc_platform_windows = { path = "../sc_platform_windows" }
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
   "Win32",
   "Win32_Foundation",
   "Win32_Graphics",

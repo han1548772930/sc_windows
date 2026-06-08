@@ -66,7 +66,6 @@ impl AutoHighlighter {
         self.enabled
     }
 
-
     /// Reset to the default capture state: enable auto-highlight and clear any active highlight.
     pub fn reset(&mut self) {
         self.enabled = true;
@@ -100,13 +99,9 @@ impl AutoHighlighter {
         match (args.current_highlight, target) {
             (None, None) => AutoHighlightMoveAction::None,
 
-            (Some(_), None) => {
-                AutoHighlightMoveAction::ClearHighlight
-            }
+            (Some(_), None) => AutoHighlightMoveAction::ClearHighlight,
 
-            (None, Some(t)) => {
-                AutoHighlightMoveAction::SetHighlight(t)
-            }
+            (None, Some(t)) => AutoHighlightMoveAction::SetHighlight(t),
 
             (Some(prev), Some(next)) => {
                 if rect_eq(&prev, &next.rect) {
@@ -156,7 +151,6 @@ fn pick_target(
         kind: HighlightKind::Window,
     })
 }
-
 
 #[inline]
 fn clamp_rect_to_screen(rect: RectI32, screen_width: i32, screen_height: i32) -> RectI32 {

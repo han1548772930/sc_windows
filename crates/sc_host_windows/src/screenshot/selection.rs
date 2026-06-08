@@ -3,7 +3,6 @@ use sc_drawing::{DragMode, HandleConfig, Rect, detect_handle_with_moving_with_ra
 
 /// Host-side selection interaction state (mouse/drag tracking).
 pub struct SelectionState {
-
     /// 鼠标是否按下
     mouse_pressed: bool,
 
@@ -41,7 +40,6 @@ impl SelectionState {
     pub fn set_mouse_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
     }
-
 
     /// 清除选择
     pub fn clear_selection(&mut self) {

@@ -17,6 +17,21 @@ members = [
   "crates/sc_platform_windows",
 ]
 
+[workspace.dependencies]
+anyhow = "1.0.102"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+embed-resource = "3.0.9"
+image = "0.25.10"
+ocr-rs = "2.2.2"
+resvg = "0.47.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tiny-skia = "0.12.0"
+usvg = "0.47.0"
+windows = "0.62.2"
+windows-numerics = "0.3.1"
+
 [profile.release]
 codegen-units = 1
 lto = true

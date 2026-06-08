@@ -144,7 +144,7 @@ impl Direct2DRenderer {
         } else {
             // SAFETY: D2D1CreateFactory 是 Windows API 的安全封装
             let factory: ID2D1Factory =
-                unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }.map_err(
+                unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None) }.map_err(
                     |e| PlatformError::InitError(format!("D2D factory creation failed: {e:?}")),
                 )?;
             self.d2d_factory = Some(factory.clone());
@@ -608,7 +608,13 @@ impl Direct2DRenderer {
         let (offscreen_target, gdi_target) =
             create_gdi_offscreen_target(render_target, width, height)?;
 
-        begin_offscreen_draw(&offscreen_target, source_bitmap, selection_rect, width, height);
+        begin_offscreen_draw(
+            &offscreen_target,
+            source_bitmap,
+            selection_rect,
+            width,
+            height,
+        );
 
         // 渲染绘图元素（通过回调函数）
         let offscreen_render_target: &ID2D1RenderTarget = &offscreen_target;
@@ -870,8 +876,7 @@ impl Direct2DRenderer {
 
         if let (Some(render_target), Some(d2d_factory)) = (&self.render_target, &self.d2d_factory) {
             unsafe {
-                let stroke_style =
-                    create_dash_stroke_style(d2d_factory, dash_pattern, true)?;
+                let stroke_style = create_dash_stroke_style(d2d_factory, dash_pattern, true)?;
 
                 let d2d_rect = rect_to_d2d(rect);
                 render_target.DrawRectangle(
@@ -1042,14 +1047,7 @@ impl Direct2DRenderer {
 
             // 左侧区域
             if left > screen_rect.x {
-                fill_rect(
-                    render_target,
-                    &mask_brush,
-                    screen_rect.x,
-                    top,
-                    left,
-                    bottom,
-                );
+                fill_rect(render_target, &mask_brush, screen_rect.x, top, left, bottom);
             }
 
             // 右侧区域
@@ -1084,8 +1082,7 @@ impl Direct2DRenderer {
                 if let Some(dash) = dash_pattern {
                     // 创建虚线样式
                     if let Some(ref d2d_factory) = self.d2d_factory {
-                        if let Ok(stroke_style) =
-                            create_dash_stroke_style(d2d_factory, dash, false)
+                        if let Ok(stroke_style) = create_dash_stroke_style(d2d_factory, dash, false)
                         {
                             render_target.DrawRectangle(
                                 &d2d_rect,
@@ -1637,10 +1634,9 @@ fn create_gdi_offscreen_target(
             })?
     };
 
-    let gdi_target: ID2D1GdiInteropRenderTarget =
-        offscreen_target.cast().map_err(|e| {
-            PlatformError::ResourceError(format!("Failed to cast to GDI interop: {e:?}"))
-        })?;
+    let gdi_target: ID2D1GdiInteropRenderTarget = offscreen_target.cast().map_err(|e| {
+        PlatformError::ResourceError(format!("Failed to cast to GDI interop: {e:?}"))
+    })?;
 
     Ok((offscreen_target, gdi_target))
 }

@@ -6,7 +6,7 @@ license = "MIT"
 description = "OCR helpers (platform-neutral)"
 
 [dependencies]
-anyhow = "1.0"
-ocr-rs = "2.0"
-image = "0.25"
+anyhow = { workspace = true }
+ocr-rs = { workspace = true }
+image = { workspace = true }
 sc_app = { path = "../sc_app" }

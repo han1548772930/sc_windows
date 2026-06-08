@@ -365,7 +365,6 @@ impl App {
 
         let mut commands = core_bridge::dispatch(&mut self.core, action);
 
-
         // Auto-highlight should only be updated after core has confirmed/rejected selection.
         if is_selection_mouse_up {
             let is_click = self
@@ -373,14 +372,11 @@ impl App {
                 .take_selection_mouse_up_is_click()
                 .unwrap_or(false);
             let selection_has_selection = self.confirmed_selection_rect().is_some();
-            if self
-                .screenshot
-                .handle_auto_highlight_mouse_up(
-                    is_click,
-                    selection_has_selection,
-                    had_active_highlight,
-                )
-            {
+            if self.screenshot.handle_auto_highlight_mouse_up(
+                is_click,
+                selection_has_selection,
+                had_active_highlight,
+            ) {
                 commands.push(Command::RequestRedraw);
             }
         }
@@ -546,7 +542,8 @@ impl App {
             core_selection::Phase::Selecting { .. } => {
                 // Let the host update selection geometry / auto-highlight state.
                 let (mut commands, _consumed) =
-                    self.screenshot.handle_mouse_up(x, y, self.confirmed_selection_rect());
+                    self.screenshot
+                        .handle_mouse_up(x, y, self.confirmed_selection_rect());
 
                 commands.push(Command::Core(CoreAction::Selection(
                     core_selection::Action::MouseUp { x, y },
@@ -555,9 +552,7 @@ impl App {
                 commands
             }
 
-            core_selection::Phase::Editing { .. } => {
-                self.handle_mouse_up_editing(x, y)
-            }
+            core_selection::Phase::Editing { .. } => self.handle_mouse_up_editing(x, y),
         }
     }
 
@@ -580,12 +575,9 @@ impl App {
             commands.extend(drawing_commands);
 
             if !drawing_consumed && !self.drawing.is_dragging() {
-                let (screenshot_commands, _screenshot_consumed) = self.screenshot.handle_mouse_move(
-                    x,
-                    y,
-                    self.confirmed_selection_rect(),
-                    hover_selection,
-                );
+                let (screenshot_commands, _screenshot_consumed) = self
+                    .screenshot
+                    .handle_mouse_move(x, y, self.confirmed_selection_rect(), hover_selection);
                 commands.extend(screenshot_commands);
             }
         }
@@ -635,8 +627,10 @@ impl App {
                 commands.extend(screenshot_commands);
 
                 if !screenshot_consumed {
-                    commands
-                        .extend(self.drawing.handle_message(DrawingMessage::SelectElement(None)));
+                    commands.extend(
+                        self.drawing
+                            .handle_message(DrawingMessage::SelectElement(None)),
+                    );
                 }
             }
         }
@@ -655,9 +649,9 @@ impl App {
             commands.extend(drawing_commands);
 
             if !drawing_consumed {
-                let (screenshot_commands, _screenshot_consumed) = self
-                    .screenshot
-                    .handle_mouse_up(x, y, self.confirmed_selection_rect());
+                let (screenshot_commands, _screenshot_consumed) =
+                    self.screenshot
+                        .handle_mouse_up(x, y, self.confirmed_selection_rect());
                 commands.extend(screenshot_commands);
             }
         }
@@ -1028,14 +1022,23 @@ impl sc_platform::WindowMessageHandler for App {
 
     fn handle_user_event(&mut self, window: WindowId, event: HostEvent) -> Option<isize> {
         match event {
-            HostEvent::OcrAvailabilityChanged { available } => {
+            HostEvent::OcrAvailabilityChanged {
+                generation,
+                available,
+            } => {
+                if generation != self.system.ocr_generation() {
+                    return Some(0);
+                }
                 self.ocr_available = available;
                 self.update_toolbar_state();
                 let _ = self.host_platform.request_redraw(window);
                 Some(0)
             }
 
-            HostEvent::OcrCompleted(data) => {
+            HostEvent::OcrCompleted { generation, data } => {
+                if generation != self.system.ocr_generation() {
+                    return Some(0);
+                }
                 let (has_results, is_failed, text) = self.summarize_ocr_results(&data.ocr_results);
                 self.set_ocr_completion(data);
 
@@ -1049,7 +1052,10 @@ impl sc_platform::WindowMessageHandler for App {
                 Some(0)
             }
 
-            HostEvent::OcrCancelled => {
+            HostEvent::OcrCancelled { generation } => {
+                if generation != self.system.ocr_generation() {
+                    return Some(0);
+                }
                 let commands = self.dispatch_core_action(CoreAction::OcrCancelled);
                 self.execute_command_chain(commands, window);
                 Some(0)
