@@ -25,7 +25,6 @@ use sc_platform::{Color, DrawStyle, HostPlatform, Point, Rectangle, TextStyle, W
 use sc_platform_windows::windows::{Direct2DRenderer, WindowsHostPlatform, bmp};
 use sc_ui::preview_layout;
 
-/// 预览窗口渲染器
 pub struct PreviewRenderer {
     pub(super) d2d_renderer: Direct2DRenderer,
     pub(super) image_bitmap: Option<ID2D1Bitmap>,
@@ -50,7 +49,6 @@ pub(super) struct PreviewRenderArgs<'a> {
 
 impl PreviewRenderer {
     pub fn new() -> Result<Self> {
-        // 优先使用全局共享的 Factory，避免重复创建重量级 COM 对象
         let d2d_renderer = Direct2DRenderer::new_with_shared_factories()
             .or_else(|_| Direct2DRenderer::new())
             .map_err(|e| anyhow::anyhow!("D2D Init Error: {:?}", e))?;
@@ -64,7 +62,6 @@ impl PreviewRenderer {
     }
 
     pub fn initialize(&mut self, window: WindowId, width: i32, height: i32) -> Result<()> {
-        // 记录旧的 RenderTarget 指针，用于检测是否发生了重建
         let old_rt_ptr = self
             .d2d_renderer
             .render_target
@@ -75,7 +72,6 @@ impl PreviewRenderer {
             .initialize(window, width, height)
             .map_err(|e| anyhow::anyhow!("D2D Initialize Error: {:?}", e))?;
 
-        // 检查 RenderTarget 是否改变
         let new_rt_ptr = self
             .d2d_renderer
             .render_target
@@ -88,14 +84,12 @@ impl PreviewRenderer {
             _ => true,
         };
 
-        // 只有在 RenderTarget 真正改变（重建）时才清理资源
         if rt_changed {
             self.image_bitmap = None;
             self.icon_cache.clear();
             self.icons_loaded = false;
         }
 
-        // 初始化后加载图标（如果尚未加载）
         if !self.icons_loaded {
             self.load_icons()?;
             self.icons_loaded = true;
@@ -117,7 +111,6 @@ impl PreviewRenderer {
         Ok(())
     }
 
-    /// 加载所有图标到 D2D 位图
     fn load_icons(&mut self) -> Result<()> {
         let icons = [
             preview_layout::ICON_PIN,
@@ -127,7 +120,6 @@ impl PreviewRenderer {
             preview_layout::ICON_WINDOW_MAXIMIZE,
             preview_layout::ICON_WINDOW_MINIMIZE,
             preview_layout::ICON_WINDOW_RESTORE,
-            // 绘图工具图标
             preview_layout::ICON_TOOL_SQUARE,
             preview_layout::ICON_TOOL_CIRCLE,
             preview_layout::ICON_TOOL_ARROW,
@@ -199,19 +191,16 @@ impl PreviewRenderer {
         Ok(())
     }
 
-    /// 加载SVG并渲染为像素数据(RGBA)
     fn load_svg_pixels(
         filename: &str,
         size: i32,
         color_override: Option<(u8, u8, u8)>,
     ) -> Result<Vec<u8>> {
-        // 使用嵌入式 SVG 内容，而非文件系统读取
         let svg_content = crate::icon_assets::preview_icon_svg(filename)
             .ok_or_else(|| anyhow::anyhow!("Unknown embedded icon: {}", filename))?;
         let (mut pixels, _, _) =
             render_svg_pixels(svg_content, size as u32, PixelFormat::Rgba, None)?;
 
-        // 如果需要颜色覆盖，在像素级别应用
         if let Some(color) = color_override {
             apply_color_to_pixels(&mut pixels, color, PixelFormat::Rgba);
         }
@@ -219,14 +208,12 @@ impl PreviewRenderer {
         Ok(pixels)
     }
 
-    /// 将文本按指定宽度分行
     pub fn split_text_into_lines(&self, text: &str, width: f32) -> Vec<String> {
         self.d2d_renderer
             .split_text_into_lines(text, width, OCR_TEXT_FONT_FAMILY, OCR_TEXT_FONT_SIZE)
             .unwrap_or_else(|_| vec![text.to_string()])
     }
 
-    /// 获取点击位置的字符索引
     pub fn get_text_position_from_point(&self, text: &str, x: f32) -> usize {
         self.d2d_renderer
             .get_text_position_from_point(text, x, OCR_TEXT_FONT_FAMILY, OCR_TEXT_FONT_SIZE)
@@ -251,14 +238,12 @@ impl PreviewRenderer {
             .map_err(|e| anyhow::anyhow!("Clear Error: {:?}", e))
     }
 
-    /// 绘制自定义标题栏
     pub fn draw_custom_title_bar(
         &mut self,
         width: i32,
         icons: &[SvgIcon],
         is_pinned: bool,
     ) -> Result<()> {
-        // 绘制标题栏背景
         let title_bar_rect = Rectangle::new(0.0, 0.0, width as f32, TITLE_BAR_HEIGHT as f32);
         let bg_color = TITLE_BAR_BG_COLOR;
 
@@ -272,7 +257,6 @@ impl PreviewRenderer {
             .draw_rectangle(title_bar_rect, &bg_style)
             .map_err(|e| anyhow::anyhow!("Failed to draw title bar bg: {:?}", e))?;
 
-        // 绘图工具图标是一组，在两边加上分割竖线。
         {
             let is_tool_icon = |name: &str| {
                 matches!(
@@ -347,7 +331,6 @@ impl PreviewRenderer {
             }
         }
 
-        // 绘制标题栏按钮和图标
         for icon in icons {
             if icon.rect.right > width {
                 continue;
@@ -360,7 +343,6 @@ impl PreviewRenderer {
                 icon.rect.bottom as f32,
             );
 
-            // 绘制悬停/激活背景
             if icon.hovered {
                 let (hover_color, use_rounded) = if icon.is_title_bar_button {
                     if icon.name == preview_layout::ICON_WINDOW_CLOSE {
@@ -409,7 +391,6 @@ impl PreviewRenderer {
                 }
             }
 
-            // 绘制图标本身
             if let Some(bitmaps) = self.icon_cache.get(&icon.name) {
                 let bitmap_to_use = if icon.name == preview_layout::ICON_PIN && is_pinned {
                     if icon.hovered {
@@ -476,10 +457,8 @@ impl PreviewRenderer {
             CONTENT_BG_COLOR.a,
         )?;
 
-        // 1. 绘制标题栏
         self.draw_custom_title_bar(width, icons, is_pinned)?;
 
-        // 2. 绘制图片
         if let Some(bitmap) = &self.image_bitmap {
             let original_width = image_width as f32;
             let original_height = image_height as f32;
@@ -533,7 +512,6 @@ impl PreviewRenderer {
                 .map_err(|e| anyhow::anyhow!("Failed to draw bitmap: {:?}", e))?;
         }
 
-        // 3. 绘制绘图元素（在图片上方）
         if let Some(ds) = drawing_state {
             let image_area_rect = ds.image_area_rect;
             let image_area_rect_drawing = sc_drawing::Rect {
@@ -547,7 +525,6 @@ impl PreviewRenderer {
                 .map_err(|e| anyhow::anyhow!("Failed to render drawing elements: {:?}", e))?;
         }
 
-        // 4. 绘制文本区域
         if show_text_area {
             self.render_text_area(text_lines, text_rect, scroll_offset, line_height, selection)?;
         }
@@ -556,7 +533,6 @@ impl PreviewRenderer {
         Ok(())
     }
 
-    /// 渲染文本区域
     fn render_text_area(
         &mut self,
         text_lines: &[String],
@@ -595,7 +571,6 @@ impl PreviewRenderer {
                 y: line_y,
             };
 
-            // 绘制选择高亮
             if i >= start_sel.0 && i <= end_sel.0 {
                 let mut sel_rect = Rectangle {
                     x: pos.x,
@@ -642,7 +617,6 @@ impl PreviewRenderer {
                 }
             }
 
-            // 绘制文本行
             self.d2d_renderer
                 .draw_text(line, pos, &text_style)
                 .map_err(|e| anyhow::anyhow!("Failed to draw text: {:?}", e))?;
@@ -652,7 +626,6 @@ impl PreviewRenderer {
     }
 
     /// Render the current image (and optional drawings) into BMP file bytes.
-    ///
     /// We render only the image area (excluding the custom title bar / text area).
     pub fn render_image_area_to_bmp(
         &mut self,

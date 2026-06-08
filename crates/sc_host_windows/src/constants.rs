@@ -1,7 +1,6 @@
 pub const WINDOW_CLASS_NAME: &str = "sc_windows_main";
 
 /// Selection handle hit radius (host-side selection interaction).
-///
 /// Drawing element handle hit testing lives in `sc_drawing` / `sc_drawing_host`.
 pub const HANDLE_DETECTION_RADIUS: f32 = 10.0;
 

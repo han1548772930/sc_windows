@@ -31,7 +31,6 @@ impl SvgIconManager {
     }
 
     pub fn load_icons(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // 加载内置 SVG 图标内容
         let buttons = [
             ToolbarButton::Arrow,
             ToolbarButton::Rectangle,
@@ -74,7 +73,6 @@ impl SvgIconManager {
         };
         let svg_str = String::from_utf8_lossy(svg_data);
 
-        // 使用统一的 SVG 渲染工具
         let (bgra_data, render_size, _) =
             render_svg_pixels(&svg_str, size, PixelFormat::Bgra, color)?;
 

@@ -44,10 +44,8 @@ pub enum CursorIcon {
 }
 
 /// Minimal host-facing platform API.
-///
 /// This is the boundary where the host can request platform side effects (show/hide window,
 /// timers, clipboard, dialogs, etc) without reaching into a platform backend's internal helpers.
-///
 /// This is intentionally small and focused on host needs, and can evolve towards a gpui-like
 /// `Platform` surface over time.
 pub trait HostPlatform {
@@ -122,7 +120,6 @@ pub trait HostPlatform {
     ) -> Result<(), PlatformServicesError>;
 
     /// Request that the platform closes the window gracefully.
-    ///
     /// On Win32 this typically posts/sends a `WM_CLOSE` message so normal teardown can run.
     fn request_close(&self, window: Self::WindowHandle) -> Result<(), PlatformServicesError>;
 

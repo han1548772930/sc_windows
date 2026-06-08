@@ -149,7 +149,6 @@ pub enum Effect {
 }
 
 /// Core app model.
-///
 /// This will gradually absorb more of the host app's state machine.
 #[derive(Debug, Default)]
 pub struct AppModel {

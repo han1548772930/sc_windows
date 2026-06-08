@@ -32,13 +32,11 @@ impl From<DrawingRect> for RectI32 {
 }
 
 /// Minimum selection size (in pixels).
-///
 /// This is a core interaction rule so that host-side selection creation and drag-resize stay
 /// consistent and do not drift across platforms.
 pub const MIN_BOX_SIZE: i32 = 50;
 
 /// Drag/click threshold (in pixels) used to distinguish click vs drag for selection confirmation.
-///
 /// This is a core interaction rule so host behavior stays consistent.
 pub const DRAG_THRESHOLD: i32 = 5;
 /// Explicit alias for selection drag/click threshold (in pixels).
@@ -71,7 +69,6 @@ pub fn is_drag_threshold_exceeded_with(
 }
 
 /// Validate a selection rectangle against a minimum size.
-///
 /// This is intentionally centralized in core so that host-side selection creation and drag-resize
 /// can share the same rule.
 #[inline]
@@ -85,7 +82,6 @@ pub fn validate_min_size(rect: RectI32, min_size: i32) -> Option<RectI32> {
 }
 
 /// Update a rectangle by applying a drag delta.
-///
 /// This uses the same drag semantics as `sc_drawing::update_rect_by_drag`, but returns a
 /// `RectI32` for use by the core selection model.
 #[inline]
@@ -142,7 +138,6 @@ pub enum Phase {
     #[default]
     Idle,
     /// Selection overlay is active and the user may be dragging to create a new selection.
-    ///
     /// This is kept in core so host/UI can gradually derive view purely from the core model.
     Selecting {
         selection: Option<RectI32>,
@@ -156,12 +151,10 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Host indicates whether the currently visible selection (if any) is an auto-highlight candidate.
-    ///
     /// This is derived from platform-specific window/control hit-testing (host side).
     SetAutoHighlightActive { active: bool },
 
     /// Begin a move/resize interaction for the confirmed selection while editing.
-    ///
     /// The host performs hit-testing and provides the drag mode (handle/moving), while the core
     /// applies the geometry rules and emits toolbar position updates.
     BeginEditDrag { drag_mode: DragMode, x: i32, y: i32 },
@@ -173,7 +166,6 @@ pub enum Action {
     EndEditDrag,
 
     /// Set or clear the current hover-highlight selection rect (auto-highlight target).
-    ///
     /// This is used to derive the view (mask/border) even while the core phase is `Idle`.
     SetHoverSelection { selection: Option<RectI32> },
 
@@ -181,13 +173,11 @@ pub enum Action {
     MouseDown { x: i32, y: i32 },
 
     /// Mouse move occurred.
-    ///
     /// When in `Phase::Selecting`, this updates the in-progress selection rectangle based on the
     /// stored mouse-down position.
     MouseMove { x: i32, y: i32 },
 
     /// Mouse up occurred.
-    ///
     /// The core model decides whether to confirm a selection based on:
     /// - click vs drag (threshold)
     /// - manual drag-create geometry (mouse-down position + mouse-up position)
@@ -205,7 +195,6 @@ pub enum Effect {
     ShowToolbar { selection: RectI32 },
 
     /// Update toolbar position to follow the current selection.
-    ///
     /// The host UI layer may ignore this if the toolbar is not visible.
     UpdateToolbarPosition { selection: RectI32 },
 }
@@ -236,7 +225,6 @@ impl Model {
     }
 
     /// True when the current visible selection (if any) is still an auto-highlight candidate.
-    ///
     /// The host can use this to derive view styling (e.g. thicker border) without duplicating
     /// selection confirmation logic.
     pub fn has_auto_highlight(&self) -> bool {
@@ -249,7 +237,6 @@ impl Model {
     }
 
     /// Selection rect to be used for view derivation.
-    ///
     /// This returns:
     /// - `Editing.selection` when editing
     /// - `Selecting.selection` when selecting (drag)
@@ -332,7 +319,6 @@ impl Model {
                 self.mouse_down_pos = Some((x, y));
 
                 // Enter selecting on mouse-down when idle.
-                //
                 // This keeps the host simpler: it can route raw mouse input and the core model
                 // derives phase transitions.
                 if let Phase::Idle = self.phase {

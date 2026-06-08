@@ -6,7 +6,6 @@ use crate::windows::context::{RenderContext, RenderOptions};
 use crate::windows::renderable::{RenderError, RenderResult, Renderable};
 use crate::{DrawingElement, Rect};
 
-/// 圆/椭圆渲染器
 pub struct CircleRenderer;
 
 impl Renderable for CircleRenderer {
@@ -18,7 +17,6 @@ impl Renderable for CircleRenderer {
         let p0 = &element.points[0];
         let p1 = &element.points[1];
 
-        // 计算中心点和半径
         let center_x = (p0.x + p1.x) as f32 / 2.0;
         let center_y = (p0.y + p1.y) as f32 / 2.0;
         let radius_x = (p1.x - p0.x).abs() as f32 / 2.0;

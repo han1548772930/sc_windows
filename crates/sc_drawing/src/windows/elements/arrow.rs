@@ -5,15 +5,11 @@ use crate::windows::context::{RenderContext, RenderOptions};
 use crate::windows::renderable::{RenderError, RenderResult, Renderable};
 use crate::{DrawingElement, Rect};
 
-/// 箭头渲染器
 pub struct ArrowRenderer;
 
 impl ArrowRenderer {
-    /// 箭头头部长度
     const ARROW_LENGTH: f64 = 15.0;
-    /// 箭头头部角度
     const ARROW_ANGLE: f64 = 0.5;
-    /// 最小显示箭头头部的线段长度
     const MIN_LENGTH_FOR_HEAD: f64 = 20.0;
 }
 
@@ -41,11 +37,9 @@ impl Renderable for ArrowRenderer {
             .clone();
 
         unsafe {
-            // 绘制主线段
             ctx.render_target
                 .DrawLine(start, end, &brush, element.thickness, None);
 
-            // 绘制箭头头部
             let dx = p1.x - p0.x;
             let dy = p1.y - p0.y;
             let length = ((dx * dx + dy * dy) as f64).sqrt();
@@ -57,7 +51,6 @@ impl Renderable for ArrowRenderer {
                 let cos_angle = Self::ARROW_ANGLE.cos();
                 let sin_angle = Self::ARROW_ANGLE.sin();
 
-                // 箭头翅膀1
                 let wing1 = Vector2 {
                     X: (p1.x as f64
                         - Self::ARROW_LENGTH * (unit_x * cos_angle + unit_y * sin_angle))
@@ -67,7 +60,6 @@ impl Renderable for ArrowRenderer {
                         as f32,
                 };
 
-                // 箭头翅膀2
                 let wing2 = Vector2 {
                     X: (p1.x as f64
                         - Self::ARROW_LENGTH * (unit_x * cos_angle - unit_y * sin_angle))
@@ -93,7 +85,6 @@ impl Renderable for ArrowRenderer {
         _ctx: &mut RenderContext,
         _options: &RenderOptions,
     ) -> RenderResult {
-        // 箭头不显示选中边框，只显示端点手柄
         Ok(())
     }
 
@@ -103,7 +94,6 @@ impl Renderable for ArrowRenderer {
         ctx: &mut RenderContext,
         options: &RenderOptions,
     ) -> RenderResult {
-        // 箭头只显示两个端点手柄
         let start = (bounds.left as f32, bounds.top as f32);
         let end = (bounds.right as f32, bounds.bottom as f32);
         render_endpoint_handles(start, end, ctx, options)

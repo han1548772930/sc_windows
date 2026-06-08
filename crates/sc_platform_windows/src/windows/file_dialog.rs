@@ -40,7 +40,6 @@ pub struct FontDialogSelection {
 }
 
 /// Show a folder picker dialog.
-///
 /// Notes:
 /// - `Unavailable` matches the host's legacy behavior where we only fall back when the COM dialog
 ///   cannot be created.
@@ -85,7 +84,6 @@ pub fn show_folder_picker_dialog(hwnd: HWND, title: &str) -> FolderPickerOutcome
 }
 
 /// Show a Win32 ChooseFont dialog.
-///
 /// Returns `Some(selection)` when the user confirms; `None` when cancelled.
 #[allow(clippy::too_many_arguments)]
 pub fn show_font_dialog(
@@ -162,7 +160,6 @@ pub fn show_font_dialog(
 }
 
 /// Show a Win32 ChooseColor dialog.
-///
 /// Returns `Some((r,g,b))` when the user confirms; `None` when cancelled.
 pub fn show_color_dialog(hwnd: HWND, initial_color: (u8, u8, u8)) -> Option<(u8, u8, u8)> {
     unsafe {
@@ -198,31 +195,24 @@ pub fn show_color_dialog(hwnd: HWND, initial_color: (u8, u8, u8)) -> Option<(u8,
     }
 }
 
-/// 显示保存文件对话框
 pub fn show_save_file_dialog(hwnd: HWND, title: &str, default_filename: &str) -> Option<String> {
     unsafe {
-        // 准备文件名缓冲区
         let mut file_name = [0u16; 260]; // MAX_PATH
 
-        // 设置默认文件名
         if !default_filename.is_empty() {
             let default_wide = to_wide_chars(default_filename);
             let copy_len = (default_wide.len() - 1).min(file_name.len() - 1); // -1 for null terminator
             file_name[..copy_len].copy_from_slice(&default_wide[..copy_len]);
         }
 
-        // 准备过滤器字符串
         let filter_str =
             "PNG 图片\0*.png\0JPEG 图片\0*.jpg;*.jpeg\0BMP 图片\0*.bmp\0所有文件\0*.*\0\0";
         let filter_wide = to_wide_chars(filter_str);
 
-        // 准备标题
         let title_wide = to_wide_chars(title);
 
-        // 默认扩展名（必须保持内存有效直到 API 调用结束）
         let def_ext_wide = to_wide_chars("png");
 
-        // 设置OPENFILENAME结构
         let mut ofn = OPENFILENAMEW {
             lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
             hwndOwner: hwnd,
@@ -232,23 +222,19 @@ pub fn show_save_file_dialog(hwnd: HWND, title: &str, default_filename: &str) ->
             lpstrTitle: PCWSTR(title_wide.as_ptr()),
             Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY,
             lpstrDefExt: PCWSTR(def_ext_wide.as_ptr()),
-            nFilterIndex: 1, // 默认选择第一个过滤器（PNG）
+            nFilterIndex: 1,
             ..Default::default()
         };
 
-        // 显示保存文件对话框
         if GetSaveFileNameW(&mut ofn).as_bool() {
-            // 用户选择了文件，转换为Rust字符串
             let file_path = PWSTR(file_name.as_mut_ptr()).to_string().ok()?;
             Some(file_path)
         } else {
-            // 用户取消了对话框
             None
         }
     }
 }
 
-/// 显示图片保存对话框的便捷函数
 pub fn show_image_save_dialog(hwnd: HWND, default_filename: &str) -> Option<String> {
     show_save_file_dialog(hwnd, "保存图片", default_filename)
 }

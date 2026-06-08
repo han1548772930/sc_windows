@@ -137,7 +137,6 @@ pub fn create_hidden_toolwindow_with_params(
     Ok(hwnd)
 }
 
-/// 安全地隐藏窗口
 #[inline]
 pub fn hide_window(hwnd: HWND) -> windows::core::Result<()> {
     unsafe {
@@ -146,7 +145,6 @@ pub fn hide_window(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 安全地显示窗口
 #[inline]
 pub fn show_window(hwnd: HWND) -> windows::core::Result<()> {
     unsafe {
@@ -190,7 +188,6 @@ pub fn bring_window_to_top(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 请求窗口重绘
 #[inline]
 pub fn request_redraw(hwnd: HWND) -> windows::core::Result<()> {
     unsafe {
@@ -199,8 +196,6 @@ pub fn request_redraw(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 请求窗口重绘（并擦除背景）
-///
 /// Some UI code paths rely on background erase to avoid stale artifacts.
 #[inline]
 pub fn request_redraw_erase(hwnd: HWND) -> windows::core::Result<()> {
@@ -210,13 +205,10 @@ pub fn request_redraw_erase(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 请求窗口局部重绘
-/// 只重绘指定的矩形区域，减少不必要的渲染开销
 #[inline]
 pub fn request_redraw_rect(hwnd: HWND, rect: &RECT) -> windows::core::Result<()> {
-    // 验证矩形有效性
     if rect.right <= rect.left || rect.bottom <= rect.top {
-        return Ok(()); // 无效矩形，不重绘
+        return Ok(());
     }
     unsafe {
         let _ = InvalidateRect(Some(hwnd), Some(rect), FALSE.into());
@@ -224,7 +216,6 @@ pub fn request_redraw_rect(hwnd: HWND, rect: &RECT) -> windows::core::Result<()>
     Ok(())
 }
 
-/// 请求窗口局部重绘（并擦除背景）
 #[inline]
 pub fn request_redraw_rect_erase(hwnd: HWND, rect: &RECT) -> windows::core::Result<()> {
     if rect.right <= rect.left || rect.bottom <= rect.top {
@@ -236,7 +227,6 @@ pub fn request_redraw_rect_erase(hwnd: HWND, rect: &RECT) -> windows::core::Resu
     Ok(())
 }
 
-/// 更新窗口
 #[inline]
 pub fn update_window(hwnd: HWND) -> windows::core::Result<()> {
     unsafe {
@@ -246,7 +236,6 @@ pub fn update_window(hwnd: HWND) -> windows::core::Result<()> {
 }
 
 /// Begin a WM_PAINT cycle and return the PAINTSTRUCT.
-///
 /// The returned PAINTSTRUCT must be passed to [`end_paint`].
 #[inline]
 pub fn begin_paint(hwnd: HWND) -> PAINTSTRUCT {
@@ -265,7 +254,6 @@ pub fn end_paint(hwnd: HWND, ps: &PAINTSTRUCT) {
     }
 }
 
-/// 设置窗口为最顶层
 #[inline]
 pub fn set_window_topmost(
     hwnd: HWND,
@@ -311,7 +299,6 @@ pub fn set_window_topmost_flag(hwnd: HWND, topmost: bool) -> windows::core::Resu
     Ok(())
 }
 
-/// 启动定时器
 #[inline]
 pub fn start_timer(hwnd: HWND, timer_id: u32, interval_ms: u32) -> windows::core::Result<()> {
     unsafe {
@@ -320,7 +307,6 @@ pub fn start_timer(hwnd: HWND, timer_id: u32, interval_ms: u32) -> windows::core
     Ok(())
 }
 
-/// 停止定时器
 #[inline]
 pub fn stop_timer(hwnd: HWND, timer_id: u32) -> windows::core::Result<()> {
     unsafe {
@@ -329,7 +315,6 @@ pub fn stop_timer(hwnd: HWND, timer_id: u32) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 销毁窗口
 #[inline]
 pub fn destroy_window(hwnd: HWND) -> windows::core::Result<()> {
     unsafe {
@@ -338,7 +323,6 @@ pub fn destroy_window(hwnd: HWND) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// 退出消息循环
 #[inline]
 pub fn quit_message_loop(exit_code: i32) {
     unsafe {
@@ -357,13 +341,11 @@ pub fn run_message_loop() {
     }
 }
 
-/// 检查窗口是否可见
 #[inline]
 pub fn is_window_visible(hwnd: HWND) -> bool {
     unsafe { IsWindowVisible(hwnd).as_bool() }
 }
 
-/// 发送自定义消息到窗口
 #[inline]
 pub fn post_message(
     hwnd: HWND,
@@ -377,13 +359,11 @@ pub fn post_message(
     Ok(())
 }
 
-/// 发送同步消息到窗口
 #[inline]
 pub fn send_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESULT {
     unsafe { SendMessageW(hwnd, msg, Some(WPARAM(wparam)), Some(LPARAM(lparam))) }
 }
 
-/// 获取窗口矩形
 #[inline]
 pub fn get_window_rect(hwnd: HWND) -> windows::core::Result<RECT> {
     let mut rect = RECT::default();
@@ -393,7 +373,6 @@ pub fn get_window_rect(hwnd: HWND) -> windows::core::Result<RECT> {
     Ok(rect)
 }
 
-/// 获取客户区矩形
 #[inline]
 pub fn get_client_rect(hwnd: HWND) -> windows::core::Result<RECT> {
     let mut rect = RECT::default();
@@ -403,7 +382,6 @@ pub fn get_client_rect(hwnd: HWND) -> windows::core::Result<RECT> {
     Ok(rect)
 }
 
-/// 设置窗口位置和尺寸
 #[inline]
 pub fn set_window_pos(
     hwnd: HWND,
@@ -420,7 +398,6 @@ pub fn set_window_pos(
     Ok(())
 }
 
-/// 将窗口设置为前台
 #[inline]
 pub fn set_foreground_window(hwnd: HWND) -> bool {
     unsafe { SetForegroundWindow(hwnd).as_bool() }
@@ -433,39 +410,30 @@ pub fn to_wide_chars(s: &str) -> Vec<u16> {
 }
 
 /// Find a window by its registered class name.
-///
 /// Returns an HWND which may be null if no window matched.
 pub fn find_window_by_class_name(class_name: &str) -> windows::core::Result<HWND> {
     let class_name = to_wide_chars(class_name);
     unsafe { FindWindowW(PCWSTR(class_name.as_ptr()), PCWSTR::null()) }
 }
 
-/// 优雅地关闭当前进程的所有窗口
 pub fn close_all_app_windows() {
     unsafe {
         let pid = GetCurrentProcessId();
-        // 枚举所有顶级窗口
         let _ = EnumWindows(Some(enum_window_callback), LPARAM(pid as isize));
     }
 }
 
-/// EnumWindows 的回调函数
 unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     unsafe {
         let target_pid = lparam.0 as u32;
         let mut window_pid = 0;
 
-        // 获取当前枚举到的窗口的进程ID
         GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
 
-        // 如果该窗口属于当前进程
         if window_pid == target_pid {
-            // 发送关闭消息。使用 PostMessage 而不是 SendMessage，避免阻塞。
-            // WM_CLOSE 会让窗口有机会执行清理（处理 WM_DESTROY）。
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
 
-        // 返回 TRUE 继续枚举下一个窗口
         BOOL::from(true)
     }
 }

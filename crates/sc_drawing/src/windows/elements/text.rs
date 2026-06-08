@@ -12,14 +12,11 @@ use crate::windows::context::{RenderContext, RenderOptions};
 use crate::windows::renderable::{RenderError, RenderResult, Renderable};
 use crate::{DrawingElement, Rect};
 
-/// 文本内边距
 const TEXT_PADDING: f32 = 4.0;
 
-/// 文本渲染器
 pub struct TextRenderer;
 
 impl TextRenderer {
-    /// 将字符串转换为宽字符
     fn to_wide_chars(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -41,7 +38,6 @@ impl Renderable for TextRenderer {
             .clone();
 
         unsafe {
-            // 创建文本格式
             let font_name_wide = Self::to_wide_chars(&element.font_name);
             let font_size = element.get_effective_font_size();
 
@@ -78,19 +74,16 @@ impl Renderable for TextRenderer {
                     RenderError::ResourceCreation(format!("SetParagraphAlignment: {e:?}"))
                 })?;
 
-            // 计算文本区域（带内边距）
             let width =
                 ((element.rect.right - element.rect.left) as f32 - TEXT_PADDING * 2.0).max(0.0);
             let height =
                 ((element.rect.bottom - element.rect.top) as f32 - TEXT_PADDING * 2.0).max(0.0);
 
-            // 创建文本布局
             let wide_text: Vec<u16> = element.text.encode_utf16().collect();
             let layout = dwrite_factory
                 .CreateTextLayout(&wide_text, &text_format, width, height)
                 .map_err(|e| RenderError::ResourceCreation(format!("TextLayout: {e:?}")))?;
 
-            // 应用下划线和删除线
             if !wide_text.is_empty() {
                 let range = DWRITE_TEXT_RANGE {
                     startPosition: 0,
@@ -105,7 +98,6 @@ impl Renderable for TextRenderer {
                 }
             }
 
-            // 绘制文本
             let origin = Vector2 {
                 X: element.rect.left as f32 + TEXT_PADDING,
                 Y: element.rect.top as f32 + TEXT_PADDING,
@@ -133,7 +125,6 @@ impl Renderable for TextRenderer {
         ctx: &mut RenderContext,
         options: &RenderOptions,
     ) -> RenderResult {
-        // 文本只显示4个角手柄
         render_handles_corners(bounds, ctx, options)
     }
 }

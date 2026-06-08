@@ -2,10 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::DrawingTool;
 
-/// 全局元素 ID 生成器
 static NEXT_ELEMENT_ID: AtomicU64 = AtomicU64::new(1);
-
-// ==================== 平台无关类型定义（core） ====================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Point {
@@ -75,7 +72,6 @@ impl Color {
     }
 }
 
-/// 绘画元素默认值
 pub mod defaults {
     pub const LINE_THICKNESS: f32 = 3.0;
     pub const FONT_SIZE: f32 = 20.0;
@@ -94,36 +90,21 @@ pub mod defaults {
     pub const ARROW_MIN_LENGTH: f64 = 20.0;
 }
 
-/// 绘图元素结构体
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawingElement {
-    /// 元素唯一标识符（用于缓存查找）
     pub id: u64,
-    /// 绘图工具类型
     pub tool: DrawingTool,
-    /// 点集合（用于定义形状）
     pub points: Vec<Point>,
-    /// 边界矩形
     pub rect: Rect,
-    /// 颜色
     pub color: Color,
-    /// 线条粗细
     pub thickness: f32,
-    /// 文本内容
     pub text: String,
-    /// 字体大小
     pub font_size: f32,
-    /// 字体名称
     pub font_name: String,
-    /// 字体粗细
     pub font_weight: i32,
-    /// 是否斜体
     pub font_italic: bool,
-    /// 是否下划线
     pub font_underline: bool,
-    /// 是否删除线
     pub font_strikeout: bool,
-    /// 是否被选中
     pub selected: bool,
 }
 
@@ -133,14 +114,12 @@ impl Default for DrawingElement {
     }
 }
 
-/// 默认颜色（红色）
 #[inline]
 pub fn default_color() -> Color {
     Color::new(1.0, 0.0, 0.0, 1.0)
 }
 
 impl DrawingElement {
-    /// 创建新的绘图元素
     pub fn new(tool: DrawingTool) -> Self {
         Self {
             id: NEXT_ELEMENT_ID.fetch_add(1, Ordering::Relaxed),
@@ -160,14 +139,12 @@ impl DrawingElement {
         }
     }
 
-    /// 使用指定颜色创建新元素
     pub fn with_color(tool: DrawingTool, color: Color) -> Self {
         let mut elem = Self::new(tool);
         elem.color = color;
         elem
     }
 
-    /// 获取有效的字体大小
     pub fn get_effective_font_size(&self) -> f32 {
         if self.tool == DrawingTool::Text {
             self.font_size.max(defaults::MIN_FONT_SIZE)
@@ -176,14 +153,12 @@ impl DrawingElement {
         }
     }
 
-    /// 设置字体大小（限制在有效范围内）
     pub fn set_font_size(&mut self, size: f32) {
         if self.tool == DrawingTool::Text && (self.font_size - size).abs() > 0.001 {
             self.font_size = size.clamp(defaults::MIN_FONT_SIZE, defaults::MAX_FONT_SIZE);
         }
     }
 
-    /// 更新边界矩形
     pub fn update_bounding_rect(&mut self) {
         if self.points.is_empty() {
             return;
@@ -278,7 +253,6 @@ impl DrawingElement {
         }
     }
 
-    /// 检查点是否在元素内
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
         match self.tool {
             DrawingTool::Pen => self.contains_point_pen(x, y),
@@ -329,13 +303,11 @@ impl DrawingElement {
         let start = &self.points[0];
         let end = &self.points[1];
 
-        // 检查主线段
         let distance = point_to_line_distance(x, y, start.x, start.y, end.x, end.y);
         if distance <= (self.thickness + defaults::CLICK_TOLERANCE) as f64 {
             return true;
         }
 
-        // 检查箭头头部
         let dx = end.x - start.x;
         let dy = end.y - start.y;
         let length = ((dx * dx + dy * dy) as f64).sqrt();
@@ -369,7 +341,6 @@ impl DrawingElement {
         false
     }
 
-    /// 调整元素大小
     pub fn resize(&mut self, new_rect: Rect) {
         match self.tool {
             DrawingTool::Rectangle | DrawingTool::Circle => self.resize_two_point_shape(new_rect),
@@ -443,7 +414,6 @@ impl DrawingElement {
         }
     }
 
-    /// 移动元素
     pub fn move_by(&mut self, dx: i32, dy: i32) {
         for point in &mut self.points {
             point.x += dx;
@@ -455,7 +425,6 @@ impl DrawingElement {
         self.rect.bottom += dy;
     }
 
-    /// 获取边界矩形
     pub fn get_bounding_rect(&self) -> Rect {
         match self.tool {
             DrawingTool::Rectangle
@@ -484,12 +453,10 @@ impl DrawingElement {
         }
     }
 
-    /// 添加点
     pub fn add_point(&mut self, x: i32, y: i32) {
         self.points.push(Point::new(x, y));
     }
 
-    /// 设置第二个点（用于形状绘制）
     pub fn set_end_point(&mut self, x: i32, y: i32) {
         if self.points.len() >= 2 {
             self.points[1] = Point::new(x, y);
@@ -499,7 +466,6 @@ impl DrawingElement {
     }
 }
 
-/// 计算点到线段的距离
 fn point_to_line_distance(px: i32, py: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> f64 {
     let px = px as f64;
     let py = py as f64;

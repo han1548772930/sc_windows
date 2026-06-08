@@ -115,7 +115,6 @@ impl AutoHighlighter {
     }
 
     /// Update auto-highlight state after mouse up.
-    ///
     /// Returns `true` if this changes whether we have an active highlight (i.e. a redraw is needed).
     pub fn handle_mouse_up(
         &mut self,

@@ -13,7 +13,6 @@ thread_local! {
 }
 
 /// Windows host-facing platform implementation.
-///
 /// This wraps common Win32 side effects behind the `sc_platform::HostPlatform` abstraction so the
 /// host can avoid calling `win_api::*` directly.
 #[derive(Debug, Default, Clone, Copy)]

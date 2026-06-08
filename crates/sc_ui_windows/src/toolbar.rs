@@ -8,26 +8,26 @@ use sc_drawing::DrawingTool;
 use sc_host_protocol::Command;
 use sc_platform_windows::windows::d2d::Direct2DRenderer;
 
-/// 工具栏管理器
+/// Toolbar state and rendering coordinator.
 pub struct ToolbarManager {
-    /// 是否可见
+    /// Whether the toolbar is visible.
     pub visible: bool,
 
-    /// 当前 layout（平台无关），由 `sc_ui` 计算。
+    /// Current platform-neutral layout computed by `sc_ui`.
     layout: Option<sc_ui::toolbar::ToolbarLayout>,
 
-    /// 当前悬停的按钮
+    /// Currently hovered button.
     pub hovered_button: ToolbarButton,
-    /// 当前点击的按钮（选中状态）
+    /// Current selected button.
     pub clicked_button: ToolbarButton,
-    /// 当前按下的按钮（用于跟踪按下和释放）
+    /// Button that received the last mouse down.
     pub pressed_button: ToolbarButton,
-    /// 按钮禁用状态
+    /// Disabled buttons.
     pub disabled_buttons: HashSet<ToolbarButton>,
 }
 
 impl ToolbarManager {
-    /// 创建新的工具栏管理器
+    /// Create a toolbar manager.
     pub fn new() -> Result<Self, UIError> {
         Ok(Self {
             visible: false,
@@ -39,7 +39,7 @@ impl ToolbarManager {
         })
     }
 
-    /// 更新工具栏位置
+    /// Update toolbar position for the current selection.
     pub fn update_position(
         &mut self,
         selection_rect: sc_app::selection::RectI32,
@@ -60,7 +60,7 @@ impl ToolbarManager {
         self.visible = true;
     }
 
-    /// 获取指定位置的按钮
+    /// Return the button at the given point.
     pub fn get_button_at_position(&self, x: i32, y: i32) -> ToolbarButton {
         self.layout
             .as_ref()
@@ -68,31 +68,31 @@ impl ToolbarManager {
             .unwrap_or(ToolbarButton::None)
     }
 
-    /// 设置悬停按钮
+    /// Set the hovered button.
     pub fn set_hovered_button(&mut self, button: ToolbarButton) {
         self.hovered_button = button;
     }
 
-    /// 设置点击按钮
+    /// Set the selected button.
     pub fn set_clicked_button(&mut self, button: ToolbarButton) {
         self.clicked_button = button;
     }
-    /// 更新禁用按钮集合
+    /// Replace the disabled button set.
     pub fn set_disabled(&mut self, buttons: HashSet<ToolbarButton>) {
         self.disabled_buttons = buttons;
     }
 
-    /// 清除点击按钮
+    /// Clear selected button state.
     pub fn clear_clicked_button(&mut self) {
         self.clicked_button = ToolbarButton::None;
     }
 
-    /// 显示工具栏
+    /// Show the toolbar.
     pub fn show(&mut self) {
         self.visible = true;
     }
 
-    /// 隐藏工具栏
+    /// Hide the toolbar.
     pub fn hide(&mut self) {
         self.visible = false;
         self.layout = None;
@@ -100,9 +100,8 @@ impl ToolbarManager {
         self.pressed_button = ToolbarButton::None;
     }
 
-    /// 处理按钮点击
+    /// Handle a toolbar button click.
     pub fn handle_button_click(&mut self, button: ToolbarButton) -> Vec<Command> {
-        // 只有绘图工具按钮才设置为选中状态
         match button {
             ToolbarButton::Rectangle
             | ToolbarButton::Circle
@@ -111,14 +110,11 @@ impl ToolbarManager {
             | ToolbarButton::Text => {
                 self.clicked_button = button;
             }
-            _ => {
-                // 其他按钮（如 Undo、Save、Pin 等）不保持选中状态
-            }
+            _ => {}
         }
 
         match button {
             ToolbarButton::Save => {
-                // 走 core: SaveSelectionToFile
                 vec![Command::Core(sc_app::Action::SaveSelectionToFile)]
             }
             ToolbarButton::Rectangle => vec![Command::Core(sc_app::Action::SelectDrawingTool(
@@ -143,22 +139,19 @@ impl ToolbarManager {
                 vec![]
             }
             ToolbarButton::Pin => {
-                // 走 core: PinSelection
                 vec![Command::Core(sc_app::Action::PinSelection)]
             }
             ToolbarButton::Confirm => {
-                // 走 core: SaveSelectionToClipboard（由宿主命令执行隐藏窗口/重置）
                 vec![Command::Core(sc_app::Action::SaveSelectionToClipboard)]
             }
             ToolbarButton::Cancel => {
-                // 走 core: Cancel -> [ResetToInitialState, HideWindow]
                 vec![Command::Core(sc_app::Action::Cancel)]
             }
             _ => vec![Command::None],
         }
     }
 
-    /// 渲染工具栏
+    /// Render the toolbar.
     pub fn render(
         &self,
         d2d_renderer: &mut Direct2DRenderer,
@@ -230,13 +223,12 @@ impl ToolbarManager {
         Ok(())
     }
 
-    /// 处理鼠标移动
+    /// Handle mouse move.
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        // 检查鼠标是否悬停在按钮上
         let hovered_button = self.get_button_at_position(x, y);
 
         if self.hovered_button != hovered_button {
@@ -247,57 +239,96 @@ impl ToolbarManager {
         }
     }
 
-    /// 处理鼠标按下
+    /// Handle mouse down.
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        // 检查是否点击了工具栏按钮
         let button_type = self.get_button_at_position(x, y);
         if button_type != ToolbarButton::None {
-            // 禁用按钮不可点击
             if self.disabled_buttons.contains(&button_type) {
                 return vec![];
             }
 
-            // 记录按下的按钮
             self.pressed_button = button_type;
-            // 不在这里设置 clicked_button，交由 handle_button_click 根据按钮类型（工具/动作）决定
-            // 立即处理按钮点击（其中仅绘图工具会设置 clicked_button）
             return self.handle_button_click(button_type);
         }
 
         vec![]
     }
 
-    /// 处理鼠标释放
+    /// Handle mouse up.
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        // 检查是否在同一个按钮上释放
         let toolbar_button = self.get_button_at_position(x, y);
         if toolbar_button != ToolbarButton::None && toolbar_button == self.pressed_button {
-            // 按钮点击已经在 handle_mouse_down 中处理，这里只需要清除按下状态
             self.pressed_button = ToolbarButton::None;
             vec![]
         } else {
-            // 如果不是在同一个按钮上释放，清除按下状态
             self.pressed_button = ToolbarButton::None;
             vec![]
         }
     }
 
-    /// 是否可见
+    /// Whether the toolbar is visible.
     pub fn is_visible(&self) -> bool {
         self.visible
     }
 
-    /// 处理双击事件
+    /// Handle double click.
     pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
-        // 工具栏双击暂时不处理特殊逻辑，使用单击逻辑
         self.handle_mouse_down(x, y)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sc_app::Action;
+
+    #[test]
+    fn drawing_tool_click_selects_button_and_emits_core_action() {
+        let mut manager = ToolbarManager::new().unwrap();
+
+        let commands = manager.handle_button_click(ToolbarButton::Rectangle);
+
+        assert_eq!(manager.clicked_button, ToolbarButton::Rectangle);
+        assert_eq!(
+            commands,
+            vec![Command::Core(Action::SelectDrawingTool(
+                DrawingTool::Rectangle
+            ))]
+        );
+    }
+
+    #[test]
+    fn action_button_click_does_not_replace_selected_tool() {
+        let mut manager = ToolbarManager::new().unwrap();
+        manager.clicked_button = ToolbarButton::Pen;
+
+        let commands = manager.handle_button_click(ToolbarButton::Save);
+
+        assert_eq!(manager.clicked_button, ToolbarButton::Pen);
+        assert_eq!(commands, vec![Command::Core(Action::SaveSelectionToFile)]);
+    }
+
+    #[test]
+    fn hide_clears_transient_pointer_state_but_keeps_selection() {
+        let mut manager = ToolbarManager::new().unwrap();
+        manager.visible = true;
+        manager.hovered_button = ToolbarButton::Save;
+        manager.pressed_button = ToolbarButton::Save;
+        manager.clicked_button = ToolbarButton::Text;
+
+        manager.hide();
+
+        assert!(!manager.visible);
+        assert_eq!(manager.hovered_button, ToolbarButton::None);
+        assert_eq!(manager.pressed_button, ToolbarButton::None);
+        assert_eq!(manager.clicked_button, ToolbarButton::Text);
     }
 }

@@ -111,7 +111,6 @@ impl Settings {
     }
 
     /// Load settings from disk.
-    ///
     /// Falls back to defaults if loading fails.
     pub fn load() -> Self {
         let primary = Self::primary_settings_path();
@@ -185,7 +184,6 @@ impl Settings {
     }
 
     /// Parse a hotkey string (e.g. "Ctrl+Alt+S") into fields.
-    ///
     /// Returns `true` if parsing succeeded.
     pub fn parse_hotkey_string(&mut self, hotkey_str: &str) -> bool {
         // Win32 modifier bitmask.
@@ -225,5 +223,53 @@ impl Settings {
         self.hotkey_modifiers = modifiers;
         self.hotkey_key = key;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn parse_hotkey_accepts_case_insensitive_modifiers_and_key() {
+        let mut settings = Settings::default();
+
+        assert!(settings.parse_hotkey_string("control + shift + z"));
+
+        assert_eq!(settings.hotkey_modifiers, 0x0002 | 0x0004);
+        assert_eq!(settings.hotkey_key, 'Z' as u32);
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_key_without_modifier() {
+        let mut settings = Settings::default();
+        let original_modifiers = settings.hotkey_modifiers;
+        let original_key = settings.hotkey_key;
+
+        assert!(!settings.parse_hotkey_string("S"));
+
+        assert_eq!(settings.hotkey_modifiers, original_modifiers);
+        assert_eq!(settings.hotkey_key, original_key);
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_unknown_tokens_without_mutating_existing_hotkey() {
+        let mut settings = Settings::default();
+        let original_modifiers = settings.hotkey_modifiers;
+        let original_key = settings.hotkey_key;
+
+        assert!(!settings.parse_hotkey_string("Ctrl+Meta+S"));
+
+        assert_eq!(settings.hotkey_modifiers, original_modifiers);
+        assert_eq!(settings.hotkey_key, original_key);
+    }
+
+    #[test]
+    fn get_hotkey_string_formats_known_key() {
+        let mut settings = Settings::default();
+        settings.hotkey_modifiers = 0x0002 | 0x0001;
+        settings.hotkey_key = 'S' as u32;
+
+        assert_eq!(settings.get_hotkey_string(), "Ctrl+Alt+S");
     }
 }

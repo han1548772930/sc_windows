@@ -2,14 +2,8 @@ use crate::element::{DrawingElement, Rect};
 use crate::history::DrawingAction;
 use crate::types::DrawingTool;
 
-/// 元素管理器
-///
-/// 负责管理所有绘图元素的添加、删除、查询。
-/// 包含资源限制功能，防止内存无限增长。
 pub struct ElementManager {
-    /// 所有绘图元素
     elements: Vec<DrawingElement>,
-    /// 最大元素数量限制
     max_elements: usize,
 }
 
@@ -20,10 +14,8 @@ impl Default for ElementManager {
 }
 
 impl ElementManager {
-    /// 默认最大元素数量
     pub const DEFAULT_MAX_ELEMENTS: usize = 1000;
 
-    /// 创建新的元素管理器
     pub fn new() -> Self {
         Self {
             elements: Vec::new(),
@@ -31,7 +23,6 @@ impl ElementManager {
         }
     }
 
-    /// 创建带自定义限制的元素管理器
     pub fn with_max_elements(max_elements: usize) -> Self {
         Self {
             elements: Vec::new(),
@@ -39,22 +30,16 @@ impl ElementManager {
         }
     }
 
-    /// 设置最大元素数量
     pub fn set_max_elements(&mut self, max: usize) {
         self.max_elements = max;
     }
 
-    /// 获取当前元素数量
     pub fn element_count(&self) -> usize {
         self.elements.len()
     }
 
-    /// 添加元素
-    ///
-    /// 如果达到最大数量限制，将移除最早的元素（非文本元素优先）
     pub fn add_element(&mut self, element: DrawingElement) {
         if self.elements.len() >= self.max_elements {
-            // 优先移除最早的非文本元素
             if let Some(pos) = self
                 .elements
                 .iter()
@@ -68,7 +53,6 @@ impl ElementManager {
         self.elements.push(element);
     }
 
-    /// 移除元素
     pub fn remove_element(&mut self, index: usize) -> bool {
         if index < self.elements.len() {
             self.elements.remove(index);
@@ -78,7 +62,6 @@ impl ElementManager {
         }
     }
 
-    /// 获取指定位置的元素索引
     pub fn get_element_at_position(&self, x: i32, y: i32) -> Option<usize> {
         for (index, element) in self.elements.iter().enumerate().rev() {
             if element.contains_point(x, y) {
@@ -88,7 +71,6 @@ impl ElementManager {
         None
     }
 
-    /// 获取指定位置的元素索引（带选择框约束）
     pub fn get_element_at_position_with_rect(
         &self,
         x: i32,
@@ -112,7 +94,6 @@ impl ElementManager {
         None
     }
 
-    /// 检查元素是否在矩形内可见
     pub fn is_element_visible_in_rect(&self, element: &DrawingElement, rect: &Rect) -> bool {
         let elem_rect = element.get_bounding_rect();
         !(elem_rect.right < rect.left
@@ -121,7 +102,6 @@ impl ElementManager {
             || elem_rect.top > rect.bottom)
     }
 
-    /// 设置选中状态
     pub fn set_selected(&mut self, index: Option<usize>) {
         for element in &mut self.elements {
             element.selected = false;
@@ -133,17 +113,14 @@ impl ElementManager {
         }
     }
 
-    /// 获取所有元素的引用
     pub fn get_elements(&self) -> &Vec<DrawingElement> {
         &self.elements
     }
 
-    /// 获取可变元素引用
     pub fn get_element_mut(&mut self, index: usize) -> Option<&mut DrawingElement> {
         self.elements.get_mut(index)
     }
 
-    /// 设置指定索引的元素
     pub fn set_element(&mut self, index: usize, element: DrawingElement) -> bool {
         if index < self.elements.len() {
             self.elements[index] = element;
@@ -153,31 +130,24 @@ impl ElementManager {
         }
     }
 
-    /// 恢复状态
     pub fn restore_state(&mut self, elements: Vec<DrawingElement>) {
         self.elements = elements;
     }
 
-    /// 清空所有元素
     pub fn clear(&mut self) {
         self.elements.clear();
     }
 
-    /// 获取元素数量
     pub fn count(&self) -> usize {
         self.elements.len()
     }
 
-    /// 在指定位置插入元素
     pub fn insert_element(&mut self, index: usize, element: DrawingElement) {
         if index <= self.elements.len() {
             self.elements.insert(index, element);
         }
     }
 
-    // ==================== 命令模式支持 ====================
-
-    /// 应用撤销操作
     pub fn apply_undo(&mut self, action: &DrawingAction) {
         match action {
             DrawingAction::AddElement { index, .. } => {
@@ -246,7 +216,6 @@ impl ElementManager {
         }
     }
 
-    /// 应用重做操作
     pub fn apply_redo(&mut self, action: &DrawingAction) {
         match action {
             DrawingAction::AddElement { element, index } => {

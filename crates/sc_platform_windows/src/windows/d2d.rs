@@ -14,32 +14,26 @@ use windows::Win32::System::Com::*;
 use windows::core::*;
 
 pub struct Direct2DRenderer {
-    // Direct2D 资源
     pub d2d_factory: Option<ID2D1Factory>,
     pub render_target: Option<ID2D1HwndRenderTarget>,
     // Cache for layered rendering
     pub layer_target: Option<ID2D1BitmapRenderTarget>,
     pub background_bitmap: Option<ID2D1Bitmap>,
 
-    // DirectWrite 资源
     pub dwrite_factory: Option<IDWriteFactory>,
     pub text_format: Option<IDWriteTextFormat>,
 
-    // 颜色到画刷的缓存（避免每帧创建）: (Brush, LastUsedFrame)
     brush_cache: HashMap<u32, (ID2D1SolidColorBrush, u64)>,
-    // 文本格式缓存（避免每次测量/绘制时创建）
     text_format_cache: std::sync::Mutex<HashMap<(String, u32), IDWriteTextFormat>>,
 
     // Frame counter for LRU
     frame_count: u64,
 
-    // 屏幕尺寸
     pub screen_width: i32,
     pub screen_height: i32,
 }
 
 impl Direct2DRenderer {
-    /// 创建新的Direct2D渲染器
     pub fn new() -> std::result::Result<Self, PlatformError> {
         Ok(Self {
             d2d_factory: None,
@@ -56,9 +50,6 @@ impl Direct2DRenderer {
         })
     }
 
-    /// 创建使用共享 Factory 的 Direct2D 渲染器
-    ///
-    /// 优先使用全局共享的 Factory 实例，避免重复创建重量级 COM 对象。
     pub fn new_with_shared_factories() -> std::result::Result<Self, PlatformError> {
         let factories = super::factory::SharedFactories::try_get().ok_or_else(|| {
             PlatformError::InitError("Failed to get shared factories".to_string())
@@ -79,7 +70,6 @@ impl Direct2DRenderer {
         })
     }
 
-    /// 初始化Direct2D资源
     pub fn initialize(
         &mut self,
         window: WindowId,
@@ -87,7 +77,6 @@ impl Direct2DRenderer {
         height: i32,
     ) -> std::result::Result<(), PlatformError> {
         let hwnd = super::hwnd(window);
-        // 如果已经初始化且尺寸未变，直接返回
         if self.render_target.is_some()
             && self.screen_width == width
             && self.screen_height == height
@@ -99,13 +88,11 @@ impl Direct2DRenderer {
         self.layer_target = None;
         self.background_bitmap = None;
 
-        // 如果 RenderTarget 已存在，尝试 Resize
         if let Some(ref render_target) = self.render_target {
             let size = D2D_SIZE_U {
                 width: width as u32,
                 height: height as u32,
             };
-            // SAFETY: Resize 是安全的 COM 方法调用
             unsafe {
                 if render_target.Resize(&size).is_ok() {
                     self.screen_width = width;
@@ -113,14 +100,11 @@ impl Direct2DRenderer {
                     return Ok(());
                 }
             }
-            // 如果 Resize 失败，则继续往下走，重新创建资源
         }
 
         self.screen_width = width;
         self.screen_height = height;
 
-        // 初始化 COM
-        // SAFETY: COM 初始化是幂等操作，重复调用是安全的
         unsafe {
             let result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if result.is_err() {
@@ -133,8 +117,6 @@ impl Direct2DRenderer {
             }
         }
 
-        // 优先使用已有的 Factory（可能来自 new_with_shared_factories）
-        // 如果没有，尝试从全局共享单例获取，最后才创建新的
         let d2d_factory: ID2D1Factory = if let Some(ref factory) = self.d2d_factory {
             factory.clone()
         } else if let Some(shared) = super::factory::SharedFactories::try_get() {
@@ -142,7 +124,6 @@ impl Direct2DRenderer {
             self.d2d_factory = Some(factory.clone());
             factory
         } else {
-            // SAFETY: D2D1CreateFactory 是 Windows API 的安全封装
             let factory: ID2D1Factory =
                 unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None) }.map_err(
                     |e| PlatformError::InitError(format!("D2D factory creation failed: {e:?}")),
@@ -151,7 +132,6 @@ impl Direct2DRenderer {
             factory
         };
 
-        // 创建渲染目标
         let render_target_properties = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -181,7 +161,6 @@ impl Direct2DRenderer {
                 })?
         };
 
-        // 优先使用已有的 DWrite Factory，否则从共享单例获取或创建新的
         let dwrite_factory: IDWriteFactory = if let Some(ref factory) = self.dwrite_factory {
             factory.clone()
         } else if let Some(shared) = super::factory::SharedFactories::try_get() {
@@ -189,7 +168,6 @@ impl Direct2DRenderer {
             self.dwrite_factory = Some(factory.clone());
             factory
         } else {
-            // SAFETY: DWriteCreateFactory 是 Windows API 的安全封装
             let factory: IDWriteFactory = unsafe {
                 DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).map_err(|e| {
                     PlatformError::InitError(format!("DirectWrite factory creation failed: {e:?}"))
@@ -199,7 +177,6 @@ impl Direct2DRenderer {
             factory
         };
 
-        // 创建文本格式
         let text_format: IDWriteTextFormat = unsafe {
             dwrite_factory
                 .CreateTextFormat(
@@ -216,13 +193,11 @@ impl Direct2DRenderer {
                 })?
         };
 
-        // 存储资源
         self.d2d_factory = Some(d2d_factory);
         self.render_target = Some(render_target);
         self.dwrite_factory = Some(dwrite_factory);
         self.text_format = Some(text_format);
 
-        // 渲染目标重建时清空颜色画刷缓存
         self.brush_cache.clear();
         if let Ok(mut cache) = self.text_format_cache.lock() {
             cache.clear();
@@ -231,7 +206,6 @@ impl Direct2DRenderer {
         Ok(())
     }
 
-    /// 从 GDI 位图创建 D2D 位图
     pub fn create_d2d_bitmap_from_gdi(
         &self,
         gdi_dc: HDC,
@@ -240,12 +214,11 @@ impl Direct2DRenderer {
     ) -> std::result::Result<ID2D1Bitmap, PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
-                // 创建 DIB 来传输像素数据
                 let bmi = BITMAPINFO {
                     bmiHeader: BITMAPINFOHEADER {
                         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                         biWidth: width,
-                        biHeight: -height, // 负值表示自上而下
+                        biHeight: -height,
                         biPlanes: 1,
                         biBitCount: 32,
                         biCompression: BI_RGB.0,
@@ -288,9 +261,7 @@ impl Direct2DRenderer {
                 .map_err(|e| PlatformError::ResourceError(format!("BitBlt failed: {e:?}")))?;
 
                 SelectObject(temp_dc.handle(), old_bitmap);
-                // temp_dc 会在函数结束时自动释放
 
-                // 创建D2D位图
                 let bitmap_properties = D2D1_BITMAP_PROPERTIES {
                     pixelFormat: D2D1_PIXEL_FORMAT {
                         format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -317,7 +288,6 @@ impl Direct2DRenderer {
                         PlatformError::ResourceError(format!("CreateBitmap failed: {e:?}"))
                     })?;
 
-                // dib 在函数结束时会被 DeleteObject 释放
                 let _managed_dib = super::resources::ManagedBitmap::new(dib);
                 Ok(bitmap)
             }
@@ -328,7 +298,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 从 HBITMAP 创建 D2D 位图，并尽量提取 BMP 数据（用于 OCR）。
     pub fn create_d2d_bitmap_and_bmp_data_from_hbitmap(
         &self,
         bitmap: HBITMAP,
@@ -359,7 +328,6 @@ impl Direct2DRenderer {
         result
     }
 
-    /// 捕获屏幕区域并转换为 D2D 位图，同时尽量提取 BMP 数据（用于 OCR）。
     pub fn capture_screen_region_to_d2d_bitmap_and_bmp_data(
         &self,
         selection_rect: Rect,
@@ -408,7 +376,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 从像素数据创建D2D位图
     pub fn create_bitmap_from_pixels(
         &self,
         pixels: &[u8],
@@ -418,7 +385,6 @@ impl Direct2DRenderer {
         if let Some(ref render_target) = self.render_target {
             let bitmap_properties = D2D1_BITMAP_PROPERTIES {
                 pixelFormat: D2D1_PIXEL_FORMAT {
-                    // tiny-skia 输出 RGBA
                     format: DXGI_FORMAT_R8G8B8A8_UNORM,
                     alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
                 },
@@ -450,7 +416,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 将颜色量化为缓存键（ARGB 8bit）
     fn color_key(color: Color) -> u32 {
         let r = (color.r.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
         let g = (color.g.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
@@ -459,7 +424,6 @@ impl Direct2DRenderer {
         (a << 24) | (r << 16) | (g << 8) | b
     }
 
-    /// 获取或创建画刷（带缓存）
     pub fn get_or_create_brush(
         &mut self,
         color: Color,
@@ -474,7 +438,6 @@ impl Direct2DRenderer {
             *last_used = self.frame_count;
             return Ok(brush.clone());
         }
-        // Safety: 前面已经检查过 render_target.is_none() 会提前返回错误
         let render_target = match self.render_target.as_ref() {
             Some(rt) => rt,
             None => {
@@ -492,9 +455,7 @@ impl Direct2DRenderer {
         let brush = unsafe { render_target.CreateSolidColorBrush(&d2d_color, None) }
             .map_err(|e| PlatformError::ResourceError(format!("Failed to create brush: {e:?}")))?;
 
-        // LRU 清理策略：如果缓存太大，移除最近最少使用的
         if self.brush_cache.len() > 100 {
-            // 找出最久未使用的 20 个
             let mut entries: Vec<(u32, u64)> =
                 self.brush_cache.iter().map(|(k, v)| (*k, v.1)).collect();
             entries.sort_by_key(|&(_, last_used)| last_used);
@@ -509,13 +470,11 @@ impl Direct2DRenderer {
         Ok(brush)
     }
 
-    /// 获取或创建文本格式（带缓存）
     fn get_or_create_text_format(
         &self,
         font_family: &str,
         font_size: f32,
     ) -> std::result::Result<IDWriteTextFormat, PlatformError> {
-        // 使用 u32 表示 float bits 作为 key
         let key = (font_family.to_string(), font_size.to_bits());
 
         if let Ok(mut cache) = self.text_format_cache.lock() {
@@ -523,7 +482,6 @@ impl Direct2DRenderer {
                 return Ok(fmt.clone());
             }
 
-            // 创建新的格式
             if let Some(ref dwrite_factory) = self.dwrite_factory {
                 unsafe {
                     let format = dwrite_factory
@@ -553,12 +511,10 @@ impl Direct2DRenderer {
         ))
     }
 
-    /// 获取屏幕宽度
     pub fn get_screen_width(&self) -> i32 {
         self.screen_width
     }
 
-    /// 获取屏幕高度
     pub fn get_screen_height(&self) -> i32 {
         self.screen_height
     }
@@ -580,9 +536,6 @@ impl Direct2DRenderer {
         self.render_selection_to_bmp(&source_bitmap, selection_rect, render_elements_fn)
     }
 
-    /// 渲染选择区域到BMP数据（包含绘图元素）
-    ///
-    /// 创建一个GDI兼容的离屏渲染目标，将源位图和绘图元素合成，返回BMP格式数据
     pub fn render_selection_to_bmp(
         &mut self,
         source_bitmap: &ID2D1Bitmap,
@@ -616,15 +569,12 @@ impl Direct2DRenderer {
             height,
         );
 
-        // 渲染绘图元素（通过回调函数）
         let offscreen_render_target: &ID2D1RenderTarget = &offscreen_target;
         render_elements_fn(offscreen_render_target, self)?;
 
-        // 在EndDraw之前获取DC（这是关键！GetDC必须在BeginDraw和EndDraw之间调用）
         let pixel_data =
             read_pixels_from_gdi_target(&offscreen_target, &gdi_target, width, height)?;
 
-        // 结束渲染
         unsafe {
             if let Err(e) = offscreen_target.EndDraw(None, None) {
                 return Err(PlatformError::RenderError(format!(
@@ -677,7 +627,6 @@ impl Direct2DRenderer {
     }
 }
 
-// 以下方法原属 PlatformRenderer trait，现已直接实现在 Direct2DRenderer 上
 impl Direct2DRenderer {
     pub fn begin_frame(&mut self) -> std::result::Result<(), PlatformError> {
         self.frame_count += 1;
@@ -745,23 +694,17 @@ impl Direct2DRenderer {
         rect: Rectangle,
         style: &DrawStyle,
     ) -> std::result::Result<(), PlatformError> {
-        // 实现Direct2D的矩形绘制
-        // 先创建所有需要的画刷，避免借用冲突
         let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
-        // 现在可以安全地使用render_target
         if let Some(ref render_target) = self.render_target {
-            // 创建矩形
             let d2d_rect = rect_to_d2d(rect);
 
-            // 如果有填充颜色，绘制填充
             if let Some(ref brush) = fill_brush {
                 unsafe {
                     render_target.FillRectangle(&d2d_rect, brush);
                 }
             }
 
-            // 如果有描边，绘制边框
             if let Some(ref brush) = stroke_brush {
                 unsafe {
                     render_target.DrawRectangle(&d2d_rect, brush, style.stroke_width, None);
@@ -777,8 +720,6 @@ impl Direct2DRenderer {
         radius: f32,
         style: &DrawStyle,
     ) -> std::result::Result<(), PlatformError> {
-        // 实现Direct2D的圆角矩形绘制
-        // 先创建需要的画刷，避免借用冲突
         let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
         if let Some(ref render_target) = self.render_target {
@@ -812,11 +753,9 @@ impl Direct2DRenderer {
         style: &DrawStyle,
     ) -> std::result::Result<(), PlatformError> {
         // DrawEllipse
-        // 先创建需要的画刷，避免借用冲突
         let (fill_brush, stroke_brush) = self.prepare_fill_stroke_brushes(style)?;
 
         if let Some(ref render_target) = self.render_target {
-            // 创建椭圆
             let ellipse = D2D1_ELLIPSE {
                 point: windows_numerics::Vector2 {
                     X: center.x,
@@ -826,14 +765,12 @@ impl Direct2DRenderer {
                 radiusY: radius,
             };
 
-            // 如果有填充颜色，绘制填充
             if let Some(ref brush) = fill_brush {
                 unsafe {
                     render_target.FillEllipse(&ellipse, brush);
                 }
             }
 
-            // 如果有描边，绘制边框
             if let Some(ref brush) = stroke_brush {
                 unsafe {
                     render_target.DrawEllipse(&ellipse, brush, style.stroke_width, None);
@@ -850,7 +787,6 @@ impl Direct2DRenderer {
         style: &DrawStyle,
     ) -> std::result::Result<(), PlatformError> {
         // DrawLine
-        // 先取画刷，避免与render_target借用冲突
         let brush = self.get_or_create_brush(style.stroke_color)?;
         if let Some(ref render_target) = self.render_target {
             let start_point = windows_numerics::Vector2 {
@@ -871,7 +807,6 @@ impl Direct2DRenderer {
         style: &DrawStyle,
         dash_pattern: &[f32],
     ) -> std::result::Result<(), PlatformError> {
-        // 使用缓存画刷
         let stroke_brush = self.get_or_create_brush(style.stroke_color)?;
 
         if let (Some(render_target), Some(d2d_factory)) = (&self.render_target, &self.d2d_factory) {
@@ -896,15 +831,12 @@ impl Direct2DRenderer {
         position: Point,
         style: &TextStyle,
     ) -> std::result::Result<(), PlatformError> {
-        // 实现Direct2D的DrawText
         if self.render_target.is_none() || self.dwrite_factory.is_none() {
             return Ok(());
         }
 
-        // 使用缓存获取文本格式，并修复字体硬编码问题
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
-        // 创建文本布局矩形
         let text_rect = D2D_RECT_F {
             left: position.x,
             top: position.y,
@@ -912,17 +844,13 @@ impl Direct2DRenderer {
             bottom: position.y + style.font_size * 2.0,
         };
 
-        // 转换文本为UTF-16
         let text_utf16: Vec<u16> = text.encode_utf16().collect();
 
-        // 获取画刷后再用，避免借用冲突
         let brush = self.get_or_create_brush(style.color)?;
 
-        // 为避免同时借用self和render_target，改为重新获取render_target局部变量
-        // Safety: 前面已经检查过 render_target.is_none() 会提前返回
         let rt = match self.render_target.as_ref() {
             Some(rt) => rt,
-            None => return Ok(()), // 前面已经检查过，这里不应该到达
+            None => return Ok(()),
         };
         unsafe {
             rt.DrawText(
@@ -942,7 +870,6 @@ impl Direct2DRenderer {
         text: &str,
         style: &TextStyle,
     ) -> std::result::Result<(f32, f32), PlatformError> {
-        // 使用 DirectWrite 进行精确文本测量
         if text.is_empty() {
             return Ok((0.0, style.font_size));
         }
@@ -950,15 +877,12 @@ impl Direct2DRenderer {
         let dwrite_factory = match &self.dwrite_factory {
             Some(f) => f,
             None => {
-                // 回退到近似值
                 return Ok((text.len() as f32 * style.font_size * 0.6, style.font_size));
             }
         };
 
-        // 使用缓存获取文本格式
         let text_format = self.get_or_create_text_format(&style.font_family, style.font_size)?;
 
-        // 文本 UTF-16
         let utf16: Vec<u16> = text.encode_utf16().collect();
         let layout = create_text_layout_for_utf16(
             dwrite_factory,
@@ -976,7 +900,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 设置裁剪区域
     pub fn push_clip_rect(&mut self, rect: Rectangle) -> std::result::Result<(), PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
@@ -990,7 +913,6 @@ impl Direct2DRenderer {
         Ok(())
     }
 
-    /// 恢复裁剪区域
     pub fn pop_clip_rect(&mut self) -> std::result::Result<(), PlatformError> {
         if let Some(ref render_target) = self.render_target {
             unsafe {
@@ -1000,28 +922,20 @@ impl Direct2DRenderer {
         Ok(())
     }
 
-    // 已删除不再需要的 as_any/as_any_mut 和 create_bitmap_from_gdi 方法
-    // 这些是 PlatformRenderer trait 的遗留方法，在直接使用 Direct2DRenderer 时不再需要
-
-    // ---------- 高层绘图接口实现 ----------
-
     pub fn draw_selection_mask(
         &mut self,
         screen_rect: Rectangle,
         selection_rect: Rectangle,
         mask_color: Color,
     ) -> std::result::Result<(), PlatformError> {
-        // 使用缓存画刷
         let mask_brush = self.get_or_create_brush(mask_color)?;
 
         if let Some(ref render_target) = self.render_target {
-            // 绘制四个矩形覆盖选区外区域
             let left = selection_rect.x;
             let top = selection_rect.y;
             let right = selection_rect.x + selection_rect.width;
             let bottom = selection_rect.y + selection_rect.height;
 
-            // 上方区域
             if top > screen_rect.y {
                 fill_rect(
                     render_target,
@@ -1033,7 +947,6 @@ impl Direct2DRenderer {
                 );
             }
 
-            // 下方区域
             if bottom < screen_rect.y + screen_rect.height {
                 fill_rect(
                     render_target,
@@ -1045,12 +958,10 @@ impl Direct2DRenderer {
                 );
             }
 
-            // 左侧区域
             if left > screen_rect.x {
                 fill_rect(render_target, &mask_brush, screen_rect.x, top, left, bottom);
             }
 
-            // 右侧区域
             if right < screen_rect.x + screen_rect.width {
                 fill_rect(
                     render_target,
@@ -1072,7 +983,6 @@ impl Direct2DRenderer {
         width: f32,
         dash_pattern: Option<&[f32]>,
     ) -> std::result::Result<(), PlatformError> {
-        // 使用缓存画刷
         let border_brush = self.get_or_create_brush(color)?;
 
         if let Some(ref render_target) = self.render_target {
@@ -1080,7 +990,6 @@ impl Direct2DRenderer {
                 let d2d_rect = rect_to_d2d(rect);
 
                 if let Some(dash) = dash_pattern {
-                    // 创建虚线样式
                     if let Some(ref d2d_factory) = self.d2d_factory {
                         if let Ok(stroke_style) = create_dash_stroke_style(d2d_factory, dash, false)
                         {
@@ -1091,14 +1000,12 @@ impl Direct2DRenderer {
                                 Some(&stroke_style),
                             );
                         } else {
-                            // 如果创建虚线样式失败，使用实线
                             render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
                         }
                     } else {
                         render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
                     }
                 } else {
-                    // 实线边框
                     render_target.DrawRectangle(&d2d_rect, &border_brush, width, None);
                 }
             }
@@ -1114,13 +1021,11 @@ impl Direct2DRenderer {
         border_color: Color,
         border_width: f32,
     ) -> std::result::Result<(), PlatformError> {
-        // 使用缓存画刷
         let fill_brush = self.get_or_create_brush(fill_color)?;
         let border_brush = self.get_or_create_brush(border_color)?;
 
         if let Some(ref render_target) = self.render_target {
             let half = handle_size / 2.0;
-            // 8个手柄位置：4个角 + 4个边中点
             let handle_positions = handle_positions(rect);
 
             for (px, py) in handle_positions.iter() {
@@ -1150,12 +1055,10 @@ impl Direct2DRenderer {
         border_color: Color,
         border_width: f32,
     ) -> std::result::Result<(), PlatformError> {
-        // 使用缓存画刷
         let fill_brush = self.get_or_create_brush(fill_color)?;
         let border_brush = self.get_or_create_brush(border_color)?;
 
         if let Some(ref render_target) = self.render_target {
-            // 8个圆形手柄位置：4个角 + 4个边中点
             let handle_positions = handle_positions(rect);
 
             for (px, py) in handle_positions.iter() {
@@ -1176,7 +1079,6 @@ impl Direct2DRenderer {
         Ok(())
     }
 
-    /// 测量多行文本尺寸
     pub fn measure_text_layout_size(
         &self,
         text: &str,
@@ -1210,7 +1112,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 将文本按指定宽度分行
     pub fn split_text_into_lines(
         &self,
         text: &str,
@@ -1254,7 +1155,6 @@ impl Direct2DRenderer {
                 if current_pos + len <= text_utf16.len() {
                     let line_utf16 = &text_utf16[current_pos..current_pos + len];
                     let line_str = String::from_utf16_lossy(line_utf16);
-                    // 移除行末换行符，便于逐行渲染
                     lines.push(line_str.trim_end_matches(&['\r', '\n'][..]).to_string());
                     current_pos += len;
                 }
@@ -1264,7 +1164,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 根据坐标获取文本位置 (用于点击测试)
     pub fn get_text_position_from_point(
         &self,
         text: &str,
@@ -1328,7 +1227,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 绘制 D2D 位图
     pub fn draw_d2d_bitmap(
         &self,
         bitmap: &ID2D1Bitmap,
@@ -1354,7 +1252,6 @@ impl Direct2DRenderer {
         }
     }
 
-    /// 清除背景
     pub fn clear_background(
         &self,
         color: Option<D2D1_COLOR_F>,
@@ -1378,25 +1275,14 @@ impl Direct2DRenderer {
     }
 
     // =====================================================================
-    // 静态层缓存相关方法
     // =====================================================================
 
-    /// 检查 layer_target 是否有效
     pub fn is_layer_target_valid(&self) -> bool {
         self.layer_target.is_some()
     }
 
-    /// 更新静态缓存层
-    ///
-    /// 调用者提供的闭包将被用于绘制静态元素到 layer_target。
-    /// 该方法会：
-    /// 1. 获取/创建 layer_target
     /// 2. BeginDraw
-    /// 3. 清空背景（透明）
-    /// 4. 执行闭包绘制静态元素
     /// 5. EndDraw
-    ///
-    /// 支持传递额外的上下文数据给闭包（如 GeometryCache 引用），避免不必要的 clone。
     pub fn update_static_layer_with_context<F, C>(
         &mut self,
         context: C,
@@ -1405,7 +1291,6 @@ impl Direct2DRenderer {
     where
         F: FnOnce(&ID2D1RenderTarget, &mut Self, C) -> std::result::Result<(), PlatformError>,
     {
-        // 确保 layer_target 存在
         if self.layer_target.is_none() {
             self.get_or_create_layer_target();
         }
@@ -1443,9 +1328,6 @@ impl Direct2DRenderer {
         result
     }
 
-    /// 绘制静态缓存层到屏幕
-    ///
-    /// 将 layer_target 的内容作为位图绘制到主 render_target
     pub fn draw_static_layer(&self) -> std::result::Result<(), PlatformError> {
         let render_target = self.render_target.as_ref().ok_or_else(|| {
             PlatformError::ResourceError("No render target available".to_string())
@@ -1457,7 +1339,6 @@ impl Direct2DRenderer {
             .ok_or_else(|| PlatformError::ResourceError("No layer target available".to_string()))?;
 
         unsafe {
-            // 从 layer_target 获取位图
             let bitmap = layer_target.GetBitmap().map_err(|e| {
                 PlatformError::ResourceError(format!(
                     "Failed to get bitmap from layer target: {:?}",
@@ -1465,20 +1346,18 @@ impl Direct2DRenderer {
                 ))
             })?;
 
-            // 绘制到主 render_target 的 (0,0) 位置
             render_target.DrawBitmap(
                 &bitmap,
-                None, // dest_rect: 全屏
-                1.0,  // opacity
+                None,
+                1.0, // opacity
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                None, // source_rect: 全图
+                None,
             );
         }
 
         Ok(())
     }
 
-    /// 获取 layer_target 的引用（用于外部直接绘制）
     pub fn get_layer_target(&self) -> Option<&ID2D1BitmapRenderTarget> {
         self.layer_target.as_ref()
     }
@@ -1488,14 +1367,14 @@ fn handle_positions(rect: Rectangle) -> [(f32, f32); 8] {
     let cx = rect.x + rect.width / 2.0;
     let cy = rect.y + rect.height / 2.0;
     [
-        (rect.x, rect.y),                            // 左上
-        (cx, rect.y),                                // 上中
-        (rect.x + rect.width, rect.y),               // 右上
-        (rect.x + rect.width, cy),                   // 右中
-        (rect.x + rect.width, rect.y + rect.height), // 右下
-        (cx, rect.y + rect.height),                  // 下中
-        (rect.x, rect.y + rect.height),              // 左下
-        (rect.x, cy),                                // 左中
+        (rect.x, rect.y),
+        (cx, rect.y),
+        (rect.x + rect.width, rect.y),
+        (rect.x + rect.width, cy),
+        (rect.x + rect.width, rect.y + rect.height),
+        (cx, rect.y + rect.height),
+        (rect.x, rect.y + rect.height),
+        (rect.x, cy),
     ]
 }
 fn rect_to_d2d(rect: Rectangle) -> D2D_RECT_F {
@@ -1651,7 +1530,6 @@ fn begin_offscreen_draw(
     unsafe {
         offscreen_target.BeginDraw();
 
-        // 清除背景
         let clear_color = D2D1_COLOR_F {
             r: 1.0,
             g: 1.0,
@@ -1660,7 +1538,6 @@ fn begin_offscreen_draw(
         };
         offscreen_target.Clear(Some(&clear_color));
 
-        // 绘制源位图（选择区域）
         let dest_rect = D2D_RECT_F {
             left: 0.0,
             top: 0.0,
@@ -1699,7 +1576,7 @@ fn read_pixels_from_gdi_target(
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: width as i32,
-                biHeight: -(height as i32), // 负值表示自上而下
+                biHeight: -(height as i32),
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -1715,7 +1592,6 @@ fn read_pixels_from_gdi_target(
         let data_size = (width * height * 4) as usize;
         let mut pixel_data = vec![0u8; data_size];
 
-        // 获取当前选中的位图
         let current_obj = GetCurrentObject(hdc, OBJ_BITMAP);
         let hbitmap = HBITMAP(current_obj.0);
 
@@ -1729,11 +1605,9 @@ fn read_pixels_from_gdi_target(
             DIB_RGB_COLORS,
         );
 
-        // 释放DC（必须在EndDraw之前）
         let _ = gdi_target.ReleaseDC(None);
 
         if result == 0 {
-            // 仍然需要EndDraw
             let _ = offscreen_target.EndDraw(None, None);
             return Err(PlatformError::ResourceError(
                 "Failed to get bitmap pixels".to_string(),
@@ -1745,33 +1619,30 @@ fn read_pixels_from_gdi_target(
 }
 
 fn build_bmp_bytes(width: u32, height: u32, pixel_data: &[u8]) -> Vec<u8> {
-    let row_size = (width * 4).div_ceil(4) * 4; // 4字节对齐
+    let row_size = (width * 4).div_ceil(4) * 4;
     let image_size = row_size * height;
     let file_size = 54 + image_size;
 
     let mut bmp_data = Vec::with_capacity(file_size as usize);
 
-    // BMP 文件头 (14 字节)
-    bmp_data.extend_from_slice(b"BM"); // 签名
-    bmp_data.extend_from_slice(&file_size.to_le_bytes()); // 文件大小
-    bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留1
-    bmp_data.extend_from_slice(&0u16.to_le_bytes()); // 保留2
-    bmp_data.extend_from_slice(&54u32.to_le_bytes()); // 数据偏移
+    bmp_data.extend_from_slice(b"BM");
+    bmp_data.extend_from_slice(&file_size.to_le_bytes());
+    bmp_data.extend_from_slice(&0u16.to_le_bytes());
+    bmp_data.extend_from_slice(&0u16.to_le_bytes());
+    bmp_data.extend_from_slice(&54u32.to_le_bytes());
 
-    // DIB 头 (40 字节)
-    bmp_data.extend_from_slice(&40u32.to_le_bytes()); // 头大小
-    bmp_data.extend_from_slice(&(width as i32).to_le_bytes()); // 宽度
-    bmp_data.extend_from_slice(&(-(height as i32)).to_le_bytes()); // 高度 (Top-Down)
-    bmp_data.extend_from_slice(&1u16.to_le_bytes()); // 颜色平面
-    bmp_data.extend_from_slice(&32u16.to_le_bytes()); // 位深度
-    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 压缩方式 (BI_RGB)
-    bmp_data.extend_from_slice(&image_size.to_le_bytes()); // 图像大小
-    bmp_data.extend_from_slice(&0i32.to_le_bytes()); // X 分辨率
-    bmp_data.extend_from_slice(&0i32.to_le_bytes()); // Y 分辨率
-    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 颜色数
-    bmp_data.extend_from_slice(&0u32.to_le_bytes()); // 重要颜色数
+    bmp_data.extend_from_slice(&40u32.to_le_bytes());
+    bmp_data.extend_from_slice(&(width as i32).to_le_bytes());
+    bmp_data.extend_from_slice(&(-(height as i32)).to_le_bytes());
+    bmp_data.extend_from_slice(&1u16.to_le_bytes());
+    bmp_data.extend_from_slice(&32u16.to_le_bytes());
+    bmp_data.extend_from_slice(&0u32.to_le_bytes());
+    bmp_data.extend_from_slice(&image_size.to_le_bytes());
+    bmp_data.extend_from_slice(&0i32.to_le_bytes());
+    bmp_data.extend_from_slice(&0i32.to_le_bytes());
+    bmp_data.extend_from_slice(&0u32.to_le_bytes());
+    bmp_data.extend_from_slice(&0u32.to_le_bytes());
 
-    // 像素数据
     bmp_data.extend_from_slice(pixel_data);
 
     bmp_data

@@ -29,7 +29,6 @@ use crate::constants::{
     OCR_PANEL_GAP, OCR_TEXT_LINE_HEIGHT, OCR_TEXT_PANEL_WIDTH, TITLE_BAR_HEIGHT,
 };
 
-/// 预览显示窗口 (支持 OCR 结果和 Pin 模式)
 pub struct PreviewWindow;
 
 pub(super) const WM_APP_PREVIEW_OCR_DONE: u32 = WM_APP + 300;
@@ -52,7 +51,6 @@ fn ocr_response_store() -> &'static Mutex<HashMap<u64, OcrResponse>> {
 
 pub(super) struct PreviewWindowState {
     pub(super) hwnd: HWND,
-    // 原始图像数据，用于 D2D 位图创建
     pub(super) image_pixels: Vec<u8>,
     pub(super) image_width: i32,
     pub(super) image_height: i32,
@@ -63,18 +61,15 @@ pub(super) struct PreviewWindowState {
     pub(super) is_maximized: bool,
     pub(super) svg_icons: Vec<SvgIcon>,
 
-    // 自绘文本相关
     pub(super) text_content: String,
     pub(super) scroll_offset: i32,
     pub(super) line_height: i32,
     pub(super) text_lines: Vec<String>,
 
-    // 文本选择相关
     pub(super) is_selecting: bool,
     pub(super) selection_start: Option<(usize, usize)>,
     pub(super) selection_end: Option<(usize, usize)>,
 
-    // 置顶/Pin 状态
     pub(super) is_pinned: bool,
     pub(super) show_text_area: bool,
 
@@ -84,10 +79,8 @@ pub(super) struct PreviewWindowState {
     pub(super) ocr_in_flight: bool,
     pub(super) ocr_request_id: u64,
 
-    // Direct2D 渲染器
     pub(super) renderer: Option<PreviewRenderer>,
 
-    // 绘图功能
     pub(super) drawing_state: Option<PreviewDrawingState>,
 }
 
@@ -656,20 +649,16 @@ impl PreviewWindowState {
     pub(super) fn update_title_bar_buttons(&mut self) {
         let window_width = self.window_width;
 
-        // 移除旧的标题栏按钮，保留左侧图标
         self.svg_icons.retain(|icon| !icon.is_title_bar_button);
 
-        // 确保有左侧图标
         let has_left_icons = self.svg_icons.iter().any(|icon| !icon.is_title_bar_button);
         if !has_left_icons {
             let mut left_icons = Self::create_left_icons();
             self.svg_icons.append(&mut left_icons);
         }
 
-        // 更新所有左侧图标的位置
         self.center_icons_with(|icon| !icon.is_title_bar_button);
 
-        // 创建新的标题栏按钮
         let mut title_bar_buttons = Self::create_title_bar_buttons(window_width, self.is_maximized);
         self.svg_icons.append(&mut title_bar_buttons);
 
@@ -720,7 +709,6 @@ impl PreviewWindowState {
                 hInstance: instance.into(),
                 lpszClassName: class_name,
                 hCursor: cursor,
-                // 关键：使用黑色背景刷，防止调整大小时出现白色闪烁
                 hbrBackground: bg_brush,
                 style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
                 hIcon: HICON::default(),
@@ -736,7 +724,6 @@ impl PreviewWindowState {
                 }
             }
 
-            // 解析图片与计算尺寸
             let (image_pixels, actual_width, actual_height) = Self::parse_bmp_data(&image_data)?;
 
             let (text_content, show_text_area, ocr_cached_text) =
@@ -745,13 +732,11 @@ impl PreviewWindowState {
             // Choose OCR source image: if not provided, default to the display image.
             let ocr_source_bmp_data = ocr_source_bmp_data.unwrap_or(image_data);
 
-            // 布局计算
             let (mut window_width, window_height) =
                 Self::compute_window_size(actual_width, actual_height, show_text_area);
 
             window_width = window_width.max(Self::min_window_width_for_title_bar());
 
-            // 计算位置
             let screen_size = WindowsHostPlatform::new().screen_size();
             let (window_x, window_y) = Self::compute_window_position(
                 selection_rect,

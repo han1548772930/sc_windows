@@ -8,7 +8,6 @@ use sc_platform_windows::windows::Direct2DRenderer;
 use super::{DrawingError, DrawingManager};
 
 impl DrawingManager {
-    /// 渲染绘图元素到指定的渲染目标（用于离屏合成/导出）
     pub fn render_elements_to_target(
         &self,
         render_target: &ID2D1RenderTarget,
@@ -21,7 +20,6 @@ impl DrawingManager {
             .ok_or_else(|| DrawingError::RenderError("No D2D factory available".to_string()))?;
         let dwrite_factory = d2d_renderer.dwrite_factory.as_ref();
 
-        // 计算偏移量：元素坐标是屏幕坐标，需要转换为离屏目标坐标
         let offset_x = -(selection_rect.left as f32);
         let offset_y = -(selection_rect.top as f32);
 
@@ -38,7 +36,6 @@ impl DrawingManager {
             .map_err(|e| DrawingError::RenderError(e.to_string()))
     }
 
-    /// 渲染绘图元素（支持裁剪区域 + 静态层缓存）
     pub fn render(
         &mut self,
         d2d_renderer: &mut Direct2DRenderer,

@@ -1,7 +1,6 @@
 use sc_rendering::{Color, Rectangle, RenderItem, RenderList, z_order};
 
 /// Platform-neutral integer rectangle.
-///
 /// We intentionally reuse the core `RectI32` so UI and core share the same geometry type.
 pub use sc_app::selection::RectI32;
 

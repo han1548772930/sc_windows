@@ -21,7 +21,6 @@ pub enum ToolbarButton {
 }
 
 /// Deterministic ordering of buttons in the toolbar.
-///
 /// Keep this aligned with the legacy host toolbar ordering.
 pub const TOOLBAR_BUTTONS: [ToolbarButton; 12] = [
     ToolbarButton::Rectangle,
@@ -128,7 +127,6 @@ impl ToolbarLayout {
 }
 
 /// Compute toolbar layout for a given selection.
-///
 /// Returns `None` when there is no selection rect.
 pub fn layout_toolbar(
     screen_size: (i32, i32),
@@ -189,7 +187,6 @@ pub fn layout_toolbar(
 }
 
 /// Build a render list for the toolbar background and hovered-button highlight.
-///
 /// Icon rendering is intentionally excluded.
 pub fn build_toolbar_background_render_list(
     layout: &ToolbarLayout,
@@ -230,7 +227,6 @@ pub fn build_toolbar_background_render_list(
 }
 
 /// Build a full toolbar view (layout + background render list) for a given selection.
-///
 /// Returns `None` when there is no selection rect.
 pub fn build_toolbar_view(
     screen_size: (i32, i32),

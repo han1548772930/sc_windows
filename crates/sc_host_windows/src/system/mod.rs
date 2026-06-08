@@ -16,11 +16,9 @@ use crate::HostEvent;
 use crate::constants::HOTKEY_SCREENSHOT_ID;
 use crate::screenshot::ScreenshotManager;
 
-/// 系统管理器
 pub struct SystemManager {
     /// Shared settings snapshot (used for OCR config, hotkeys, etc.).
     settings: Arc<RwLock<Settings>>,
-    /// OCR 引擎实例
     ocr_engine: Arc<Mutex<Option<OcrEngine>>>,
     ocr_generation: Arc<AtomicU64>,
 
@@ -29,10 +27,6 @@ pub struct SystemManager {
 }
 
 impl SystemManager {
-    /// 创建新的系统管理器
-    ///
-    /// # 参数
-    /// - `settings`: 共享的配置引用
     pub fn new(
         settings: Arc<RwLock<Settings>>,
         events: UserEventSender<HostEvent>,
@@ -45,13 +39,10 @@ impl SystemManager {
         })
     }
 
-    /// 处理键盘输入（全局快捷键）
     pub fn handle_key_input(&mut self, _key: u32) -> Vec<Command> {
-        // 全局热键通过 Win32 `WM_HOTKEY` 处理（不走普通 KeyDown 输入）。
         vec![]
     }
 
-    /// 初始化系统集成
     pub fn initialize(
         &mut self,
         window: WindowId,
@@ -78,7 +69,6 @@ impl SystemManager {
             eprintln!("Failed to register hotkey: {e}");
         }
 
-        // 异步启动 OCR 引擎
         self.start_ocr_engine_async();
 
         Ok(())
@@ -95,7 +85,6 @@ impl SystemManager {
         }
     }
 
-    /// 清理系统资源
     pub fn cleanup(&mut self) {
         // Keep Drop-safe cleanup here (no HostPlatform reference).
         self.stop_ocr_engine_sync();
@@ -113,8 +102,6 @@ impl SystemManager {
         }
     }
 
-    // ========== OCR 引擎管理 ==========
-
     fn ocr_config(&self) -> OcrConfig {
         let settings = self.settings.read().unwrap_or_else(|e| e.into_inner());
         OcrConfig::new(
@@ -123,7 +110,6 @@ impl SystemManager {
         )
     }
 
-    /// 异步启动 OCR 引擎
     pub fn start_ocr_engine_async(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
         let generation = self.ocr_generation.load(Ordering::Acquire);
@@ -139,7 +125,6 @@ impl SystemManager {
         });
     }
 
-    /// 同步启动 OCR 引擎（内部实现）
     fn start_ocr_engine_sync_inner(
         engine_arc: &Arc<Mutex<Option<OcrEngine>>>,
         config: &OcrConfig,
@@ -150,7 +135,7 @@ impl SystemManager {
         };
 
         if engine_guard.is_some() {
-            return true; // 已经启动
+            return true;
         }
 
         #[cfg(debug_assertions)]
@@ -173,7 +158,6 @@ impl SystemManager {
         }
     }
 
-    /// 同步停止 OCR 引擎
     fn stop_ocr_engine_sync(&self) {
         self.ocr_generation.fetch_add(1, Ordering::AcqRel);
         if let Ok(mut engine_guard) = self.ocr_engine.lock()
@@ -187,7 +171,6 @@ impl SystemManager {
         }
     }
 
-    /// 异步停止 OCR 引擎
     pub fn stop_ocr_engine_async(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
         self.ocr_generation.fetch_add(1, Ordering::AcqRel);
@@ -200,7 +183,6 @@ impl SystemManager {
         });
     }
 
-    /// 检查 OCR 引擎是否已准备就绪
     pub fn is_ocr_engine_ready(&self) -> bool {
         if let Ok(engine_guard) = self.ocr_engine.try_lock() {
             return engine_guard.is_some();
@@ -208,12 +190,10 @@ impl SystemManager {
         false
     }
 
-    /// 检查 OCR 引擎是否可用（模型存在且引擎就绪）
     pub fn ocr_is_available(&self) -> bool {
         sc_ocr::models_exist(&self.ocr_config()) && self.is_ocr_engine_ready()
     }
 
-    /// 启动异步 OCR 引擎状态检查
     pub fn start_async_ocr_check(&self) {
         let engine_arc = Arc::clone(&self.ocr_engine);
         let generation = self.ocr_generation.load(Ordering::Acquire);
@@ -236,12 +216,10 @@ impl SystemManager {
         });
     }
 
-    /// 重新加载设置
     pub fn reload_settings(&mut self) {
         // Currently no-op. Hotkey updates happen via `reregister_hotkey`.
     }
 
-    /// 重新注册热键
     pub fn reregister_hotkey(
         &mut self,
         window: WindowId,
@@ -257,7 +235,6 @@ impl SystemManager {
         host_platform.set_global_hotkey(window, HOTKEY_SCREENSHOT_ID, hotkey_modifiers, hotkey_key)
     }
 
-    /// 从选择区域识别文本
     pub fn recognize_text_from_selection(
         &self,
         selection_rect: core_selection::RectI32,
@@ -265,7 +242,6 @@ impl SystemManager {
         screenshot_manager: &mut ScreenshotManager,
         host_platform: &dyn HostPlatform<WindowHandle = WindowId>,
     ) -> Result<(), SystemError> {
-        // 检查 OCR 引擎是否可用
         if !self.ocr_is_available() {
             host_platform.show_error_message(
                 window,
@@ -275,7 +251,6 @@ impl SystemManager {
             return Ok(());
         }
 
-        // 获取缓存的图像数据
         let cached_image = screenshot_manager
             .get_current_image_data()
             .map(|d| d.to_vec());
@@ -283,11 +258,9 @@ impl SystemManager {
         let engine_arc = Arc::clone(&self.ocr_engine);
         let generation = self.ocr_generation.load(Ordering::Acquire);
 
-        // 异步执行 OCR
         let events = self.events.clone();
 
         std::thread::spawn(move || {
-            // 检查选区大小
             let width = selection_rect.right - selection_rect.left;
             let height = selection_rect.bottom - selection_rect.top;
             if width <= 0 || height <= 0 {
@@ -295,14 +268,12 @@ impl SystemManager {
                 return;
             }
 
-            // 获取图像数据
             let Some(ref data) = cached_image else {
                 eprintln!("没有缓存图像数据");
                 let _ = events.send(HostEvent::OcrCancelled { generation });
                 return;
             };
 
-            // 裁剪图像
             let crop_rect: Rect = selection_rect.into();
             let cropped = match crop_bmp(data, &crop_rect) {
                 Ok(cropped) => cropped,
@@ -313,7 +284,6 @@ impl SystemManager {
                 }
             };
 
-            // 执行 OCR 识别
             let line_results = {
                 let engine_guard = match engine_arc.lock() {
                     Ok(guard) => guard,
@@ -371,20 +341,13 @@ impl Drop for SystemManager {
     }
 }
 
-/// 系统错误类型
 #[derive(Debug)]
 pub enum SystemError {
-    /// 托盘错误
     TrayError(String),
-    /// 热键错误
     HotkeyError(String),
-    /// 窗口检测错误
     WindowDetectionError(String),
-    /// OCR错误
     OcrError(String),
-    /// 初始化错误
     InitError(String),
-    /// 窗口枚举失败
     WindowEnumerationFailed,
 }
 

@@ -2,29 +2,14 @@ use std::collections::{HashMap, HashSet};
 use windows::Win32::Graphics::Direct2D::ID2D1PathGeometry;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 
-/// 元素唯一标识符
-///
-/// 使用 `DrawingElement::id`（u64）作为 key，避免与元素索引混淆。
 pub type ElementId = u64;
 
-/// 几何体缓存管理器
-///
-/// 集中管理所有绘图元素的几何体缓存，提供以下优势：
-/// - 统一的缓存失效策略
-/// - LRU淘汰机制（可选）
-/// - 内存使用监控
 pub struct GeometryCache {
-    /// 路径几何体缓存
     path_cache: HashMap<ElementId, ID2D1PathGeometry>,
-    /// 文本布局缓存
     text_cache: HashMap<ElementId, IDWriteTextLayout>,
-    /// 脏标记集合（需要重建缓存的元素）
     dirty_flags: HashSet<ElementId>,
-    /// 最大缓存条目数
     max_entries: usize,
-    /// 缓存命中计数
     hit_count: u64,
-    /// 缓存未命中计数
     miss_count: u64,
 }
 
@@ -35,10 +20,8 @@ impl Default for GeometryCache {
 }
 
 impl GeometryCache {
-    /// 默认最大缓存条目数
     pub const DEFAULT_MAX_ENTRIES: usize = 500;
 
-    /// 创建新的几何体缓存管理器
     pub fn new() -> Self {
         Self {
             path_cache: HashMap::new(),
@@ -50,7 +33,6 @@ impl GeometryCache {
         }
     }
 
-    /// 创建带自定义容量的缓存管理器
     pub fn with_capacity(max_entries: usize) -> Self {
         Self {
             path_cache: HashMap::with_capacity(max_entries / 2),
@@ -62,7 +44,6 @@ impl GeometryCache {
         }
     }
 
-    /// 获取或创建路径几何体
     pub fn get_or_create_path<F>(&mut self, id: ElementId, creator: F) -> Option<&ID2D1PathGeometry>
     where
         F: FnOnce() -> Option<ID2D1PathGeometry>,
@@ -87,7 +68,6 @@ impl GeometryCache {
         None
     }
 
-    /// 获取或创建文本布局
     pub fn get_or_create_text<F>(&mut self, id: ElementId, creator: F) -> Option<&IDWriteTextLayout>
     where
         F: FnOnce() -> Option<IDWriteTextLayout>,
@@ -112,40 +92,34 @@ impl GeometryCache {
         None
     }
 
-    /// 标记元素为脏（需要重建缓存）
     pub fn mark_dirty(&mut self, id: ElementId) {
         self.dirty_flags.insert(id);
     }
 
-    /// 标记多个元素为脏
     pub fn mark_dirty_batch(&mut self, ids: &[ElementId]) {
         for &id in ids {
             self.dirty_flags.insert(id);
         }
     }
 
-    /// 使所有缓存失效
     pub fn invalidate_all(&mut self) {
         self.path_cache.clear();
         self.text_cache.clear();
         self.dirty_flags.clear();
     }
 
-    /// 移除指定元素的缓存
     pub fn remove(&mut self, id: ElementId) {
         self.path_cache.remove(&id);
         self.text_cache.remove(&id);
         self.dirty_flags.remove(&id);
     }
 
-    /// 批量移除缓存
     pub fn remove_batch(&mut self, ids: &[ElementId]) {
         for &id in ids {
             self.remove(id);
         }
     }
 
-    /// 获取缓存统计信息
     pub fn get_stats(&self) -> CacheStats {
         CacheStats {
             path_count: self.path_cache.len(),
@@ -161,13 +135,11 @@ impl GeometryCache {
         }
     }
 
-    /// 重置统计计数器
     pub fn reset_stats(&mut self) {
         self.hit_count = 0;
         self.miss_count = 0;
     }
 
-    /// 强制执行容量限制
     fn enforce_capacity_limit(&mut self) {
         let total = self.path_cache.len() + self.text_cache.len();
         if total >= self.max_entries {
@@ -195,17 +167,14 @@ impl GeometryCache {
         }
     }
 
-    /// 检查路径缓存是否存在
     pub fn has_path(&self, id: ElementId) -> bool {
         self.path_cache.contains_key(&id) && !self.dirty_flags.contains(&id)
     }
 
-    /// 检查文本缓存是否存在
     pub fn has_text(&self, id: ElementId) -> bool {
         self.text_cache.contains_key(&id) && !self.dirty_flags.contains(&id)
     }
 
-    /// 获取已缓存的路径几何体（只读）
     pub fn get_path(&self, id: ElementId) -> Option<&ID2D1PathGeometry> {
         if self.dirty_flags.contains(&id) {
             return None;
@@ -214,7 +183,6 @@ impl GeometryCache {
     }
 }
 
-/// 缓存统计信息
 #[derive(Debug, Clone)]
 pub struct CacheStats {
     pub path_count: usize,

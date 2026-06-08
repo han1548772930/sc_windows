@@ -6,7 +6,6 @@ use crate::Rect;
 use crate::windows::context::{BorderStyle, RenderContext, RenderOptions};
 use crate::windows::renderable::{RenderError, RenderResult};
 
-/// 渲染选中边框
 pub fn render_selection_border(
     bounds: Rect,
     ctx: &mut RenderContext,
@@ -41,7 +40,6 @@ pub fn render_selection_border(
     Ok(())
 }
 
-/// 渲染8个手柄（四角 + 四边中点）
 pub fn render_handles_8(
     bounds: Rect,
     ctx: &mut RenderContext,
@@ -57,20 +55,19 @@ pub fn render_handles_8(
     let mid_y = (top + bottom) / 2.0;
 
     let positions = [
-        (left, top),     // 左上
-        (mid_x, top),    // 上中
-        (right, top),    // 右上
-        (right, mid_y),  // 右中
-        (right, bottom), // 右下
-        (mid_x, bottom), // 下中
-        (left, bottom),  // 左下
-        (left, mid_y),   // 左中
+        (left, top),
+        (mid_x, top),
+        (right, top),
+        (right, mid_y),
+        (right, bottom),
+        (mid_x, bottom),
+        (left, bottom),
+        (left, mid_y),
     ];
 
     render_handle_circles(ctx, &positions, options)
 }
 
-/// 渲染4个角手柄
 pub fn render_handles_corners(
     bounds: Rect,
     ctx: &mut RenderContext,
@@ -86,7 +83,6 @@ pub fn render_handles_corners(
     render_handle_circles(ctx, &positions, options)
 }
 
-/// 渲染手柄圆形
 fn render_handle_circles(
     ctx: &mut RenderContext,
     positions: &[(f32, f32)],
@@ -119,7 +115,6 @@ fn render_handle_circles(
     Ok(())
 }
 
-/// 渲染两端点手柄（用于箭头）
 pub fn render_endpoint_handles(
     start: (f32, f32),
     end: (f32, f32),

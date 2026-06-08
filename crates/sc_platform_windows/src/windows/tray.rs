@@ -44,7 +44,6 @@ impl From<windows::core::Error> for TrayIconError {
 
 pub type Result<T> = std::result::Result<T, TrayIconError>;
 
-/// 创建默认图标（从嵌入数据加载；失败则回退到系统默认图标）
 pub fn create_default_icon() -> Result<HICON> {
     // SAFETY: `include_bytes!` embeds the icon at compile time.
     const ICON_DATA: &[u8] = include_bytes!(concat!(
@@ -55,27 +54,23 @@ pub fn create_default_icon() -> Result<HICON> {
     match load_embedded_icon(ICON_DATA) {
         Ok(icon) => Ok(icon),
         Err(_e) => {
-            // 如果嵌入图标加载失败，使用系统默认图标
             // SAFETY: LoadIconW is a Win32 API.
             unsafe { LoadIconW(None, IDI_APPLICATION) }.map_err(TrayIconError::from)
         }
     }
 }
 
-/// 从嵌入的字节数据直接加载图标（ICO 格式需要文件路径）
 fn load_embedded_icon(icon_data: &[u8]) -> Result<HICON> {
-    // 创建临时文件来存储图标数据
     let temp_path = std::env::temp_dir().join("temp_tray_icon.ico");
     std::fs::write(&temp_path, icon_data)?;
 
-    // 直接加载 ICO 文件
     let path_wide = to_wide_chars(&temp_path.to_string_lossy());
     let result = unsafe {
         LoadImageW(
             None,
             PCWSTR(path_wide.as_ptr()),
             IMAGE_ICON,
-            16, // 系统托盘图标标准大小
+            16,
             16,
             LR_LOADFROMFILE,
         )
@@ -83,15 +78,11 @@ fn load_embedded_icon(icon_data: &[u8]) -> Result<HICON> {
     .map(|h| HICON(h.0))
     .map_err(TrayIconError::from);
 
-    // 清理临时文件
     let _ = std::fs::remove_file(&temp_path);
 
     result
 }
 
-/// 添加托盘图标。
-///
-/// `callback_message` 应为 `WM_USER + N` 形式的自定义消息。
 pub fn add_tray_icon(
     hwnd: HWND,
     icon_id: u32,
@@ -120,7 +111,6 @@ pub fn add_tray_icon(
     }
 }
 
-/// 删除托盘图标。
 pub fn delete_tray_icon(hwnd: HWND, icon_id: u32) -> bool {
     unsafe {
         let nid = NOTIFYICONDATAW {
@@ -135,9 +125,6 @@ pub fn delete_tray_icon(hwnd: HWND, icon_id: u32) -> bool {
     }
 }
 
-/// 显示默认的托盘右键菜单。
-///
-/// 返回选中的菜单项 ID；返回 0 表示用户取消/未选择。
 pub fn show_default_context_menu(hwnd: HWND) -> u32 {
     unsafe {
         let hmenu = CreatePopupMenu().unwrap_or_default();
@@ -145,7 +132,6 @@ pub fn show_default_context_menu(hwnd: HWND) -> u32 {
             return 0;
         }
 
-        // 添加菜单项（保持与 legacy host 逻辑一致）
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
@@ -157,14 +143,11 @@ pub fn show_default_context_menu(hwnd: HWND) -> u32 {
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(hmenu, MF_STRING, 1003, windows::core::w!("退出(&X)"));
 
-        // 获取鼠标位置
         let mut cursor_pos = POINT::default();
         let _ = GetCursorPos(&mut cursor_pos);
 
-        // 设置前台窗口以确保菜单正确显示
         let _ = SetForegroundWindow(hwnd);
 
-        // 显示菜单
         let cmd = TrackPopupMenu(
             hmenu,
             TPM_RIGHTBUTTON | TPM_RETURNCMD,

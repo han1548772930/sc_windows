@@ -316,7 +316,6 @@ pub fn recognize_text_by_lines(
 }
 
 /// Summarize OCR results into (has_results, is_failed, text).
-///
 /// This preserves existing host semantics:
 /// - `has_results` when the vector is non-empty
 /// - `is_failed` when the only result is the failure placeholder

@@ -3,7 +3,6 @@ use sc_platform::WindowId;
 use super::{SafeHwnd, hotkeys};
 
 /// Stateful global hotkey manager.
-///
 /// This lives in the Windows platform backend (similar to Zed's `gpui::platform::windows`).
 #[derive(Debug, Default)]
 pub struct HotkeyManager {

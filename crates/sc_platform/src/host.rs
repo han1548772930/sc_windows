@@ -1,7 +1,6 @@
 use crate::InputEvent;
 
 /// Opaque window identifier.
-///
 /// This is used to avoid leaking platform window handles (e.g. Win32 `HWND`) across crate
 /// boundaries. Platform backends can convert to/from raw handles as needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,7 +26,6 @@ impl WindowId {
 }
 
 /// Typed window events emitted by the platform runner.
-///
 /// These events are for window-level notifications that are not user input (see [`InputEvent`]).
 /// The platform runner may still need to handle certain messages itself (e.g. Win32 `WM_PAINT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +33,6 @@ pub enum WindowEvent {
     /// The window's client area has resized.
     Resized { width: i32, height: i32 },
     /// The window's per-monitor DPI has changed.
-    ///
     /// `suggested_rect` is the OS recommended new window bounds (left, top, right, bottom).
     DpiChanged {
         dpi_x: u32,
@@ -51,18 +48,15 @@ pub enum WindowEvent {
 }
 
 /// Minimal platform window-message handler.
-///
 /// This is intentionally low-level (raw message id + wparam/lparam) so the platform backend can own
 /// the event loop and window procedure, while the host app remains responsible for dispatching
 /// messages into higher-level events/commands.
-///
 /// Over time this can evolve into a more gpui-like typed event API.
 pub trait WindowMessageHandler {
     type WindowHandle: Copy;
     type UserEvent: Send + 'static;
 
     /// Handle a platform-agnostic input event.
-    ///
     /// Return `Some(result)` to mark the message as handled, or `None` to fall back to other message
     /// handling paths.
     fn handle_input_event(
@@ -72,7 +66,6 @@ pub trait WindowMessageHandler {
     ) -> Option<isize>;
 
     /// Handle a user-defined event delivered onto the window thread.
-    ///
     /// This is the preferred way to bridge background threads into the UI/event-loop thread.
     fn handle_user_event(
         &mut self,
@@ -83,7 +76,6 @@ pub trait WindowMessageHandler {
     }
 
     /// Handle a typed window event emitted by the platform runner.
-    ///
     /// Return `Some(result)` to mark the underlying message as handled, or `None` to continue with
     /// other message handling paths.
     fn handle_window_event(
@@ -95,7 +87,6 @@ pub trait WindowMessageHandler {
     }
 
     /// Handle a raw platform window message.
-    ///
     /// Return `Some(result)` to mark the message as handled, or `None` to fall back to the platform
     /// default procedure.
     fn handle_window_message(
@@ -107,7 +98,6 @@ pub trait WindowMessageHandler {
     ) -> Option<isize>;
 
     /// Handle a paint request.
-    ///
     /// The platform runner owns the WM_PAINT BeginPaint/EndPaint cycle; this hook is for issuing
     /// rendering work only.
     fn handle_paint(&mut self, _window: Self::WindowHandle) -> Option<isize> {
@@ -115,7 +105,6 @@ pub trait WindowMessageHandler {
     }
 
     /// Handle a close request.
-    ///
     /// If not overridden, the platform runner will fall back to the default window procedure.
     fn handle_close_requested(&mut self, _window: Self::WindowHandle) -> Option<isize> {
         None

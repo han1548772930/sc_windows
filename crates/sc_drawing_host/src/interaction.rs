@@ -13,7 +13,6 @@ use crate::constants::{
 use sc_host_protocol::{Command, DrawingMessage};
 
 impl DrawingManager {
-    /// 处理鼠标移动事件
     pub fn handle_mouse_move(
         &mut self,
         x: i32,
@@ -21,8 +20,6 @@ impl DrawingManager {
         selection_rect: Option<Rect>,
     ) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
-            // 添加拖拽距离阈值检查
-            // 只有当移动距离超过阈值时才开始真正的拖拽
             if is_drag_threshold_exceeded(
                 self.interaction_start_pos.x,
                 self.interaction_start_pos.y,
@@ -32,13 +29,10 @@ impl DrawingManager {
                 self.update_drag(x, y, selection_rect);
                 (vec![Command::RequestRedraw], true)
             } else {
-                // 移动距离不够，不进行拖拽，但仍然消费事件（因为鼠标已按下）
                 (vec![], true)
             }
         } else {
-            // 检查是否悬停在元素上（用于改变光标/预览）
             if let Some(_index) = self.elements.get_element_at_position(x, y) {
-                // 可在后续添加悬停反馈，但不消费事件
                 (vec![], false)
             } else {
                 (vec![], false)
@@ -46,12 +40,10 @@ impl DrawingManager {
         }
     }
 
-    /// 更新拖拽状态
     pub(super) fn update_drag(&mut self, x: i32, y: i32, selection_rect: Option<Rect>) {
         match &self.interaction_mode {
             ElementInteractionMode::Drawing => {
                 if let Some(ref mut element) = self.current_element {
-                    // 如果有选择框，限制绘制在选择框内
                     let (clamped_x, clamped_y) = if let Some(rect) = selection_rect {
                         clamp_to_rect(x, y, &rect)
                     } else {
@@ -61,7 +53,6 @@ impl DrawingManager {
                     match element.tool {
                         DrawingTool::Pen => {
                             element.add_point(clamped_x, clamped_y);
-                            // Pen 当前笔迹由 win_renderer 内部增量缓存处理
                         }
                         DrawingTool::Rectangle | DrawingTool::Circle | DrawingTool::Arrow => {
                             if element.points.is_empty() {
@@ -99,7 +90,6 @@ impl DrawingManager {
         }
     }
 
-    /// 处理调整大小拖拽
     fn handle_resize_drag(&mut self, x: i32, y: i32, resize_mode: DragMode) {
         if let Some(index) = self.selected_element
             && let Some(el) = self.elements.get_element_mut(index)
@@ -147,7 +137,6 @@ impl DrawingManager {
 
             match el.tool {
                 DrawingTool::Arrow => {
-                    // 仅支持通过左上角/右下角手柄调整起点/终点
                     if el.points.len() >= 2 {
                         match resize_mode {
                             DragMode::ResizingTopLeft => {
@@ -166,14 +155,12 @@ impl DrawingManager {
                     Self::apply_text_resize(el, resize_mode, dx, dy, start_rect, start_font_size);
                 }
                 _ => {
-                    // 其他元素按矩形调整
                     el.resize(new_rect);
                 }
             }
         }
     }
 
-    /// 应用文本元素调整大小（静态方法，避免借用冲突）
     fn apply_text_resize(
         el: &mut DrawingElement,
         resize_mode: DragMode,
@@ -182,7 +169,6 @@ impl DrawingManager {
         start_rect: Rect,
         start_font_size: f32,
     ) {
-        // 文本元素：只允许通过四个角等比例缩放
         let is_corner_resize = matches!(
             resize_mode,
             DragMode::ResizingTopLeft
@@ -203,7 +189,6 @@ impl DrawingManager {
                 );
             el.set_font_size(new_font_size);
 
-            // 计算等比例缩放后的新尺寸
             let mut new_width = (proportional_rect.right - proportional_rect.left).max(1);
             let mut new_height = (proportional_rect.bottom - proportional_rect.top).max(1);
 
@@ -212,7 +197,6 @@ impl DrawingManager {
             new_height = new_height.max(MIN_TEXT_HEIGHT);
 
             // IMPORTANT: keep the scaled rect tall enough to fit all explicit lines.
-            //
             // During proportional resize we scale the rect using floats and then truncate to i32,
             // while line height is derived from `ceil(font_size * TEXT_LINE_HEIGHT_SCALE)`. The
             // truncation can under-allocate by a few pixels, which makes the last line/caret spill
@@ -234,7 +218,6 @@ impl DrawingManager {
                 (line_count * line_height + (padding * 2.0).ceil() as i32).max(MIN_TEXT_HEIGHT);
             new_height = new_height.max(required_height);
 
-            // 根据拖拽的角确定新矩形的位置
             let proportional_rect = match resize_mode {
                 DragMode::ResizingTopLeft => Rect {
                     left: start_rect.right - new_width,
@@ -265,10 +248,8 @@ impl DrawingManager {
 
             el.resize(proportional_rect);
         }
-        // 边缘中点拖拽不做任何处理
     }
 
-    /// 检测指定元素矩形上的手柄命中
     pub fn get_element_handle_at_position(
         &self,
         x: i32,
@@ -277,7 +258,6 @@ impl DrawingManager {
         tool: DrawingTool,
         element_index: usize,
     ) -> DragMode {
-        // 获取元素的点集合（用于箭头等特殊元素）
         let element_points = self
             .elements
             .get_elements()
@@ -298,30 +278,25 @@ impl DrawingManager {
         }
     }
 
-    /// 处理鼠标按下事件
     pub fn handle_mouse_down(
         &mut self,
         x: i32,
         y: i32,
         selection_rect: Option<Rect>,
     ) -> (Vec<Command>, bool) {
-        // 重置标志
         self.just_saved_text = false;
 
-        // 约束：除UI外，绘图交互仅在选择框内生效
         let inside_selection = match selection_rect {
             Some(r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom,
             None => true,
         };
 
-        // 文本编辑状态下的特殊处理
         if self.text_editing
             && let Some(editing_index) = self.editing_element_index
         {
             if let Some(element) = self.elements.get_elements().get(editing_index)
                 && element.contains_point(x, y)
             {
-                // 点击正在编辑的文本元素，检查是否点击了手柄
                 let handle_mode = self.get_element_handle_at_position(
                     x,
                     y,
@@ -344,7 +319,6 @@ impl DrawingManager {
             return (stop_commands, true);
         }
 
-        // 文本工具特殊处理
         if inside_selection
             && self.current_tool == DrawingTool::Text
             && !self.text_editing
@@ -374,13 +348,10 @@ impl DrawingManager {
             }
         }
 
-        // 选择框外不消费
         if !inside_selection && selection_rect.is_some() {
             return (vec![], false);
         }
 
-        // 先尝试与现有元素交互
-        // 1) 已选元素的手柄优先
         if inside_selection
             && let Some(sel_idx) = self.selected_element
             && let Some(element) = self.elements.get_elements().get(sel_idx)
@@ -397,7 +368,6 @@ impl DrawingManager {
                 self.interaction_start_points = element.points.clone();
                 return (vec![Command::RequestRedraw], true);
             }
-            // 2) 已选元素内部（移动）
             if element.contains_point(x, y) {
                 let element_visible = if let Some(sel_rect) = selection_rect {
                     self.elements.is_element_visible_in_rect(element, &sel_rect)
@@ -416,7 +386,6 @@ impl DrawingManager {
             }
         }
 
-        // 3) 检查是否点击其他元素
         if inside_selection
             && let Some(idx) = self
                 .elements
@@ -463,7 +432,6 @@ impl DrawingManager {
             }
         }
 
-        // 4) 若没有元素命中，且选择了绘图工具，则尝试开始绘制
         if self.current_tool != DrawingTool::None {
             if inside_selection {
                 if self.current_tool == DrawingTool::Text {
@@ -477,7 +445,6 @@ impl DrawingManager {
             return (vec![], false);
         }
 
-        // 5) 工具为None且未命中元素：清除选中
         if self.selected_element.is_some() {
             self.selected_element = None;
             self.elements.set_selected(None);
@@ -488,7 +455,6 @@ impl DrawingManager {
         }
     }
 
-    /// 开始绘制形状
     pub(super) fn start_drawing_shape(&mut self, x: i32, y: i32) {
         if self.selected_element.is_some() {
             self.static_layer_dirty = true;
@@ -538,7 +504,6 @@ impl DrawingManager {
         self.current_element = Some(new_element);
     }
 
-    /// 处理鼠标释放事件
     pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) -> (Vec<Command>, bool) {
         if self.mouse_pressed {
             self.end_drag();
@@ -550,12 +515,10 @@ impl DrawingManager {
         }
     }
 
-    /// 结束拖拽
     pub(super) fn end_drag(&mut self) {
         match &self.interaction_mode {
             ElementInteractionMode::Drawing => {
                 if let Some(mut element) = self.current_element.take() {
-                    //清理 Pen 工具的增量绘制缓存
                     if element.tool == DrawingTool::Pen {
                         self.win_renderer.clear_pen_stroke_cache();
                     }
@@ -650,7 +613,6 @@ impl DrawingManager {
         }
     }
 
-    /// 处理键盘输入
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
         if self.text_editing {
             match key {
@@ -667,7 +629,6 @@ impl DrawingManager {
             }
         }
 
-        // 常规键盘快捷键
         match key {
             26 => self.handle_message(DrawingMessage::Undo), // Ctrl+Z
             25 => self.handle_message(DrawingMessage::Redo), // Ctrl+Y
@@ -683,7 +644,6 @@ impl DrawingManager {
         }
     }
 
-    /// 处理双击事件
     pub fn handle_double_click(
         &mut self,
         x: i32,
@@ -696,7 +656,6 @@ impl DrawingManager {
         vec![]
     }
 
-    /// 获取当前拖拽模式（用于光标显示）
     pub fn get_current_drag_mode(&self) -> Option<DragMode> {
         match &self.interaction_mode {
             ElementInteractionMode::MovingElement => Some(DragMode::Moving),
@@ -705,7 +664,6 @@ impl DrawingManager {
         }
     }
 
-    /// 是否正在进行任何绘图交互
     pub fn is_dragging(&self) -> bool {
         self.mouse_pressed && self.interaction_mode != ElementInteractionMode::None
     }

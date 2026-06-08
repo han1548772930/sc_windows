@@ -30,30 +30,21 @@ use sc_ui_windows::{CursorManager, PreviewWindow, ToolbarButton, UIError, UIMana
 
 use crate::HostEvent;
 
-/// 应用程序主结构体
 pub struct App {
     /// Core state/actions/effects (platform-neutral).
     core: AppModel,
 
-    /// 配置管理器
     config: ConfigManager,
-    /// 截图管理器
     screenshot: ScreenshotManager,
-    /// 绘图管理器
     drawing: DrawingManager,
-    /// UI管理器
     ui: UIManager,
-    /// 系统管理器
     system: SystemManager,
 
     /// Host-facing platform side effects (window ops, timers, clipboard, dialogs, etc.).
     host_platform: Box<dyn HostPlatform<WindowHandle = WindowId>>,
 
-    /// Direct2D 渲染器
     platform: Direct2DRenderer,
-    /// 缓存的屏幕尺寸 (宽度, 高度)
     screen_size: (i32, i32),
-    /// 脏矩形追踪器（用于渲染优化）
     dirty_tracker: DirtyRectTracker,
 
     /// Cached OCR availability (updated via `HostEvent::OcrAvailabilityChanged`).
@@ -69,18 +60,14 @@ impl App {
         events: UserEventSender<HostEvent>,
         host_platform: Box<dyn HostPlatform<WindowHandle = WindowId>>,
     ) -> AppResult<Self> {
-        // 初始化配置管理器（仅加载一次配置文件）
         let config = ConfigManager::new();
 
-        // 获取共享的配置引用，供子模块使用
         let shared_settings = config.get_shared();
 
-        // 缓存屏幕尺寸，避免重复调用系统API
         let screen_size = host_platform.screen_size();
 
         let screenshot = ScreenshotManager::new(screen_size)?;
 
-        // 初始化脏矩形追踪器
         let dirty_tracker = DirtyRectTracker::new(screen_size.0 as f32, screen_size.1 as f32);
 
         let drawing_config = Self::drawing_config_from_settings(&config.get());
@@ -101,7 +88,6 @@ impl App {
         })
     }
 
-    /// 获取缓存的屏幕尺寸
     pub fn get_screen_size(&self) -> (i32, i32) {
         self.screen_size
     }
@@ -120,7 +106,6 @@ impl App {
         self.host_platform.as_ref()
     }
 
-    /// 重置到初始状态
     pub fn reset_to_initial_state(&mut self) -> Vec<Command> {
         // Zed-style: host state is explicit; core state is a pure model we can reset.
         self.dirty_tracker.mark_full_redraw();
@@ -138,7 +123,6 @@ impl App {
         vec![]
     }
 
-    /// 检查是否可以进行绘图操作
     pub fn can_draw(&self) -> bool {
         matches!(
             self.core.selection().phase(),
@@ -164,12 +148,10 @@ impl App {
         }
     }
 
-    /// 检查是否有有效的选区图像
     pub fn has_valid_selection(&self) -> bool {
         self.confirmed_selection_rect().is_some() && self.screenshot.has_screenshot()
     }
 
-    /// 标记局部脏区域（用于光标闪烁等局部更新场景）
     pub fn mark_dirty_rect(&mut self, rect: core_selection::RectI32) {
         self.dirty_tracker.mark_dirty(Rectangle {
             x: rect.left as f32,
@@ -179,22 +161,16 @@ impl App {
         });
     }
 
-    /// 标记全屏重绘
     pub fn mark_full_redraw(&mut self) {
         self.dirty_tracker.mark_full_redraw();
     }
 
-    /// 绘制窗口内容
     pub fn paint(&mut self) -> AppResult<()> {
         // The WM_PAINT cycle is managed by the platform runner.
         self.render()
     }
 
-    /// 渲染所有组件
-    ///
-    /// 使用 DirtyRectTracker 追踪脏区域
     pub fn render(&mut self) -> AppResult<()> {
-        // 检查脏区域类型
         let dirty_type = self.dirty_tracker.dirty_type();
 
         #[cfg(debug_assertions)]
@@ -258,14 +234,12 @@ impl App {
             .end_frame()
             .map_err(|e| AppError::Render(format!("Failed to end frame: {e:?}")))?;
 
-        // 渲染完成后清除脏区域
         self.dirty_tracker.clear();
 
         Ok(())
     }
 
     pub(crate) fn handle_ui_message(&mut self, message: UIMessage) -> Vec<Command> {
-        // 使用缓存的屏幕尺寸，避免重复的系统API调用
         let (screen_width, screen_height) = self.screen_size;
         self.ui.handle_message(message, screen_width, screen_height)
     }
@@ -274,7 +248,6 @@ impl App {
         self.drawing.handle_message(message)
     }
 
-    /// 初始化系统托盘
     pub fn init_system_tray(&mut self, window: WindowId) -> AppResult<()> {
         let host_platform = self.host_platform.as_ref();
         self.system
@@ -282,27 +255,22 @@ impl App {
             .map_err(|e| AppError::Init(format!("Failed to initialize system tray: {e}")))
     }
 
-    /// 启动异步OCR引擎状态检查
     pub fn start_async_ocr_check(&mut self) {
         self.system.start_async_ocr_check();
     }
 
-    /// 处理光标定时器（用于文本输入光标闪烁）
     pub fn handle_cursor_timer(&mut self, timer_id: u32) -> Vec<Command> {
         self.drawing.handle_cursor_timer(timer_id)
     }
 
-    /// 异步停止OCR引擎
     pub fn stop_ocr_engine_async(&self) {
         self.system.stop_ocr_engine_async();
     }
 
-    /// 异步启动 OCR 引擎
     pub fn start_ocr_engine_async(&self) {
         self.system.start_ocr_engine_async();
     }
 
-    /// 重新加载设置
     pub fn reload_settings(&mut self) -> Vec<Command> {
         self.config.reload();
 
@@ -315,7 +283,6 @@ impl App {
         vec![Command::UpdateToolbar, Command::RequestRedraw]
     }
 
-    /// 获取配置管理器引用
     pub fn config(&self) -> &ConfigManager {
         &self.config
     }
@@ -342,7 +309,6 @@ impl App {
         }
     }
 
-    /// 重新注册热键
     pub fn reregister_hotkey(&mut self, window: WindowId) -> Result<(), PlatformServicesError> {
         let host_platform = self.host_platform.as_ref();
         self.system.reregister_hotkey(window, host_platform)
@@ -353,7 +319,6 @@ impl App {
         self.system.cleanup_platform(host_platform);
     }
 
-    /// 执行一条 core action，并返回需要由宿主执行的命令。
     pub(crate) fn dispatch_core_action(&mut self, action: sc_app::Action) -> Vec<Command> {
         let is_selection_mouse_up = matches!(
             action,
@@ -384,9 +349,7 @@ impl App {
         commands
     }
 
-    /// 处理键盘输入
     pub fn handle_key_input(&mut self, key: u32) -> Vec<Command> {
-        // ESC键在任何状态下都可以退出：走 core action -> effect -> host command 链路。
         if key == KeyCode::ESCAPE.0 {
             return vec![Command::Core(sc_app::Action::Cancel)];
         }
@@ -398,7 +361,6 @@ impl App {
             core_selection::Phase::Selecting { .. } => vec![],
 
             core_selection::Phase::Editing { .. } => {
-                // 编辑状态下传递给各个管理器处理
                 let mut commands = self.system.handle_key_input(key);
                 if commands.is_empty() {
                     commands = self.drawing.handle_key_input(key);
@@ -411,20 +373,17 @@ impl App {
         }
     }
 
-    /// 选择绘图工具
     pub fn select_drawing_tool(&mut self, tool: DrawingTool) -> Vec<Command> {
         let message = DrawingMessage::SelectTool(tool);
         self.drawing.handle_message(message)
     }
 
-    /// 捕获屏幕并创建 D2D 位图
     pub fn capture_screen_to_d2d_bitmap(&mut self) -> AppResult<()> {
         self.screenshot
             .capture_screen_to_d2d_bitmap(&mut self.platform)
             .map_err(|e| AppError::Render(format!("Failed to create D2D bitmap: {e:?}")))
     }
 
-    /// 处理鼠标移动
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
         let hover_selection = self.core.selection().hover_selection();
@@ -438,7 +397,6 @@ impl App {
             }
         };
 
-        // 统一设置鼠标指针（保持原逻辑）
         let cursor = {
             let hovered_button = self.ui.get_hovered_button();
             let is_button_disabled = self.ui.is_button_disabled(hovered_button);
@@ -491,14 +449,12 @@ impl App {
         commands
     }
 
-    /// 处理鼠标按下
     pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
         let has_auto_highlight = self.core.selection().has_auto_highlight()
             && self.core.selection().hover_selection().is_some();
         match phase {
             core_selection::Phase::Idle => {
-                // 从空闲进入框选状态
                 let (cmds, consumed) = self.screenshot.handle_mouse_down(
                     x,
                     y,
@@ -533,7 +489,6 @@ impl App {
         }
     }
 
-    /// 处理鼠标释放
     pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
         match phase {
@@ -564,7 +519,6 @@ impl App {
     ) -> Vec<Command> {
         let mut commands = Vec::new();
 
-        // UI -> Drawing -> Screenshot 的处理顺序
         let (ui_commands, ui_consumed) = self.ui.handle_mouse_move(x, y);
         commands.extend(ui_commands);
 
@@ -659,24 +613,20 @@ impl App {
         commands
     }
 
-    /// 处理双击事件
     pub fn handle_double_click(&mut self, x: i32, y: i32) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
         match phase {
             core_selection::Phase::Editing { .. } => {
                 let mut commands = Vec::new();
 
-                // UI层优先处理
                 commands.extend(self.ui.handle_double_click(x, y));
 
                 if commands.is_empty() {
                     let selection_rect = self.confirmed_selection_rect().map(Into::into);
-                    // 优先让Drawing处理（双击文本进入编辑）
                     let dcmds = self
                         .drawing
                         .handle_double_click(x, y, selection_rect.as_ref());
                     if dcmds.is_empty() {
-                        // 若未消费，再交给Screenshot（双击确认选择保存）
                         commands.extend(self.screenshot.handle_double_click(
                             x,
                             y,
@@ -694,7 +644,6 @@ impl App {
         }
     }
 
-    /// 处理文本输入
     pub fn handle_text_input(&mut self, character: char) -> Vec<Command> {
         let phase = self.core.selection().phase().clone();
         match phase {
@@ -703,25 +652,20 @@ impl App {
         }
     }
 
-    /// 执行截图
     pub fn take_screenshot(&mut self, window: WindowId) -> AppResult<()> {
-        // 重置状态并开始截图
         self.platform.clear_background_bitmap();
 
         let screen_size = self.update_screen_size_cache();
         self.screenshot.reset_state(screen_size);
 
-        // 设置当前窗口并捕获屏幕
         self.screenshot.set_current_window(window);
         self.screenshot.capture_screen(screen_size)?;
 
-        // 显示窗口进入选择模式
         let _ = self.host_platform.show_window(window);
 
         Ok(())
     }
 
-    /// 直接捕获屏幕（用于热键处理）
     pub fn capture_screen_direct(&mut self) -> AppResult<()> {
         let screen_size = self.update_screen_size_cache();
 
@@ -730,19 +674,14 @@ impl App {
             .map_err(|e| AppError::Screenshot(format!("Failed to capture screen: {e:?}")))
     }
 
-    /// 更新工具栏状态以反映当前选中的绘图工具
     pub fn update_toolbar_state(&mut self) {
-        // 工具栏始终显示当前绘图工具
         let current_tool = self.drawing.get_current_tool();
 
-        // 更新工具栏选中状态
         self.ui.update_toolbar_selected_tool(current_tool);
 
-        // 根据当前工具状态决定是否显示选择框手柄：仅当未选择绘图工具时显示
         let show_handles = matches!(current_tool, DrawingTool::None);
         self.screenshot.set_show_selection_handles(show_handles);
 
-        // 更新禁用按钮集合
         let mut disabled: HashSet<ToolbarButton> = HashSet::new();
         if !self.can_undo() {
             disabled.insert(ToolbarButton::Undo);
@@ -756,14 +695,12 @@ impl App {
         self.ui.set_toolbar_disabled(disabled);
     }
 
-    /// 合成选择区域图像和绘图元素，返回BMP数据
     fn compose_selection_with_drawings(
         &mut self,
         selection_rect: core_selection::RectI32,
     ) -> AppResult<Vec<u8>> {
         let sel_rect_drawing: Rect = selection_rect.into();
 
-        // 使用闭包来渲染元素
         let drawing_ref = &self.drawing;
 
         let bmp_data = self
@@ -778,43 +715,33 @@ impl App {
         Ok(bmp_data)
     }
 
-    /// 保存选择区域到剪贴板（包含绘图元素）
     pub fn save_selection_to_clipboard(&mut self, _window: WindowId) -> AppResult<()> {
-        // 获取选择区域
         let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(());
         };
 
-        // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
 
-        // 将 BMP 数据复制到剪贴板
         self.host_platform
             .copy_bmp_data_to_clipboard(&bmp_data)
             .map_err(|e| AppError::Screenshot(format!("Failed to copy to clipboard: {e}")))
     }
 
-    /// 保存选择区域到文件（包含绘图元素）
-    /// 返回 Ok(true) 表示保存成功，Ok(false) 表示用户取消，Err 表示错误
     pub fn save_selection_to_file(&mut self, window: WindowId) -> Result<bool, AppError> {
-        // 没有有效选择则直接返回
         let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(false);
         };
 
-        // 显示文件保存对话框
         let Some(file_path) = self
             .host_platform
             .show_image_save_dialog(window, "screenshot.png")
             .map_err(|e| AppError::Platform(e.to_string()))?
         else {
-            return Ok(false); // 用户取消了对话框
+            return Ok(false);
         };
 
-        // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
 
-        // 将 BMP 数据写入文件
         let mut file = File::create(&file_path)
             .map_err(|e| AppError::File(format!("Failed to create file: {e}")))?;
         file.write_all(&bmp_data)
@@ -823,14 +750,11 @@ impl App {
         Ok(true)
     }
 
-    /// 从选择区域提取文本（简化版本 - 委托给OcrManager）
     pub fn extract_text_from_selection(&mut self, window: WindowId) -> AppResult<()> {
-        // 检查是否有选择区域
         let Some(selection_rect) = self.confirmed_selection_rect() else {
             return Ok(());
         };
 
-        // 委托给SystemManager处理整个OCR流程
         let host_platform = self.host_platform.as_ref();
 
         self.system
@@ -843,14 +767,11 @@ impl App {
             .map_err(|e| AppError::System(format!("OCR识别失败: {e}")))
     }
 
-    /// 固定选择区域（包含绘图元素）
     pub fn pin_selection(&mut self, window: WindowId) -> AppResult<Vec<Command>> {
-        // 检查是否有选择区域
         let Some(selection_rect) = self.validated_selection_rect() else {
             return Ok(vec![]);
         };
 
-        // 合成图像（截图 + 绘图元素）
         let bmp_data = self.compose_selection_with_drawings(selection_rect)?;
 
         // OCR source: use the raw screenshot crop (no drawings) for better recognition.
@@ -860,7 +781,6 @@ impl App {
             .get_current_image_data()
             .and_then(|data| crop_bmp(data, &crop_rect).ok());
 
-        // 创建固钉窗口
         if let Err(e) = PreviewWindow::show(
             bmp_data,
             vec![],
@@ -874,26 +794,19 @@ impl App {
             )));
         }
 
-        // 隐藏原始截屏窗口
         let _ = self.host_platform.hide_window(window);
 
-        // 重置原始窗口状态，准备下次截屏
         Ok(self.reset_to_initial_state())
     }
 
-    /// 检查是否可以撤销
     pub fn can_undo(&self) -> bool {
         self.drawing.can_undo()
     }
 
-    /// 检查OCR引擎是否可用（非阻塞，基于缓存状态）
     pub fn is_ocr_engine_available(&self) -> bool {
         self.ocr_available
     }
 
-    /// 处理平台无关的输入事件
-    ///
-    /// 这是新的抽象层 API，接受平台无关的 InputEvent
     pub fn handle_input_event(&mut self, event: InputEvent) -> Vec<Command> {
         match event {
             InputEvent::MouseMove { x, y } => self.handle_mouse_move(x, y),
@@ -927,12 +840,10 @@ impl App {
             // Global hotkey is handled at the platform boundary (needs window side effects).
             InputEvent::Hotkey { .. } => vec![],
 
-            // 其他鼠标按键暂不处理
             InputEvent::MouseDown { .. }
             | InputEvent::MouseUp { .. }
             | InputEvent::DoubleClick { .. } => vec![],
 
-            // KeyUp 和 MouseWheel 暂不处理
             InputEvent::KeyUp { .. } | InputEvent::MouseWheel { .. } => vec![],
         }
     }
@@ -957,8 +868,6 @@ impl App {
         }
     }
 
-    /// 统一处理窗口消息
-    /// 返回 Some(result) 表示消息已处理，None 表示需要默认处理
     fn handle_raw_window_message(
         &mut self,
         _window: WindowId,

@@ -5,7 +5,6 @@ use crate::windows::context::{RenderContext, RenderOptions};
 use crate::windows::renderable::{RenderError, RenderResult, Renderable};
 use crate::{DrawingElement, Rect};
 
-/// 矩形渲染器
 pub struct RectangleRenderer;
 
 impl Renderable for RectangleRenderer {
@@ -17,7 +16,6 @@ impl Renderable for RectangleRenderer {
         let p0 = &element.points[0];
         let p1 = &element.points[1];
 
-        // 标准化矩形（确保 left < right, top < bottom）
         let rect = D2D_RECT_F {
             left: p0.x.min(p1.x) as f32,
             top: p0.y.min(p1.y) as f32,

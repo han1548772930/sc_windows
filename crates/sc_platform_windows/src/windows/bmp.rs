@@ -7,9 +7,6 @@ fn err(msg: &str) -> Error {
     Error::new(HRESULT(-1), msg)
 }
 
-/// 从原图中提取指定区域的 BMP 图像数据。
-///
-/// 输入与输出都是完整的 BMP 文件字节（包含 14-byte 文件头 + 40-byte 信息头）。
 pub fn crop_bmp(original_image_data: &[u8], crop_rect: &sc_drawing::Rect) -> Result<Vec<u8>> {
     // BMP header is 14 bytes, DIB header starts at offset 14. We rely on a 40-byte BITMAPINFOHEADER.
     if original_image_data.len() < 54 {
@@ -91,7 +88,6 @@ pub fn crop_bmp(original_image_data: &[u8], crop_rect: &sc_drawing::Rect) -> Res
 }
 
 /// Read pixels from a Win32 `HBITMAP` and return BMP file bytes.
-///
 /// The returned bytes include a BMP file header + BITMAPINFOHEADER + pixel data (32bpp BGRA).
 pub fn bitmap_to_bmp_data(
     mem_dc: HDC,

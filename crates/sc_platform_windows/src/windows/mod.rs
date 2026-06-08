@@ -40,7 +40,6 @@ pub fn hwnd(window: WindowId) -> HWND {
     HWND(window.raw() as *mut c_void)
 }
 
-/// 安全的窗口句柄包装
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SafeHwnd {
     hwnd: Option<HWND>,

@@ -6,20 +6,14 @@ use sc_ui_windows::{PreviewWindow, SettingsWindow};
 
 use crate::app::App;
 
-/// 命令队列
-///
-/// 提供命令的队列化执行，避免递归调用导致的栈溢出问题。
 #[derive(Debug, Default)]
 pub struct CommandQueue {
-    /// 待执行的命令队列
     pending: VecDeque<Command>,
-    /// 已执行的命令计数（用于调试）
     #[cfg(debug_assertions)]
     executed_count: usize,
 }
 
 impl CommandQueue {
-    /// 创建新的命令队列
     pub fn new() -> Self {
         Self {
             pending: VecDeque::new(),
@@ -28,41 +22,31 @@ impl CommandQueue {
         }
     }
 
-    /// 添加单个命令到队列
     pub fn push(&mut self, command: Command) {
         if !matches!(command, Command::None) {
             self.pending.push_back(command);
         }
     }
 
-    /// 批量添加命令到队列
     pub fn push_batch(&mut self, commands: impl IntoIterator<Item = Command>) {
         for cmd in commands {
             self.push(cmd);
         }
     }
 
-    /// 检查队列是否为空
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
-    /// 获取队列长度
     pub fn len(&self) -> usize {
         self.pending.len()
     }
 
-    /// 清空队列
     pub fn clear(&mut self) {
         self.pending.clear();
     }
 
-    /// 执行队列中的所有命令
-    ///
-    /// 每个命令执行后可能产生新的命令，这些新命令会被添加到队列末尾。
-    /// 执行继续直到队列为空。
     pub fn process_all<E: CommandExecutor + ?Sized>(&mut self, executor: &mut E, window: WindowId) {
-        // 防止无限循环的安全阀值
         const MAX_ITERATIONS: usize = 1000;
         let mut iteration = 0;
 
@@ -87,25 +71,20 @@ impl CommandQueue {
         }
     }
 
-    /// 获取已执行命令计数（仅调试模式）
     #[cfg(debug_assertions)]
     pub fn executed_count(&self) -> usize {
         self.executed_count
     }
 
-    /// 重置计数器（仅调试模式）
     #[cfg(debug_assertions)]
     pub fn reset_counter(&mut self) {
         self.executed_count = 0;
     }
 }
 
-/// 命令执行器 trait
 pub trait CommandExecutor {
-    /// 执行单个命令并返回可能产生的新命令
     fn execute_command(&mut self, command: Command, window: WindowId) -> Vec<Command>;
 
-    /// 批量执行命令
     fn execute_commands(&mut self, commands: Vec<Command>, window: WindowId) -> Vec<Command> {
         let mut result_commands = Vec::new();
         for command in commands {
@@ -114,9 +93,6 @@ pub trait CommandExecutor {
         result_commands
     }
 
-    /// 队列化执行命令直到队列为空
-    ///
-    /// 使用 `CommandQueue` 来避免递归调用，确保执行顺序的可预测性。
     fn execute_command_chain(&mut self, commands: Vec<Command>, window: WindowId) {
         let mut queue = CommandQueue::new();
         queue.push_batch(commands);
@@ -144,7 +120,6 @@ impl CommandExecutor for App {
             }
             Command::UI(ui_message) => self.handle_ui_message(ui_message),
             Command::Drawing(drawing_message) => {
-                // 检查是否应该禁用某些绘图命令
                 let should_execute = match &drawing_message {
                     DrawingMessage::Undo => self.can_undo(),
                     _ => true,
@@ -171,7 +146,6 @@ impl CommandExecutor for App {
                 vec![]
             }
             Command::SaveSelectionToFile => {
-                // 检查前置条件：是否有有效选区
                 if self.has_valid_selection() {
                     self.handle_save_to_file(window)
                 } else {
@@ -179,7 +153,6 @@ impl CommandExecutor for App {
                 }
             }
             Command::SaveSelectionToClipboard => {
-                // 检查前置条件：是否有有效选区
                 if self.has_valid_selection() {
                     self.handle_save_to_clipboard(window)
                 } else {
@@ -206,7 +179,6 @@ impl CommandExecutor for App {
                 }
             },
             Command::ExtractText => {
-                // 检查前置条件：是否有有效选区
                 if self.has_valid_selection() {
                     self.handle_extract_text(window)
                 } else {
@@ -265,7 +237,6 @@ impl CommandExecutor for App {
     }
 }
 
-// 辅助方法实现
 impl App {
     fn handle_save_to_file(&mut self, window: WindowId) -> Vec<Command> {
         match self.save_selection_to_file(window) {
@@ -274,7 +245,6 @@ impl App {
                 self.reset_to_initial_state()
             }
             Ok(false) => {
-                // 用户取消，不做任何操作
                 vec![]
             }
             Err(e) => {

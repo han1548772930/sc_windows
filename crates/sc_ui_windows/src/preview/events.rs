@@ -190,7 +190,6 @@ impl PreviewWindowState {
                         let window_id = window.window_id();
                         let platform = WindowsHostPlatform::new();
 
-                        // 点击图标处理
                         for icon in &mut window.svg_icons {
                             if icon_contains_click_point(icon, x, y) {
                                 match icon.name.as_str() {
@@ -227,7 +226,6 @@ impl PreviewWindowState {
                                         return LRESULT(0);
                                     }
 
-                                    // 绘图工具图标
                                     preview_layout::ICON_TOOL_SQUARE => {
                                         window.switch_drawing_tool(sc_drawing_host::DrawingTool::Rectangle);
                                         let _ = platform.request_redraw(window_id);
@@ -258,13 +256,11 @@ impl PreviewWindowState {
                             }
                         }
 
-                        // 绘图交互处理
                         if let Some(ds) = window.drawing_state.as_mut() && ds.handle_mouse_down(x, y) {
                             let _ = SetCapture(hwnd);
                             return LRESULT(0);
                         }
 
-                        // 文本选择逻辑 (仅当显示文本区域时)
                         if window.show_text_area {
                             let text_rect = window.text_area_rect;
                             if x >= text_rect.left
@@ -305,7 +301,6 @@ impl PreviewWindowState {
                         let x = (lparam.0 as i16) as i32;
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
-                        // 绘图交互处理
                         if let Some(ds) = window.drawing_state.as_mut() && ds.handle_mouse_up(x, y) {
                             let _ = ReleaseCapture();
                             return LRESULT(0);
@@ -341,12 +336,10 @@ impl PreviewWindowState {
                             needs_repaint = true;
                         }
 
-                        // 绘图交互处理
                         if let Some(ds) = window.drawing_state.as_mut() && ds.handle_mouse_move(x, y) {
                             needs_repaint = true;
                         }
 
-                        // 文本选择移动逻辑
                         if window.is_selecting && window.show_text_area {
                             let text_rect = window.text_area_rect;
                             let clamped_x = x.max(text_rect.left).min(text_rect.right);
@@ -385,7 +378,6 @@ impl PreviewWindowState {
                         let x = (lparam.0 as i16) as i32;
                         let y = ((lparam.0 >> 16) as i16) as i32;
 
-                        // 绘图双击处理（用于编辑文本元素）
                         if let Some(ds) = window.drawing_state.as_mut() && ds.handle_double_click(x, y) {
                             return LRESULT(0);
                         }
@@ -465,7 +457,6 @@ impl PreviewWindowState {
                         let window = &mut *window_ptr;
                         let character = char::from_u32(wparam.0 as u32);
 
-                        // 绘图文本输入处理
                         if let Some(ch) = character
                             && let Some(ds) = window.drawing_state.as_mut()
                             && ds.handle_char_input(ch)
@@ -483,7 +474,6 @@ impl PreviewWindowState {
                         let vk = wparam.0 as u32;
                         let ctrl_pressed = (GetKeyState(0x11 /* VK_CONTROL */) as u16 & 0x8000) != 0;
 
-                        // 绘图键盘处理（文本编辑状态下的特殊键：方向键、退格、回车、Escape 等）
                         if let Some(ds) = window.drawing_state.as_mut()
                             && ds.is_text_editing()
                             && ds.handle_key_input(vk)
@@ -494,7 +484,6 @@ impl PreviewWindowState {
                         if ctrl_pressed && window.show_text_area {
                             match vk {
                                 0x41 /* VK_A */ => {
-                                    // Ctrl+A: 全选
                                     if !window.text_lines.is_empty() {
                                         window.selection_start = Some((0, 0));
                                         let last_line = window.text_lines.len() - 1;
@@ -505,7 +494,6 @@ impl PreviewWindowState {
                                     return LRESULT(0);
                                 }
                                 0x43 /* VK_C */ => {
-                                    // Ctrl+C: 复制选中文本
                                     if let (Some(start), Some(end)) =
                                         (window.selection_start, window.selection_end)
                                     {

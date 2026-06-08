@@ -2,17 +2,12 @@ use super::context::{RenderContext, RenderOptions};
 use super::elements::common::render_endpoint_handles;
 use crate::{DrawingElement, DrawingTool, Rect};
 
-/// 渲染结果
 pub type RenderResult<T = ()> = Result<T, RenderError>;
 
-/// 渲染错误
 #[derive(Debug)]
 pub enum RenderError {
-    /// 资源创建失败
     ResourceCreation(String),
-    /// 渲染失败
     RenderFailed(String),
-    /// 无效状态
     InvalidState(String),
 }
 
@@ -28,24 +23,11 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
-/// 可渲染元素 trait
-///
-/// 每种绘图元素类型（矩形、圆、箭头、画笔、文本）实现此 trait，
-/// 将渲染逻辑与业务逻辑分离。
 pub trait Renderable {
-    /// 渲染元素本身
-    ///
     /// # Arguments
-    /// * `element` - 要渲染的元素
-    /// * `ctx` - 渲染上下文
     fn render(&self, element: &DrawingElement, ctx: &mut RenderContext) -> RenderResult;
 
-    /// 渲染选中边框
-    ///
     /// # Arguments
-    /// * `bounds` - 元素边界
-    /// * `ctx` - 渲染上下文
-    /// * `options` - 渲染选项
     fn render_selection(
         &self,
         bounds: Rect,
@@ -53,12 +35,7 @@ pub trait Renderable {
         options: &RenderOptions,
     ) -> RenderResult;
 
-    /// 渲染调整手柄
-    ///
     /// # Arguments
-    /// * `bounds` - 元素边界
-    /// * `ctx` - 渲染上下文
-    /// * `options` - 渲染选项
     fn render_handles(
         &self,
         bounds: Rect,
@@ -67,9 +44,6 @@ pub trait Renderable {
     ) -> RenderResult;
 }
 
-/// 渲染器注册表
-///
-/// 根据元素工具类型分发到对应的渲染器。
 pub struct RendererRegistry {
     pub rectangle: super::elements::RectangleRenderer,
     pub circle: super::elements::CircleRenderer,
@@ -85,7 +59,6 @@ impl Default for RendererRegistry {
 }
 
 impl RendererRegistry {
-    /// 创建渲染器注册表
     pub fn new() -> Self {
         Self {
             rectangle: super::elements::RectangleRenderer,
@@ -96,7 +69,6 @@ impl RendererRegistry {
         }
     }
 
-    /// 根据元素获取对应的渲染器
     pub fn get_renderer(&self, element: &DrawingElement) -> &dyn Renderable {
         match element.tool {
             DrawingTool::Rectangle => &self.rectangle,
@@ -104,11 +76,10 @@ impl RendererRegistry {
             DrawingTool::Arrow => &self.arrow,
             DrawingTool::Pen => &self.pen,
             DrawingTool::Text => &self.text,
-            _ => &self.rectangle, // 默认
+            _ => &self.rectangle,
         }
     }
 
-    /// 渲染元素
     pub fn render_element(
         &self,
         element: &DrawingElement,
@@ -117,7 +88,6 @@ impl RendererRegistry {
         self.get_renderer(element).render(element, ctx)
     }
 
-    /// 渲染元素的选中状态
     pub fn render_element_selection(
         &self,
         element: &DrawingElement,

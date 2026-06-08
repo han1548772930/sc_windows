@@ -44,7 +44,6 @@ impl From<tray::TrayIconError> for TrayManagerError {
 pub type Result<T> = std::result::Result<T, TrayManagerError>;
 
 /// Stateful system tray manager.
-///
 /// This lives in the Windows platform backend (similar to Zed's `gpui::platform::windows`).
 #[derive(Debug)]
 pub struct TrayManager {

@@ -16,7 +16,6 @@ pub fn text_padding_for_font_size(font_size: f32) -> f32 {
 }
 
 /// Best-effort: update a text element's size based on its content using DirectWrite metrics.
-///
 /// The sizing policy (min width/height and line-height scale) is kept in the caller.
 /// Padding is derived from font size to stay visually consistent under proportional scaling.
 pub fn update_text_element_size_dwrite(

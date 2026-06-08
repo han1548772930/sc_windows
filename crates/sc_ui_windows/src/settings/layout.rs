@@ -235,3 +235,29 @@ impl RowMetrics {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_metrics_uses_margin_and_label_gap() {
+        let metrics = RowMetrics::new(480, 10);
+
+        assert_eq!(metrics.label_x, 10);
+        assert_eq!(metrics.control_x, 10 + LABEL_WIDTH + LABEL_CONTROL_GAP);
+        assert_eq!(
+            metrics.control_width,
+            480 - 20 - LABEL_WIDTH - LABEL_CONTROL_GAP
+        );
+    }
+
+    #[test]
+    fn row_metrics_keeps_minimum_control_width_for_narrow_tabs() {
+        let metrics = RowMetrics::new(40, 20);
+
+        assert_eq!(metrics.label_x, 20);
+        assert_eq!(metrics.control_x, 20 + LABEL_WIDTH + LABEL_CONTROL_GAP);
+        assert_eq!(metrics.control_width, CONTROL_HEIGHT);
+    }
+}

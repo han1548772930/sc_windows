@@ -3,7 +3,6 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
 use crate::{Color, Point, Rect};
 
-/// POINT 扩展 trait
 pub trait PointExt {
     fn new(x: i32, y: i32) -> Self;
 }
@@ -15,7 +14,6 @@ impl PointExt for POINT {
     }
 }
 
-/// RECT 扩展 trait
 pub trait RectExt {
     fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self;
     fn width(&self) -> i32;
@@ -49,8 +47,6 @@ impl RectExt for RECT {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
     }
 }
-
-// ==================== core ↔ Win32 / D2D conversions ====================
 
 impl From<Point> for POINT {
     #[inline]

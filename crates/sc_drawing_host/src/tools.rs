@@ -3,9 +3,6 @@ use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use super::DrawingTool;
 use crate::DrawingConfig;
 
-/// 工具管理器
-///
-/// 管理当前选中的绘图工具，并通过 host 注入的 [`DrawingConfig`] 获取工具配置。
 pub struct ToolManager {
     current_tool: DrawingTool,
     config: DrawingConfig,

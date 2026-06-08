@@ -90,7 +90,6 @@ impl DrawingRenderer {
     }
 
     /// Renders a full frame.
-    ///
     /// Returns `true` if the static layer was rebuilt.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
@@ -187,7 +186,6 @@ impl DrawingRenderer {
     }
 
     /// Renders all elements to an arbitrary render target with an offset transform.
-    ///
     /// Used for export/compositing.
     #[allow(clippy::too_many_arguments)]
     pub fn render_elements_to_target_with_offset(
@@ -324,7 +322,6 @@ impl DrawingRenderer {
     }
 
     /// Draws an element without mutating internal caches.
-    ///
     /// This is used for export/compositing paths where `DrawingManager` may only have `&self`.
     fn draw_element_export(
         &self,
@@ -768,14 +765,12 @@ fn create_text_format_from_element(
             .map_err(|e| RenderError::ResourceCreation(format!("SetParagraphAlignment: {e:?}")))?;
 
         // Keep DirectWrite line spacing aligned with our sizing/caret logic.
-        //
         // Without this, DWrite hit-test metrics (and thus caret height) can diverge from the
         // host-side `TEXT_LINE_HEIGHT_SCALE` policy, causing visible caret height changes after
         // inserting newlines.
         let desired_line_spacing = (font_size * TEXT_LINE_HEIGHT_SCALE).ceil();
         if desired_line_spacing > 0.0 {
             // Choose a baseline that keeps text visually centered within our line box.
-            //
             // We start from DirectWrite's default line spacing/baseline for the current font size,
             // then apply our custom `desired_line_spacing` by distributing the extra leading evenly
             // above and below (CSS-like half-leading).
@@ -908,11 +903,9 @@ fn draw_text_cursor(
     let abs_y = text_content_rect.top + point_y;
 
     // Use DirectWrite's hit-test metrics to position the caret.
-    //
     // NOTE: `point_y` returned by HitTestTextPosition is already the Y offset of the line within
     // the layout. `metrics.top` is also layout-relative, so adding both would double-count the
     // line offset (the bug that showed up after inserting newlines).
-    //
     // We clamp caret height to font_size for a cleaner visual, and center it within the line box.
     let line_box_height = if metrics.height > 0.0 {
         metrics.height

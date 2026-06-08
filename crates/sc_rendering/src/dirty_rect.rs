@@ -1,20 +1,13 @@
 use crate::types::Rectangle;
 
-/// 脏矩形追踪器
-///
-/// 收集所有需要重绘的区域，并提供合并后的脏矩形用于剪裁渲染。
 #[derive(Debug, Default)]
 pub struct DirtyRectTracker {
-    /// 脏区域列表
     dirty_regions: Vec<Rectangle>,
-    /// 是否需要全屏重绘
     full_redraw: bool,
-    /// 屏幕尺寸（用于全屏重绘时返回）
     screen_size: (f32, f32),
 }
 
 impl DirtyRectTracker {
-    /// 创建新的脏矩形追踪器
     pub fn new(screen_width: f32, screen_height: f32) -> Self {
         Self {
             dirty_regions: Vec::new(),
@@ -23,19 +16,15 @@ impl DirtyRectTracker {
         }
     }
 
-    /// 设置屏幕尺寸
     pub fn set_screen_size(&mut self, width: f32, height: f32) {
         self.screen_size = (width, height);
     }
 
-    /// 标记区域为脏
     pub fn mark_dirty(&mut self, rect: Rectangle) {
-        // 如果已经需要全屏重绘，不需要再添加
         if self.full_redraw {
             return;
         }
 
-        // 检查是否与现有区域重叠，如果重叠则合并
         for existing in &mut self.dirty_regions {
             if existing.intersects(&rect) {
                 *existing = existing.union(&rect);
@@ -46,21 +35,15 @@ impl DirtyRectTracker {
         self.dirty_regions.push(rect);
     }
 
-    /// 标记需要全屏重绘
     pub fn mark_full_redraw(&mut self) {
         self.full_redraw = true;
         self.dirty_regions.clear();
     }
 
-    /// 检查是否需要全屏重绘
     pub fn needs_full_redraw(&self) -> bool {
         self.full_redraw
     }
 
-    /// 获取合并后的脏矩形
-    ///
-    /// 返回 None 表示没有脏区域，返回 Some 表示需要重绘的区域。
-    /// 如果是全屏重绘，返回整个屏幕区域。
     pub fn get_combined_dirty_rect(&self) -> Option<Rectangle> {
         if self.full_redraw {
             return Some(Rectangle {
@@ -75,7 +58,6 @@ impl DirtyRectTracker {
             return None;
         }
 
-        // 合并所有脏区域
         let mut combined = self.dirty_regions[0];
         for rect in self.dirty_regions.iter().skip(1) {
             combined = combined.union(rect);
@@ -84,23 +66,19 @@ impl DirtyRectTracker {
         Some(combined)
     }
 
-    /// 获取所有脏区域（未合并）
     pub fn get_dirty_regions(&self) -> &[Rectangle] {
         &self.dirty_regions
     }
 
-    /// 清空脏区域追踪
     pub fn clear(&mut self) {
         self.dirty_regions.clear();
         self.full_redraw = false;
     }
 
-    /// 检查是否有脏区域
     pub fn is_dirty(&self) -> bool {
         self.full_redraw || !self.dirty_regions.is_empty()
     }
 
-    /// 裁剪矩形到屏幕范围内
     pub fn clip_to_screen(&self, rect: Rectangle) -> Rectangle {
         let left = rect.x.max(0.0);
         let top = rect.y.max(0.0);
@@ -116,19 +94,14 @@ impl DirtyRectTracker {
     }
 }
 
-/// 脏矩形类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirtyType {
-    /// 全屏重绘
     Full,
-    /// 局部重绘
     Partial,
-    /// 无需重绘
     None,
 }
 
 impl DirtyRectTracker {
-    /// 获取脏区域类型
     pub fn dirty_type(&self) -> DirtyType {
         if self.full_redraw {
             DirtyType::Full

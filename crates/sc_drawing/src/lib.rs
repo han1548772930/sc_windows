@@ -9,7 +9,6 @@ pub mod windows;
 
 pub use sc_rendering;
 
-// 重新导出常用类型
 pub use element::{Color, DrawingElement, Point, Rect, defaults};
 pub use history::ActionHistory;
 pub use history::DrawingAction;
