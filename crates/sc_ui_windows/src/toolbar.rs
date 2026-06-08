@@ -259,19 +259,13 @@ impl ToolbarManager {
     }
 
     /// Handle mouse up.
-    pub fn handle_mouse_up(&mut self, x: i32, y: i32) -> Vec<Command> {
+    pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) -> Vec<Command> {
         if !self.visible {
             return vec![];
         }
 
-        let toolbar_button = self.get_button_at_position(x, y);
-        if toolbar_button != ToolbarButton::None && toolbar_button == self.pressed_button {
-            self.pressed_button = ToolbarButton::None;
-            vec![]
-        } else {
-            self.pressed_button = ToolbarButton::None;
-            vec![]
-        }
+        self.pressed_button = ToolbarButton::None;
+        vec![]
     }
 
     /// Whether the toolbar is visible.

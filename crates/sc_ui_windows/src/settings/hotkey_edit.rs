@@ -52,10 +52,10 @@ impl SettingsWindowState {
             }
 
             let prop_name = to_wide_chars(ORIGINAL_PROC_PROP);
-            if let Ok(proc_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
-                if !proc_handle.is_invalid() {
-                    let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc_handle.0 as isize);
-                }
+            if let Ok(proc_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr()))
+                && !proc_handle.is_invalid()
+            {
+                let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc_handle.0 as isize);
             }
 
             Self::clear_original_hotkey_text(hwnd);
@@ -64,15 +64,24 @@ impl SettingsWindowState {
 
     pub(super) unsafe fn clear_original_hotkey_text(hwnd: HWND) {
         unsafe {
+            let _ = Self::take_original_hotkey_text(hwnd);
+        }
+    }
+
+    unsafe fn take_original_hotkey_text(hwnd: HWND) -> Option<Vec<u16>> {
+        unsafe {
             let prop_name = to_wide_chars(ORIGINAL_TEXT_PROP);
-            if let Ok(text_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
-                if !text_handle.is_invalid() {
-                    let text_ptr = text_handle.0 as *mut Vec<u16>;
-                    if !text_ptr.is_null() {
-                        let _ = Box::from_raw(text_ptr);
-                    }
-                }
+            let text_handle = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())).ok()?;
+            if text_handle.is_invalid() {
+                return None;
             }
+
+            let text_ptr = text_handle.0 as *mut Vec<u16>;
+            if text_ptr.is_null() {
+                return None;
+            }
+
+            Some(*Box::from_raw(text_ptr))
         }
     }
 
@@ -140,15 +149,8 @@ impl SettingsWindowState {
                     };
 
                     if current_text.trim() == HOTKEY_PLACEHOLDER || current_text.trim().is_empty() {
-                        let prop_name = to_wide_chars(ORIGINAL_TEXT_PROP);
-                        if let Ok(text_handle) = RemovePropW(hwnd, PCWSTR(prop_name.as_ptr())) {
-                            if !text_handle.is_invalid() {
-                                let text_ptr = text_handle.0 as *mut Vec<u16>;
-                                if !text_ptr.is_null() {
-                                    let text_box = Box::from_raw(text_ptr);
-                                    let _ = SetWindowTextW(hwnd, PCWSTR(text_box.as_ptr()));
-                                }
-                            }
+                        if let Some(text_box) = Self::take_original_hotkey_text(hwnd) {
+                            let _ = SetWindowTextW(hwnd, PCWSTR(text_box.as_ptr()));
                         }
                     } else {
                         Self::clear_original_hotkey_text(hwnd);

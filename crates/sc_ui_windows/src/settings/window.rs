@@ -107,6 +107,17 @@ const HOTKEY_TEXT_LIMIT: usize = 63;
 const CONFIG_PATH_TEXT_LIMIT: usize = 259;
 const CONFIG_PATH_TEXT_BUFFER: usize = CONFIG_PATH_TEXT_LIMIT + 1;
 
+struct ChildControlSpec<'a> {
+    class_name: &'a str,
+    text: Option<&'a str>,
+    ex_style: WINDOW_EX_STYLE,
+    style: WINDOW_STYLE,
+    parent: HWND,
+    control_id: Option<i32>,
+    instance: HINSTANCE,
+    apply_font: bool,
+}
+
 impl SettingsWindow {
     pub fn is_open() -> bool {
         SettingsWindowState::is_open()
@@ -349,16 +360,8 @@ impl SettingsWindowState {
 
             self.ocr_language_label = self.create_label("OCR语言", self.tab_system, instance)?;
 
-            self.ocr_language_combo = self.create_child_control(
-                "COMBOBOX",
-                None,
-                WS_EX_CLIENTEDGE,
-                WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003),
-                self.tab_system,
-                Some(ID_OCR_LANGUAGE_COMBO),
-                instance,
-                true,
-            )?;
+            self.ocr_language_combo =
+                self.create_combo_box(self.tab_system, ID_OCR_LANGUAGE_COMBO, instance)?;
             Self::set_modern_theme(self.ocr_language_combo);
 
             self.load_ocr_languages();
@@ -378,16 +381,16 @@ impl SettingsWindowState {
         control_id: i32,
         instance: HINSTANCE,
     ) -> windows::core::Result<HWND> {
-        self.create_child_control(
-            "EDIT",
-            None,
-            WS_EX_CLIENTEDGE,
-            WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+        self.create_child_control(ChildControlSpec {
+            class_name: "EDIT",
+            text: None,
+            ex_style: WS_EX_CLIENTEDGE,
+            style: WS_VISIBLE | WS_CHILD | WS_TABSTOP,
             parent,
-            Some(control_id),
+            control_id: Some(control_id),
             instance,
-            true,
-        )
+            apply_font: true,
+        })
     }
 
     fn create_button(
@@ -397,16 +400,16 @@ impl SettingsWindowState {
         control_id: i32,
         instance: HINSTANCE,
     ) -> windows::core::Result<HWND> {
-        self.create_child_control(
-            "BUTTON",
-            Some(text),
-            WINDOW_EX_STYLE::default(),
-            WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+        self.create_child_control(ChildControlSpec {
+            class_name: "BUTTON",
+            text: Some(text),
+            ex_style: WINDOW_EX_STYLE::default(),
+            style: WS_VISIBLE | WS_CHILD | WS_TABSTOP,
             parent,
-            Some(control_id),
+            control_id: Some(control_id),
             instance,
-            true,
-        )
+            apply_font: true,
+        })
     }
 
     fn create_static_preview(
@@ -414,16 +417,16 @@ impl SettingsWindowState {
         parent: HWND,
         instance: HINSTANCE,
     ) -> windows::core::Result<HWND> {
-        self.create_child_control(
-            "STATIC",
-            None,
-            WS_EX_CLIENTEDGE,
-            WS_VISIBLE | WS_CHILD,
+        self.create_child_control(ChildControlSpec {
+            class_name: "STATIC",
+            text: None,
+            ex_style: WS_EX_CLIENTEDGE,
+            style: WS_VISIBLE | WS_CHILD,
             parent,
-            None,
+            control_id: None,
             instance,
-            false,
-        )
+            apply_font: false,
+        })
     }
 
     fn create_label(
@@ -432,53 +435,61 @@ impl SettingsWindowState {
         parent: HWND,
         instance: HINSTANCE,
     ) -> windows::core::Result<HWND> {
-        self.create_child_control(
-            "STATIC",
-            Some(text),
-            WINDOW_EX_STYLE::default(),
-            WS_VISIBLE | WS_CHILD,
+        self.create_child_control(ChildControlSpec {
+            class_name: "STATIC",
+            text: Some(text),
+            ex_style: WINDOW_EX_STYLE::default(),
+            style: WS_VISIBLE | WS_CHILD,
             parent,
-            None,
+            control_id: None,
             instance,
-            true,
-        )
+            apply_font: true,
+        })
     }
 
-    fn create_child_control(
+    fn create_combo_box(
         &self,
-        class_name: &str,
-        text: Option<&str>,
-        ex_style: WINDOW_EX_STYLE,
-        style: WINDOW_STYLE,
         parent: HWND,
-        control_id: Option<i32>,
+        control_id: i32,
         instance: HINSTANCE,
-        apply_font: bool,
     ) -> windows::core::Result<HWND> {
+        self.create_child_control(ChildControlSpec {
+            class_name: "COMBOBOX",
+            text: None,
+            ex_style: WS_EX_CLIENTEDGE,
+            style: WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003),
+            parent,
+            control_id: Some(control_id),
+            instance,
+            apply_font: true,
+        })
+    }
+
+    fn create_child_control(&self, spec: ChildControlSpec<'_>) -> windows::core::Result<HWND> {
         unsafe {
-            let class_name = to_wide_chars(class_name);
-            let text = text.map(to_wide_chars);
+            let class_name = to_wide_chars(spec.class_name);
+            let text = spec.text.map(to_wide_chars);
             let text_ptr = text
                 .as_ref()
                 .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr()));
-            let menu = control_id.map(|id| HMENU(id as *mut _));
+            let menu = spec.control_id.map(|id| HMENU(id as *mut _));
 
             let hwnd = CreateWindowExW(
-                ex_style,
+                spec.ex_style,
                 PCWSTR(class_name.as_ptr()),
                 text_ptr,
-                style,
+                spec.style,
                 0,
                 0,
                 0,
                 0,
-                Some(parent),
+                Some(spec.parent),
                 menu,
-                Some(instance),
+                Some(spec.instance),
                 None,
             )?;
 
-            if apply_font {
+            if spec.apply_font {
                 self.set_control_font(hwnd);
             }
 
@@ -664,11 +675,11 @@ impl SettingsWindowState {
 
             // OCR language.
             for i in 0..self.ocr_language_item_count() {
-                if let Some(value) = self.ocr_language_value_at(i) {
-                    if value == self.settings.ocr_language {
-                        SendMessageW(self.ocr_language_combo, CB_SETCURSEL, Some(WPARAM(i)), None);
-                        break;
-                    }
+                if let Some(value) = self.ocr_language_value_at(i)
+                    && value == self.settings.ocr_language
+                {
+                    SendMessageW(self.ocr_language_combo, CB_SETCURSEL, Some(WPARAM(i)), None);
+                    break;
                 }
             }
 
@@ -718,16 +729,18 @@ impl SettingsWindowState {
     }
 
     fn show_font_dialog(&mut self) {
-        if let Some(selection) = file_dialog::show_font_dialog(
-            self.hwnd,
-            self.settings.font_size,
-            self.settings.font_weight,
-            self.settings.font_italic,
-            self.settings.font_underline,
-            self.settings.font_strikeout,
-            &self.settings.font_name,
-            self.settings.font_color,
-        ) {
+        let request = file_dialog::FontDialogRequest {
+            hwnd: self.hwnd,
+            font_size: self.settings.font_size,
+            font_weight: self.settings.font_weight,
+            font_italic: self.settings.font_italic,
+            font_underline: self.settings.font_underline,
+            font_strikeout: self.settings.font_strikeout,
+            font_name: self.settings.font_name.clone(),
+            font_color: self.settings.font_color,
+        };
+
+        if let Some(selection) = file_dialog::show_font_dialog(&request) {
             self.settings.font_size = selection.font_size;
             self.settings.font_weight = selection.font_weight;
             self.settings.font_italic = selection.font_italic;
@@ -781,10 +794,9 @@ impl SettingsWindowState {
         unsafe {
             if let Some(text) = Self::read_window_text::<{ LINE_THICKNESS_TEXT_LIMIT + 1 }>(
                 self.line_thickness_edit,
-            ) {
-                if let Ok(value) = text.parse::<f32>() {
-                    self.settings.line_thickness = value.clamp(1.0, 20.0);
-                }
+            ) && let Ok(value) = text.parse::<f32>()
+            {
+                self.settings.line_thickness = value.clamp(1.0, 20.0);
             }
 
             if let Some(hotkey_text) =
@@ -795,17 +807,16 @@ impl SettingsWindowState {
 
             if let Some(config_path_text) =
                 Self::read_window_text::<CONFIG_PATH_TEXT_BUFFER>(self.config_path_edit)
+                && !config_path_text.is_empty()
             {
-                if !config_path_text.is_empty() {
-                    self.settings.config_path = config_path_text;
-                }
+                self.settings.config_path = config_path_text;
             }
 
             let selected_index = SendMessageW(self.ocr_language_combo, CB_GETCURSEL, None, None).0;
-            if selected_index != CB_ERR as isize {
-                if let Some(value) = self.ocr_language_value_at(selected_index as usize) {
-                    self.settings.ocr_language = value;
-                }
+            if selected_index != CB_ERR as isize
+                && let Some(value) = self.ocr_language_value_at(selected_index as usize)
+            {
+                self.settings.ocr_language = value;
             }
         }
     }

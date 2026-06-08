@@ -392,23 +392,18 @@ impl PreviewRenderer {
             }
 
             if let Some(bitmaps) = self.icon_cache.get(&icon.name) {
-                let bitmap_to_use = if icon.name == preview_layout::ICON_PIN && is_pinned {
-                    if icon.hovered {
-                        bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
+                let bitmap_to_use =
+                    if (icon.name == preview_layout::ICON_PIN && is_pinned) || icon.selected {
+                        if icon.hovered {
+                            bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
+                        } else {
+                            bitmaps.active_normal.as_ref().unwrap_or(&bitmaps.normal)
+                        }
+                    } else if icon.hovered {
+                        &bitmaps.hover
                     } else {
-                        bitmaps.active_normal.as_ref().unwrap_or(&bitmaps.normal)
-                    }
-                } else if icon.selected {
-                    if icon.hovered {
-                        bitmaps.active_hover.as_ref().unwrap_or(&bitmaps.hover)
-                    } else {
-                        bitmaps.active_normal.as_ref().unwrap_or(&bitmaps.normal)
-                    }
-                } else if icon.hovered {
-                    &bitmaps.hover
-                } else {
-                    &bitmaps.normal
-                };
+                        &bitmaps.normal
+                    };
 
                 let icon_width = ICON_SIZE as f32;
                 let icon_height = ICON_SIZE as f32;

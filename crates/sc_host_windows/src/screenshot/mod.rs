@@ -256,8 +256,6 @@ impl ScreenshotManager {
             return (vec![], true);
         }
 
-        if selection_rect.is_some() {}
-
         if selection_rect.is_some() {
             let drag_mode = self.selection.get_handle_at_position(selection_rect, x, y);
             if drag_mode != DragMode::None {

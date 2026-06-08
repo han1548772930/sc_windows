@@ -17,16 +17,6 @@ unsafe impl Send for SharedFactories {}
 unsafe impl Sync for SharedFactories {}
 
 impl SharedFactories {
-    pub fn get() -> Option<&'static SharedFactories> {
-        SHARED_FACTORIES.get_or_init(|| {
-            Self::create().unwrap_or_else(|e| {
-                eprintln!("Failed to create SharedFactories: {:?}", e);
-                panic!("SharedFactories initialization failed");
-            })
-        });
-        SHARED_FACTORIES.get()
-    }
-
     pub fn try_get() -> Option<&'static SharedFactories> {
         if let Some(factories) = SHARED_FACTORIES.get() {
             return Some(factories);

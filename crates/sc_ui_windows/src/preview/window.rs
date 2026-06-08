@@ -340,16 +340,20 @@ impl PreviewWindowState {
         self.svg_icons.clear();
     }
 
+    fn svg_icon_from_layout(icon: preview_layout::PreviewIconLayout) -> SvgIcon {
+        SvgIcon {
+            name: icon.name.to_string(),
+            rect: icon.rect,
+            hovered: false,
+            selected: false,
+            is_title_bar_button: icon.is_title_bar_button(),
+        }
+    }
+
     fn create_left_icons() -> Vec<SvgIcon> {
         preview_layout::create_left_icons()
             .into_iter()
-            .map(|icon| SvgIcon {
-                name: icon.name.to_string(),
-                rect: icon.rect,
-                hovered: false,
-                selected: false,
-                is_title_bar_button: icon.is_title_bar_button(),
-            })
+            .map(Self::svg_icon_from_layout)
             .collect()
     }
 
@@ -669,13 +673,7 @@ impl PreviewWindowState {
     fn create_title_bar_buttons(window_width: i32, is_maximized: bool) -> Vec<SvgIcon> {
         preview_layout::create_title_bar_buttons(window_width, is_maximized)
             .into_iter()
-            .map(|icon| SvgIcon {
-                name: icon.name.to_string(),
-                rect: icon.rect,
-                hovered: false,
-                selected: false,
-                is_title_bar_button: icon.is_title_bar_button(),
-            })
+            .map(Self::svg_icon_from_layout)
             .collect()
     }
 

@@ -109,9 +109,7 @@ impl PreviewWindowState {
                                     line_height: window.line_height,
                                     image_width: window.image_width,
                                     image_height: window.image_height,
-                                    selection: window
-                                        .selection_start
-                                        .and_then(|s| window.selection_end.map(|e| (s, e))),
+                                    selection: window.selection_start.zip(window.selection_end),
                                     show_text_area: window.show_text_area,
                                     drawing_state: window.drawing_state.as_mut(),
                                 };

@@ -5,7 +5,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use sc_drawing::Rect;
 use sc_windows::drawing::{DrawingElement, DrawingTool};
 
-/// 测试创建 DrawingElement 的性能
+/// Benchmark `DrawingElement` creation.
 fn bench_create_element(c: &mut Criterion) {
     let mut group = c.benchmark_group("DrawingElement Creation");
 
@@ -17,7 +17,7 @@ fn bench_create_element(c: &mut Criterion) {
         DrawingTool::Text,
     ] {
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{:?}", tool)),
+            BenchmarkId::from_parameter(format!("{tool:?}")),
             &tool,
             |b, &tool| {
                 b.iter(|| {
@@ -31,11 +31,10 @@ fn bench_create_element(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试 DrawingElement 的边界矩形计算性能
+/// Benchmark `DrawingElement` bounds calculation.
 fn bench_bounding_rect(c: &mut Criterion) {
     let mut group = c.benchmark_group("Bounding Rect Calculation");
 
-    // 测试不同点数的 Pen 元素
     for point_count in [10, 50, 100, 500] {
         group.bench_with_input(
             BenchmarkId::new("Pen", point_count),
@@ -53,7 +52,6 @@ fn bench_bounding_rect(c: &mut Criterion) {
         );
     }
 
-    // 测试矩形和圆形元素
     group.bench_function("Rectangle", |b| {
         let mut element = DrawingElement::new(DrawingTool::Rectangle);
         element.add_point(0, 0);
@@ -67,11 +65,10 @@ fn bench_bounding_rect(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试点击检测性能
+/// Benchmark hit testing.
 fn bench_contains_point(c: &mut Criterion) {
     let mut group = c.benchmark_group("Contains Point Check");
 
-    // 测试矩形包含点检测
     group.bench_function("Rectangle", |b| {
         let mut element = DrawingElement::new(DrawingTool::Rectangle);
         element.add_point(0, 0);
@@ -81,7 +78,6 @@ fn bench_contains_point(c: &mut Criterion) {
         b.iter(|| black_box(element.contains_point(50, 50)));
     });
 
-    // 测试 Pen 路径包含点检测（较复杂）
     for point_count in [10, 50, 100] {
         group.bench_with_input(
             BenchmarkId::new("Pen", point_count),
@@ -101,7 +97,7 @@ fn bench_contains_point(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试 DrawingElement 移动性能
+/// Benchmark `DrawingElement` movement.
 fn bench_move_element(c: &mut Criterion) {
     let mut group = c.benchmark_group("Element Move");
 
@@ -118,7 +114,7 @@ fn bench_move_element(c: &mut Criterion) {
 
                 b.iter(|| {
                     element.move_by(black_box(10), black_box(10));
-                    element.move_by(-10, -10); // 恢复位置
+                    element.move_by(-10, -10);
                 });
             },
         );
@@ -127,11 +123,10 @@ fn bench_move_element(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试 DrawingElement 调整大小性能
+/// Benchmark `DrawingElement` resize behavior.
 fn bench_resize_element(c: &mut Criterion) {
     let mut group = c.benchmark_group("Element Resize");
 
-    // 测试矩形调整大小
     group.bench_function("Rectangle", |b| {
         let mut element = DrawingElement::new(DrawingTool::Rectangle);
         element.add_point(0, 0);
@@ -148,11 +143,10 @@ fn bench_resize_element(c: &mut Criterion) {
 
         b.iter(|| {
             element.resize(black_box(new_rect));
-            element.resize(original_rect); // 恢复
+            element.resize(original_rect);
         });
     });
 
-    // 测试 Pen 调整大小（涉及所有点的缩放）
     for point_count in [10, 50, 100] {
         group.bench_with_input(
             BenchmarkId::new("Pen", point_count),

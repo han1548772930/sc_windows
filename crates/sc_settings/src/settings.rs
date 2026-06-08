@@ -266,9 +266,11 @@ mod tests {
 
     #[test]
     fn get_hotkey_string_formats_known_key() {
-        let mut settings = Settings::default();
-        settings.hotkey_modifiers = 0x0002 | 0x0001;
-        settings.hotkey_key = 'S' as u32;
+        let settings = Settings {
+            hotkey_modifiers: 0x0002 | 0x0001,
+            hotkey_key: 'S' as u32,
+            ..Default::default()
+        };
 
         assert_eq!(settings.get_hotkey_string(), "Ctrl+Alt+S");
     }

@@ -241,7 +241,7 @@ pub fn recognize_text_by_lines(
     }
 
     // Sort by Y.
-    adjusted_results.sort_by(|a, b| a.bounding_box.y.cmp(&b.bounding_box.y));
+    adjusted_results.sort_by_key(|result| result.bounding_box.y);
 
     // Group by lines.
     let mut text_lines: Vec<Vec<OcrResult>> = Vec::new();
@@ -270,7 +270,7 @@ pub fn recognize_text_by_lines(
     let mut final_results = Vec::new();
 
     for mut line_blocks in text_lines.into_iter() {
-        line_blocks.sort_by(|a, b| a.bounding_box.x.cmp(&b.bounding_box.x));
+        line_blocks.sort_by_key(|result| result.bounding_box.x);
 
         let mut line_text = String::new();
         let mut min_x = i32::MAX;
@@ -310,7 +310,7 @@ pub fn recognize_text_by_lines(
     }
 
     // Final sort by Y.
-    final_results.sort_by(|a, b| a.bounding_box.y.cmp(&b.bounding_box.y));
+    final_results.sort_by_key(|result| result.bounding_box.y);
 
     Ok(final_results)
 }

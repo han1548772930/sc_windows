@@ -10,11 +10,10 @@ use sc_windows::drawing::{
 };
 use sc_windows::screenshot::selection::SelectionState;
 
-/// 测试选择状态管理性能
+/// Benchmark selection state management.
 fn bench_selection_state(c: &mut Criterion) {
     let mut group = c.benchmark_group("SelectionState");
 
-    // 测试创建选择状态
     group.bench_function("new", |b| {
         b.iter(|| {
             let state = SelectionState::new();
@@ -22,7 +21,6 @@ fn bench_selection_state(c: &mut Criterion) {
         });
     });
 
-    // 测试开始和结束交互（新版本：host 仅维护交互状态，不再持有确认选区）
     group.bench_function("start_end_selection", |b| {
         let mut state = SelectionState::new();
         let start_x = 100;
@@ -37,7 +35,6 @@ fn bench_selection_state(c: &mut Criterion) {
         });
     });
 
-    // 测试鼠标按下状态切换
     group.bench_function("set_mouse_pressed", |b| {
         let mut state = SelectionState::new();
         b.iter(|| {
@@ -46,7 +43,6 @@ fn bench_selection_state(c: &mut Criterion) {
         });
     });
 
-    // 测试交互状态查询
     group.bench_function("is_interacting", |b| {
         let mut state = SelectionState::new();
         state.start_interaction(0, 0, DragMode::Moving);
@@ -57,35 +53,28 @@ fn bench_selection_state(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试手柄检测性能
+/// Benchmark selection handle detection.
 fn bench_handle_detection(c: &mut Criterion) {
     let mut group = c.benchmark_group("Handle Detection");
 
-    // 测试手柄位置检测
     group.bench_function("get_handle_at_position_hit", |b| {
         let state = SelectionState::new();
         let rect = RectI32::from_points(100, 100, 500, 500);
 
-        b.iter(|| {
-            // 测试点击左上角手柄
-            black_box(state.get_handle_at_position(Some(rect), 100, 100))
-        });
+        b.iter(|| black_box(state.get_handle_at_position(Some(rect), 100, 100)));
     });
 
     group.bench_function("get_handle_at_position_miss", |b| {
         let state = SelectionState::new();
         let rect = RectI32::from_points(100, 100, 500, 500);
 
-        b.iter(|| {
-            // 测试点击不在任何手柄上的位置
-            black_box(state.get_handle_at_position(Some(rect), 300, 300))
-        });
+        b.iter(|| black_box(state.get_handle_at_position(Some(rect), 300, 300)));
     });
 
     group.finish();
 }
 
-/// 测试工具函数性能
+/// Benchmark utility functions.
 fn bench_utils(c: &mut Criterion) {
     #[inline]
     fn clamp_to_rect_i32(x: i32, y: i32, rect: &RectI32) -> (i32, i32) {
@@ -97,23 +86,23 @@ fn bench_utils(c: &mut Criterion) {
 
     #[inline]
     fn point_to_line_distance(px: i32, py: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> f64 {
-        let px = px as f64;
-        let py = py as f64;
-        let x1 = x1 as f64;
-        let y1 = y1 as f64;
-        let x2 = x2 as f64;
-        let y2 = y2 as f64;
+        let px = f64::from(px);
+        let py = f64::from(py);
+        let x1 = f64::from(x1);
+        let y1 = f64::from(y1);
+        let x2 = f64::from(x2);
+        let y2 = f64::from(y2);
 
         let a = px - x1;
         let b = py - y1;
         let c = x2 - x1;
         let d = y2 - y1;
 
-        let dot = a * c + b * d;
-        let len_sq = c * c + d * d;
+        let dot = b.mul_add(d, a * c);
+        let len_sq = d.mul_add(d, c * c);
 
         if len_sq == 0.0 {
-            return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+            return (px - x1).hypot(py - y1);
         }
 
         let param = dot / len_sq;
@@ -123,15 +112,14 @@ fn bench_utils(c: &mut Criterion) {
         } else if param > 1.0 {
             (x2, y2)
         } else {
-            (x1 + param * c, y1 + param * d)
+            (param.mul_add(c, x1), param.mul_add(d, y1))
         };
 
-        ((px - xx).powi(2) + (py - yy).powi(2)).sqrt()
+        (px - xx).hypot(py - yy)
     }
 
     let mut group = c.benchmark_group("Utils");
 
-    // 测试点到线段距离计算
     group.bench_function("point_to_line_distance", |b| {
         b.iter(|| {
             point_to_line_distance(
@@ -145,7 +133,6 @@ fn bench_utils(c: &mut Criterion) {
         });
     });
 
-    // 测试坐标钳位
     group.bench_function("clamp_to_rect", |b| {
         let rect = RectI32 {
             left: 0,
@@ -156,7 +143,6 @@ fn bench_utils(c: &mut Criterion) {
         b.iter(|| clamp_to_rect_i32(black_box(2000), black_box(1500), &rect));
     });
 
-    // 测试拖拽阈值检查
     group.bench_function("is_drag_threshold_exceeded", |b| {
         b.iter(|| {
             is_drag_threshold_exceeded(
@@ -168,7 +154,6 @@ fn bench_utils(c: &mut Criterion) {
         });
     });
 
-    // 测试矩形有效性检查
     group.bench_function("is_rect_valid", |b| {
         let rect = Rect {
             left: 0,
@@ -182,16 +167,14 @@ fn bench_utils(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试历史管理器性能
+/// Benchmark history management.
 fn bench_history_manager(c: &mut Criterion) {
     let mut group = c.benchmark_group("HistoryManager");
 
-    // 测试保存状态
     group.bench_function("save_state", |b| {
         let mut history = HistoryManager::new();
         let mut elements = ElementManager::new();
 
-        // 添加一些元素
         for _ in 0..10 {
             let mut el = DrawingElement::new(DrawingTool::Rectangle);
             el.add_point(0, 0);
@@ -205,7 +188,6 @@ fn bench_history_manager(c: &mut Criterion) {
         });
     });
 
-    // 测试记录操作
     group.bench_function("record_action", |b| {
         let mut history = HistoryManager::new();
 
@@ -219,29 +201,26 @@ fn bench_history_manager(c: &mut Criterion) {
         });
     });
 
-    // 测试撤销操作
     group.bench_function("undo_action", |b| {
         let mut history = HistoryManager::new();
 
-        // 记录多个操作
-        for i in 0..20 {
+        for i in 0usize..20 {
             let mut el = DrawingElement::new(DrawingTool::Rectangle);
-            el.add_point(i * 10, i * 10);
-            el.set_end_point(i * 10 + 100, i * 10 + 100);
+            let offset = i as i32 * 10;
+            el.add_point(offset, offset);
+            el.set_end_point(offset + 100, offset + 100);
             el.update_bounding_rect();
             let action = DrawingAction::AddElement {
                 element: el,
-                index: i as usize,
+                index: i,
             };
             history.record_action(action, None, None);
         }
 
         b.iter(|| {
-            // 撤销一次，然后重做恢复，保持基准测试可重复
             if let Some((action, sel)) = history.undo_action() {
                 let _ = black_box(action);
                 let _ = black_box(sel);
-                // 重做恢复
                 if let Some((action2, _)) = history.redo_action() {
                     let _ = black_box(action2);
                 }
@@ -252,11 +231,10 @@ fn bench_history_manager(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试元素管理器性能
+/// Benchmark element management.
 fn bench_element_manager(c: &mut Criterion) {
     let mut group = c.benchmark_group("ElementManager");
 
-    // 测试添加元素
     group.bench_function("add_element", |b| {
         let mut manager = ElementManager::new();
         b.iter(|| {
@@ -269,7 +247,6 @@ fn bench_element_manager(c: &mut Criterion) {
         manager.clear();
     });
 
-    // 测试查找元素（不同元素数量）
     for count in [10, 50, 100] {
         group.bench_with_input(
             BenchmarkId::new("get_element_at_position", count),
@@ -285,7 +262,6 @@ fn bench_element_manager(c: &mut Criterion) {
                 }
 
                 b.iter(|| {
-                    // 查找中间位置的元素
                     black_box(
                         manager
                             .get_element_at_position((count / 2) * 50 + 20, (count / 2) * 50 + 20),
@@ -298,11 +274,10 @@ fn bench_element_manager(c: &mut Criterion) {
     group.finish();
 }
 
-/// 测试 GeometryCache 性能
+/// Benchmark `GeometryCache`.
 fn bench_geometry_cache(c: &mut Criterion) {
     let mut group = c.benchmark_group("GeometryCache");
 
-    // 测试创建缓存
     group.bench_function("new", |b| {
         b.iter(|| {
             let cache = GeometryCache::new();
@@ -310,7 +285,6 @@ fn bench_geometry_cache(c: &mut Criterion) {
         });
     });
 
-    // 测试标记脏
     group.bench_function("mark_dirty", |b| {
         let mut cache = GeometryCache::new();
         let mut id = 0u64;
@@ -320,7 +294,6 @@ fn bench_geometry_cache(c: &mut Criterion) {
         });
     });
 
-    // 测试批量标记脏
     group.bench_function("mark_dirty_batch_100", |b| {
         let mut cache = GeometryCache::new();
         let ids: Vec<u64> = (0..100u64).collect();
@@ -329,10 +302,8 @@ fn bench_geometry_cache(c: &mut Criterion) {
         });
     });
 
-    // 测试失效所有缓存
     group.bench_function("invalidate_all", |b| {
         let mut cache = GeometryCache::new();
-        // 预先标记一些脏
         for i in 0..100 {
             cache.mark_dirty(i);
         }
