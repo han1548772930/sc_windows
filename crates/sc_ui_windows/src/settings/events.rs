@@ -74,8 +74,7 @@ impl SettingsWindowState {
         match msg {
             WM_NOTIFY => unsafe {
                 let nmhdr = &*(lparam.0 as *const NMHDR);
-                // TCN_SELCHANGE = TCN_FIRST - 1
-                if nmhdr.code == 0xFFFF_FDD9_u32 {
+                if nmhdr.code == TCN_SELCHANGE {
                     self.handle_tab_change();
                 }
                 Some(LRESULT(0))
@@ -85,8 +84,7 @@ impl SettingsWindowState {
                 let command_id = (wparam.0 & 0xFFFF) as i32;
                 let notification = ((wparam.0 >> 16) & 0xFFFF) as i32;
 
-                // EN_CHANGE
-                if notification == 0x0300 {
+                if notification == EN_CHANGE as i32 {
                     self.handle_edit_change(command_id);
                 } else {
                     self.handle_command(command_id);

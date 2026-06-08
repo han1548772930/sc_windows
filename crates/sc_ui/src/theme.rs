@@ -56,16 +56,16 @@ pub mod preview {
 
 pub mod settings {
     // Default window size.
-    pub const WINDOW_DEFAULT_WIDTH: i32 = 480;
-    pub const WINDOW_DEFAULT_HEIGHT: i32 = 480;
+    pub const WINDOW_DEFAULT_WIDTH: i32 = 520;
+    pub const WINDOW_DEFAULT_HEIGHT: i32 = 430;
 
     // Layout constants.
-    pub const MARGIN: i32 = 15;
-    pub const ROW_HEIGHT: i32 = 32;
-    pub const ROW_SPACING: i32 = 8;
-    pub const LABEL_WIDTH: i32 = 80;
+    pub const MARGIN: i32 = 16;
+    pub const ROW_HEIGHT: i32 = 34;
+    pub const ROW_SPACING: i32 = 10;
+    pub const LABEL_WIDTH: i32 = 88;
     pub const LABEL_HEIGHT: i32 = 18;
-    pub const LABEL_Y_OFFSET: i32 = 3;
+    pub const LABEL_Y_OFFSET: i32 = 5;
     pub const CONTROL_HEIGHT: i32 = 28;
 
     pub const BUTTON_WIDTH: i32 = 90;
@@ -80,4 +80,14 @@ pub mod settings {
 
     pub const TAB_CONTENT_MARGIN: i32 = 10;
     pub const LABEL_CONTROL_GAP: i32 = 10;
+
+    pub const SHORT_EDIT_WIDTH: i32 = 72;
+    pub const FONT_BUTTON_WIDTH: i32 = 112;
+    pub const COLOR_PREVIEW_WIDTH: i32 = 28;
+    pub const COLOR_PREVIEW_HEIGHT: i32 = 22;
+    pub const COLOR_BUTTON_WIDTH: i32 = 104;
+    pub const PATH_BROWSE_BUTTON_WIDTH: i32 = 82;
+    pub const PATH_BUTTON_GAP: i32 = 8;
+    pub const OCR_LANGUAGE_WIDTH: i32 = 180;
+    pub const OCR_LANGUAGE_DROPDOWN_HEIGHT: i32 = 200;
 }

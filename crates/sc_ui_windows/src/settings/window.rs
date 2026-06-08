@@ -102,6 +102,11 @@ pub(super) struct SettingsWindowState {
     pub(super) text_color_brush: OwnedBrush,
 }
 
+const LINE_THICKNESS_TEXT_LIMIT: usize = 31;
+const HOTKEY_TEXT_LIMIT: usize = 63;
+const CONFIG_PATH_TEXT_LIMIT: usize = 259;
+const CONFIG_PATH_TEXT_BUFFER: usize = CONFIG_PATH_TEXT_LIMIT + 1;
+
 impl SettingsWindow {
     pub fn is_open() -> bool {
         SettingsWindowState::is_open()
@@ -298,233 +303,127 @@ impl SettingsWindowState {
             self.line_thickness_label =
                 self.create_label("线条粗细:", self.tab_drawing, instance)?;
 
-            self.line_thickness_edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("EDIT").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_drawing),
-                Some(HMENU(ID_LINE_THICKNESS as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.line_thickness_edit,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            self.line_thickness_edit =
+                self.create_edit(self.tab_drawing, ID_LINE_THICKNESS, instance)?;
+            self.set_edit_text_limit(self.line_thickness_edit, LINE_THICKNESS_TEXT_LIMIT);
 
             self.font_label = self.create_label("字体设置:", self.tab_drawing, instance)?;
 
-            self.font_choose_button = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
-                PCWSTR(to_wide_chars("选择字体...").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_drawing),
-                Some(HMENU(ID_FONT_CHOOSE_BUTTON as *mut _)),
-                Some(instance),
-                None,
+            self.font_choose_button = self.create_button(
+                "选择字体...",
+                self.tab_drawing,
+                ID_FONT_CHOOSE_BUTTON,
+                instance,
             )?;
-            SendMessageW(
-                self.font_choose_button,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
 
             self.drawing_color_label =
                 self.create_label("绘图颜色:", self.tab_drawing, instance)?;
 
-            self.drawing_color_preview = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_drawing),
-                None,
-                Some(instance),
-                None,
-            )?;
+            self.drawing_color_preview = self.create_static_preview(self.tab_drawing, instance)?;
 
-            self.drawing_color_button = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
-                PCWSTR(to_wide_chars("选择颜色...").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_drawing),
-                Some(HMENU(ID_DRAWING_COLOR_BUTTON as *mut _)),
-                Some(instance),
-                None,
+            self.drawing_color_button = self.create_button(
+                "选择颜色...",
+                self.tab_drawing,
+                ID_DRAWING_COLOR_BUTTON,
+                instance,
             )?;
-            SendMessageW(
-                self.drawing_color_button,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
 
             // System tab.
             self.hotkey_label = self.create_label("截图热键:", self.tab_system, instance)?;
 
-            self.hotkey_edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("EDIT").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_system),
-                Some(HMENU(ID_HOTKEY_EDIT as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.hotkey_edit,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            self.hotkey_edit = self.create_edit(self.tab_system, ID_HOTKEY_EDIT, instance)?;
+            self.set_edit_text_limit(self.hotkey_edit, HOTKEY_TEXT_LIMIT);
             Self::set_modern_theme(self.hotkey_edit);
 
             Self::subclass_hotkey_edit(self.hotkey_edit)?;
 
             self.config_path_label = self.create_label("保存路径:", self.tab_system, instance)?;
 
-            self.config_path_edit = CreateWindowExW(
-                WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("EDIT").as_ptr()),
-                PCWSTR::null(),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_system),
-                Some(HMENU(ID_CONFIG_PATH_EDIT as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.config_path_edit,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            self.config_path_edit =
+                self.create_edit(self.tab_system, ID_CONFIG_PATH_EDIT, instance)?;
+            self.set_edit_text_limit(self.config_path_edit, CONFIG_PATH_TEXT_LIMIT);
             Self::set_modern_theme(self.config_path_edit);
 
-            self.config_path_browse_button = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
-                PCWSTR(to_wide_chars("浏览...").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_system),
-                Some(HMENU(ID_CONFIG_PATH_BROWSE as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.config_path_browse_button,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            self.config_path_browse_button =
+                self.create_button("浏览...", self.tab_system, ID_CONFIG_PATH_BROWSE, instance)?;
 
             self.ocr_language_label = self.create_label("OCR语言", self.tab_system, instance)?;
 
-            self.ocr_language_combo = CreateWindowExW(
+            self.ocr_language_combo = self.create_child_control(
+                "COMBOBOX",
+                None,
                 WS_EX_CLIENTEDGE,
-                PCWSTR(to_wide_chars("COMBOBOX").as_ptr()),
-                PCWSTR::null(),
                 WINDOW_STYLE(WS_VISIBLE.0 | WS_CHILD.0 | WS_TABSTOP.0 | 0x0003),
-                0,
-                0,
-                0,
-                0,
-                Some(self.tab_system),
-                Some(HMENU(ID_OCR_LANGUAGE_COMBO as *mut _)),
-                Some(instance),
-                None,
+                self.tab_system,
+                Some(ID_OCR_LANGUAGE_COMBO),
+                instance,
+                true,
             )?;
-            SendMessageW(
-                self.ocr_language_combo,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
             Self::set_modern_theme(self.ocr_language_combo);
 
             self.load_ocr_languages();
 
             // Bottom buttons.
-            self.ok_button = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
-                PCWSTR(to_wide_chars("确定").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.hwnd),
-                Some(HMENU(ID_OK as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.ok_button,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
-
-            self.cancel_button = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("BUTTON").as_ptr()),
-                PCWSTR(to_wide_chars("取消").as_ptr()),
-                WS_VISIBLE | WS_CHILD | WS_TABSTOP,
-                0,
-                0,
-                0,
-                0,
-                Some(self.hwnd),
-                Some(HMENU(ID_CANCEL as *mut _)),
-                Some(instance),
-                None,
-            )?;
-            SendMessageW(
-                self.cancel_button,
-                WM_SETFONT,
-                Some(WPARAM(self.font.0 as usize)),
-                None,
-            );
+            self.ok_button = self.create_button("确定", self.hwnd, ID_OK, instance)?;
+            self.cancel_button = self.create_button("取消", self.hwnd, ID_CANCEL, instance)?;
 
             self.layout_controls();
             Ok(())
         }
+    }
+
+    fn create_edit(
+        &self,
+        parent: HWND,
+        control_id: i32,
+        instance: HINSTANCE,
+    ) -> windows::core::Result<HWND> {
+        self.create_child_control(
+            "EDIT",
+            None,
+            WS_EX_CLIENTEDGE,
+            WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+            parent,
+            Some(control_id),
+            instance,
+            true,
+        )
+    }
+
+    fn create_button(
+        &self,
+        text: &str,
+        parent: HWND,
+        control_id: i32,
+        instance: HINSTANCE,
+    ) -> windows::core::Result<HWND> {
+        self.create_child_control(
+            "BUTTON",
+            Some(text),
+            WINDOW_EX_STYLE::default(),
+            WS_VISIBLE | WS_CHILD | WS_TABSTOP,
+            parent,
+            Some(control_id),
+            instance,
+            true,
+        )
+    }
+
+    fn create_static_preview(
+        &self,
+        parent: HWND,
+        instance: HINSTANCE,
+    ) -> windows::core::Result<HWND> {
+        self.create_child_control(
+            "STATIC",
+            None,
+            WS_EX_CLIENTEDGE,
+            WS_VISIBLE | WS_CHILD,
+            parent,
+            None,
+            instance,
+            false,
+        )
     }
 
     fn create_label(
@@ -533,65 +432,198 @@ impl SettingsWindowState {
         parent: HWND,
         instance: HINSTANCE,
     ) -> windows::core::Result<HWND> {
+        self.create_child_control(
+            "STATIC",
+            Some(text),
+            WINDOW_EX_STYLE::default(),
+            WS_VISIBLE | WS_CHILD,
+            parent,
+            None,
+            instance,
+            true,
+        )
+    }
+
+    fn create_child_control(
+        &self,
+        class_name: &str,
+        text: Option<&str>,
+        ex_style: WINDOW_EX_STYLE,
+        style: WINDOW_STYLE,
+        parent: HWND,
+        control_id: Option<i32>,
+        instance: HINSTANCE,
+        apply_font: bool,
+    ) -> windows::core::Result<HWND> {
         unsafe {
+            let class_name = to_wide_chars(class_name);
+            let text = text.map(to_wide_chars);
+            let text_ptr = text
+                .as_ref()
+                .map_or(PCWSTR::null(), |value| PCWSTR(value.as_ptr()));
+            let menu = control_id.map(|id| HMENU(id as *mut _));
+
             let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                PCWSTR(to_wide_chars("STATIC").as_ptr()),
-                PCWSTR(to_wide_chars(text).as_ptr()),
-                WS_VISIBLE | WS_CHILD,
+                ex_style,
+                PCWSTR(class_name.as_ptr()),
+                text_ptr,
+                style,
                 0,
                 0,
                 0,
                 0,
                 Some(parent),
-                None,
+                menu,
                 Some(instance),
                 None,
             )?;
-            SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), None);
+
+            if apply_font {
+                self.set_control_font(hwnd);
+            }
+
             Ok(hwnd)
         }
     }
 
-    fn load_ocr_languages(&self) {
+    fn set_control_font(&self, hwnd: HWND) {
         unsafe {
-            let available_languages =
-                get_available_languages(std::path::Path::new(sc_ocr::DEFAULT_MODELS_DIR));
+            SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(self.font.0 as usize)), None);
+        }
+    }
 
-            if available_languages.is_empty() {
-                let text = to_wide_chars("未找到 OCR 模型");
-                SendMessageW(
+    fn set_edit_text_limit(&self, hwnd: HWND, max_chars: usize) {
+        unsafe {
+            SendMessageW(hwnd, EM_LIMITTEXT, Some(WPARAM(max_chars)), None);
+        }
+    }
+
+    fn read_window_text<const N: usize>(hwnd: HWND) -> Option<String> {
+        unsafe {
+            let mut buffer = [0u16; N];
+            if GetWindowTextW(hwnd, &mut buffer) <= 0 {
+                return None;
+            }
+
+            Some(
+                String::from_utf16_lossy(&buffer)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
+        }
+    }
+
+    fn add_ocr_language_item(&self, display: &str, language_id: Option<&str>) {
+        unsafe {
+            let text = to_wide_chars(display);
+            let index = SendMessageW(
+                self.ocr_language_combo,
+                CB_ADDSTRING,
+                Some(WPARAM(0)),
+                Some(LPARAM(text.as_ptr() as isize)),
+            )
+            .0;
+
+            if index == CB_ERR as isize || index == CB_ERRSPACE as isize {
+                return;
+            }
+
+            if let Some(language_id) = language_id {
+                let value_ptr = Box::into_raw(Box::new(to_wide_chars(language_id)));
+                let result = SendMessageW(
                     self.ocr_language_combo,
-                    0x0143, // CB_ADDSTRING
-                    Some(WPARAM(0)),
-                    Some(LPARAM(text.as_ptr() as isize)),
+                    CB_SETITEMDATA,
+                    Some(WPARAM(index as usize)),
+                    Some(LPARAM(value_ptr as isize)),
                 );
-            } else {
-                for (i, lang) in available_languages.iter().enumerate() {
-                    let display = if i == 0 {
-                        format!("{} (默认)", lang.display_name)
-                    } else {
-                        lang.display_name.clone()
-                    };
-
-                    let text = to_wide_chars(&display);
-                    let index = SendMessageW(
-                        self.ocr_language_combo,
-                        0x0143, // CB_ADDSTRING
-                        Some(WPARAM(0)),
-                        Some(LPARAM(text.as_ptr() as isize)),
-                    );
-
-                    let value_text = to_wide_chars(&lang.id);
-                    let value_box = Box::new(value_text);
-                    let value_ptr = Box::into_raw(value_box);
-                    SendMessageW(
-                        self.ocr_language_combo,
-                        0x0151, // CB_SETITEMDATA
-                        Some(WPARAM(index.0 as usize)),
-                        Some(LPARAM(value_ptr as isize)),
-                    );
+                if result.0 == CB_ERR as isize {
+                    let _ = Box::from_raw(value_ptr);
                 }
+            }
+        }
+    }
+
+    fn ocr_language_item_count(&self) -> usize {
+        unsafe {
+            let count = SendMessageW(self.ocr_language_combo, CB_GETCOUNT, None, None).0;
+            if count <= 0 || count == CB_ERR as isize {
+                0
+            } else {
+                count as usize
+            }
+        }
+    }
+
+    fn ocr_language_value_at(&self, index: usize) -> Option<String> {
+        unsafe {
+            let data = SendMessageW(
+                self.ocr_language_combo,
+                CB_GETITEMDATA,
+                Some(WPARAM(index)),
+                None,
+            )
+            .0;
+            if data == 0 || data == CB_ERR as isize {
+                return None;
+            }
+
+            let value_ptr = data as *const Vec<u16>;
+            if value_ptr.is_null() {
+                return None;
+            }
+
+            Some(
+                String::from_utf16_lossy(&*value_ptr)
+                    .trim_end_matches('\0')
+                    .to_string(),
+            )
+        }
+    }
+
+    fn clear_ocr_language_items(&self) {
+        unsafe {
+            for i in 0..self.ocr_language_item_count() {
+                let data = SendMessageW(
+                    self.ocr_language_combo,
+                    CB_GETITEMDATA,
+                    Some(WPARAM(i)),
+                    None,
+                )
+                .0;
+                if data == 0 || data == CB_ERR as isize {
+                    continue;
+                }
+
+                let value_ptr = data as *mut Vec<u16>;
+                let _ = SendMessageW(
+                    self.ocr_language_combo,
+                    CB_SETITEMDATA,
+                    Some(WPARAM(i)),
+                    Some(LPARAM(0)),
+                );
+
+                if !value_ptr.is_null() {
+                    let _ = Box::from_raw(value_ptr);
+                }
+            }
+        }
+    }
+
+    fn load_ocr_languages(&self) {
+        let available_languages =
+            get_available_languages(std::path::Path::new(sc_ocr::DEFAULT_MODELS_DIR));
+
+        if available_languages.is_empty() {
+            self.add_ocr_language_item("未找到 OCR 模型", None);
+        } else {
+            for (i, lang) in available_languages.iter().enumerate() {
+                let display = if i == 0 {
+                    format!("{} (默认)", lang.display_name)
+                } else {
+                    lang.display_name.clone()
+                };
+
+                self.add_ocr_language_item(&display, Some(&lang.id));
             }
         }
     }
@@ -631,30 +663,11 @@ impl SettingsWindowState {
             let _ = SetWindowTextW(self.config_path_edit, PCWSTR(config_path_text.as_ptr()));
 
             // OCR language.
-            let item_count = SendMessageW(self.ocr_language_combo, 0x0146, None, None); // CB_GETCOUNT
-            for i in 0..item_count.0 {
-                let data_ptr = SendMessageW(
-                    self.ocr_language_combo,
-                    0x0150, // CB_GETITEMDATA
-                    Some(WPARAM(i as usize)),
-                    None,
-                );
-                if data_ptr.0 != 0 {
-                    let value_ptr = data_ptr.0 as *const Vec<u16>;
-                    if !value_ptr.is_null() {
-                        let value_vec = &*value_ptr;
-                        let value = String::from_utf16_lossy(value_vec)
-                            .trim_end_matches('\0')
-                            .to_string();
-                        if value == self.settings.ocr_language {
-                            SendMessageW(
-                                self.ocr_language_combo,
-                                0x014E, // CB_SETCURSEL
-                                Some(WPARAM(i as usize)),
-                                None,
-                            );
-                            break;
-                        }
+            for i in 0..self.ocr_language_item_count() {
+                if let Some(value) = self.ocr_language_value_at(i) {
+                    if value == self.settings.ocr_language {
+                        SendMessageW(self.ocr_language_combo, CB_SETCURSEL, Some(WPARAM(i)), None);
+                        break;
                     }
                 }
             }
@@ -766,49 +779,32 @@ impl SettingsWindowState {
 
     fn save_settings(&mut self) {
         unsafe {
-            let mut buffer = [0u16; 32];
-
-            if GetWindowTextW(self.line_thickness_edit, &mut buffer) > 0 {
-                let text = String::from_utf16_lossy(&buffer);
-                let text = text.trim_end_matches('\0');
+            if let Some(text) = Self::read_window_text::<{ LINE_THICKNESS_TEXT_LIMIT + 1 }>(
+                self.line_thickness_edit,
+            ) {
                 if let Ok(value) = text.parse::<f32>() {
                     self.settings.line_thickness = value.clamp(1.0, 20.0);
                 }
             }
 
-            let mut hotkey_buffer = [0u16; 64];
-            if GetWindowTextW(self.hotkey_edit, &mut hotkey_buffer) > 0 {
-                let hotkey_text = String::from_utf16_lossy(&hotkey_buffer);
-                let hotkey_text = hotkey_text.trim_end_matches('\0');
-                let _ = self.settings.parse_hotkey_string(hotkey_text);
+            if let Some(hotkey_text) =
+                Self::read_window_text::<{ HOTKEY_TEXT_LIMIT + 1 }>(self.hotkey_edit)
+            {
+                let _ = self.settings.parse_hotkey_string(&hotkey_text);
             }
 
-            let mut config_path_buffer = [0u16; 260];
-            if GetWindowTextW(self.config_path_edit, &mut config_path_buffer) > 0 {
-                let config_path_text = String::from_utf16_lossy(&config_path_buffer);
-                let config_path_text = config_path_text.trim_end_matches('\0');
+            if let Some(config_path_text) =
+                Self::read_window_text::<CONFIG_PATH_TEXT_BUFFER>(self.config_path_edit)
+            {
                 if !config_path_text.is_empty() {
-                    self.settings.config_path = config_path_text.to_string();
+                    self.settings.config_path = config_path_text;
                 }
             }
 
-            let selected_index = SendMessageW(self.ocr_language_combo, 0x0147, None, None); // CB_GETCURSEL
-            if selected_index.0 != -1 {
-                let data_ptr = SendMessageW(
-                    self.ocr_language_combo,
-                    0x0150, // CB_GETITEMDATA
-                    Some(WPARAM(selected_index.0 as usize)),
-                    None,
-                );
-                if data_ptr.0 != 0 {
-                    let value_ptr = data_ptr.0 as *const Vec<u16>;
-                    if !value_ptr.is_null() {
-                        let value_vec = &*value_ptr;
-                        let value = String::from_utf16_lossy(value_vec)
-                            .trim_end_matches('\0')
-                            .to_string();
-                        self.settings.ocr_language = value;
-                    }
+            let selected_index = SendMessageW(self.ocr_language_combo, CB_GETCURSEL, None, None).0;
+            if selected_index != CB_ERR as isize {
+                if let Some(value) = self.ocr_language_value_at(selected_index as usize) {
+                    self.settings.ocr_language = value;
                 }
             }
         }
@@ -828,12 +824,8 @@ impl SettingsWindowState {
     }
 
     fn show_simple_path_input(&mut self) {
-        let current_path = unsafe {
-            let mut buffer = [0u16; 260];
-            GetWindowTextW(self.config_path_edit, &mut buffer);
-            String::from_utf16_lossy(&buffer)
-        };
-        let current_path = current_path.trim_end_matches('\0');
+        let current_path = Self::read_window_text::<CONFIG_PATH_TEXT_BUFFER>(self.config_path_edit)
+            .unwrap_or_default();
 
         let message = format!("当前路径: {current_path}\n\n请手动在输入框中修改路径");
         WindowsHostPlatform::new().show_info_message(to_window_id(self.hwnd), "配置路径", &message);
@@ -841,32 +833,7 @@ impl SettingsWindowState {
 
     pub(super) fn cleanup(&mut self) {
         unsafe {
-            // Free combo item data.
-            let item_count = SendMessageW(self.ocr_language_combo, 0x0146, None, None).0; // CB_GETCOUNT
-            if item_count > 0 {
-                for i in 0..item_count {
-                    let data_ptr = SendMessageW(
-                        self.ocr_language_combo,
-                        0x0150, // CB_GETITEMDATA
-                        Some(WPARAM(i as usize)),
-                        None,
-                    );
-                    if data_ptr.0 != 0 {
-                        let value_ptr = data_ptr.0 as *mut Vec<u16>;
-                        if !value_ptr.is_null() {
-                            let _ = Box::from_raw(value_ptr);
-                        }
-                        // Best-effort: clear item data.
-                        let _ = SendMessageW(
-                            self.ocr_language_combo,
-                            0x0151, // CB_SETITEMDATA
-                            Some(WPARAM(i as usize)),
-                            Some(LPARAM(0)),
-                        );
-                    }
-                }
-            }
-
+            self.clear_ocr_language_items();
             Self::unsubclass_hotkey_edit(self.hotkey_edit);
             self.drawing_color_brush.clear();
             self.text_color_brush.clear();

@@ -455,4 +455,4 @@ pub fn handle_tab_change(tabs: &TabsContainer) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Tab 切换通知码
-pub const TCN_SELCHANGE: u32 = 0xFFFFFDDA_u32; // -550
+pub const TCN_SELCHANGE: u32 = windows::Win32::UI::Controls::TCN_SELCHANGE;

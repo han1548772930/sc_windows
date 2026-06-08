@@ -5,9 +5,11 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::window::SettingsWindowState;
 use super::{
-    BUTTON_HEIGHT, BUTTON_SPACING, BUTTON_WIDTH, CONTROL_HEIGHT, LABEL_CONTROL_GAP, LABEL_HEIGHT,
-    LABEL_WIDTH, LABEL_Y_OFFSET, MARGIN, ROW_HEIGHT, ROW_SPACING, TAB_CONTENT_MARGIN,
-    TAB_PAGE_HEIGHT_ADJUST, TAB_PAGE_WIDTH_ADJUST, TAB_PAGE_X, TAB_PAGE_Y,
+    BUTTON_HEIGHT, BUTTON_SPACING, BUTTON_WIDTH, COLOR_BUTTON_WIDTH, COLOR_PREVIEW_HEIGHT,
+    COLOR_PREVIEW_WIDTH, CONTROL_HEIGHT, FONT_BUTTON_WIDTH, LABEL_CONTROL_GAP, LABEL_HEIGHT,
+    LABEL_WIDTH, LABEL_Y_OFFSET, MARGIN, OCR_LANGUAGE_DROPDOWN_HEIGHT, OCR_LANGUAGE_WIDTH,
+    PATH_BROWSE_BUTTON_WIDTH, PATH_BUTTON_GAP, ROW_HEIGHT, ROW_SPACING, SHORT_EDIT_WIDTH,
+    TAB_CONTENT_MARGIN, TAB_PAGE_HEIGHT_ADJUST, TAB_PAGE_WIDTH_ADJUST, TAB_PAGE_X, TAB_PAGE_Y,
 };
 
 impl SettingsWindowState {
@@ -92,173 +94,144 @@ impl SettingsWindowState {
         }
     }
 
-    fn layout_drawing_tab(&self, _tab_width: i32) {
+    fn layout_drawing_tab(&self, tab_width: i32) {
         unsafe {
             let margin = TAB_CONTENT_MARGIN;
-            let control_x = margin + LABEL_WIDTH + LABEL_CONTROL_GAP;
+            let metrics = RowMetrics::new(tab_width, margin);
 
             let mut y = margin;
 
-            if !self.line_thickness_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.line_thickness_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
-            let _ = SetWindowPos(
+            Self::position_label(self.line_thickness_label, &metrics, y);
+            Self::position_control(
                 self.line_thickness_edit,
-                None,
-                control_x,
+                metrics.control_x,
                 y,
-                60,
-                CONTROL_HEIGHT,
-                SWP_NOZORDER,
+                SHORT_EDIT_WIDTH,
             );
             y += ROW_HEIGHT + ROW_SPACING;
 
-            if !self.font_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.font_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
-            let _ = SetWindowPos(
+            Self::position_label(self.font_label, &metrics, y);
+            Self::position_control(
                 self.font_choose_button,
-                None,
-                control_x,
+                metrics.control_x,
                 y,
-                110,
-                BUTTON_HEIGHT,
-                SWP_NOZORDER,
+                FONT_BUTTON_WIDTH.min(metrics.control_width),
             );
             y += ROW_HEIGHT + ROW_SPACING;
 
-            if !self.drawing_color_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.drawing_color_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
+            Self::position_label(self.drawing_color_label, &metrics, y);
             let _ = SetWindowPos(
                 self.drawing_color_preview,
                 None,
-                control_x,
-                y + 2,
-                24,
-                20,
+                metrics.control_x,
+                y + (CONTROL_HEIGHT - COLOR_PREVIEW_HEIGHT) / 2,
+                COLOR_PREVIEW_WIDTH,
+                COLOR_PREVIEW_HEIGHT,
                 SWP_NOZORDER,
             );
-            let _ = SetWindowPos(
+            Self::position_control(
                 self.drawing_color_button,
-                None,
-                control_x + 32,
+                metrics.control_x + COLOR_PREVIEW_WIDTH + PATH_BUTTON_GAP,
                 y,
-                100,
-                BUTTON_HEIGHT,
-                SWP_NOZORDER,
+                COLOR_BUTTON_WIDTH.min(
+                    metrics
+                        .control_width
+                        .saturating_sub(COLOR_PREVIEW_WIDTH + PATH_BUTTON_GAP),
+                ),
             );
         }
     }
 
     fn layout_system_tab(&self, tab_width: i32) {
         unsafe {
-            let margin = TAB_CONTENT_MARGIN;
-            let control_x = margin + LABEL_WIDTH + LABEL_CONTROL_GAP;
-            let available_width = tab_width - margin * 2;
+            let metrics = RowMetrics::new(tab_width, TAB_CONTENT_MARGIN);
 
-            let mut y = margin;
+            let mut y = TAB_CONTENT_MARGIN;
 
-            if !self.hotkey_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.hotkey_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
-            let hotkey_width = available_width - LABEL_WIDTH - 20;
-            let _ = SetWindowPos(
+            Self::position_label(self.hotkey_label, &metrics, y);
+            Self::position_control(
                 self.hotkey_edit,
-                None,
-                control_x,
+                metrics.control_x,
                 y,
-                hotkey_width,
-                CONTROL_HEIGHT,
-                SWP_NOZORDER,
+                metrics.control_width,
             );
             y += ROW_HEIGHT + ROW_SPACING;
 
-            if !self.config_path_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.config_path_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
-            let browse_width = 80;
-            let path_width = available_width - LABEL_WIDTH - browse_width - 30;
-            let _ = SetWindowPos(
-                self.config_path_edit,
-                None,
-                control_x,
-                y,
-                path_width,
-                CONTROL_HEIGHT,
-                SWP_NOZORDER,
-            );
-            let _ = SetWindowPos(
+            Self::position_label(self.config_path_label, &metrics, y);
+            let path_width = metrics
+                .control_width
+                .saturating_sub(PATH_BROWSE_BUTTON_WIDTH + PATH_BUTTON_GAP);
+            Self::position_control(self.config_path_edit, metrics.control_x, y, path_width);
+            Self::position_control(
                 self.config_path_browse_button,
-                None,
-                control_x + path_width + 8,
+                metrics.control_x + path_width + PATH_BUTTON_GAP,
                 y,
-                browse_width,
-                BUTTON_HEIGHT,
-                SWP_NOZORDER,
+                PATH_BROWSE_BUTTON_WIDTH,
             );
             y += ROW_HEIGHT + ROW_SPACING;
 
-            if !self.ocr_language_label.is_invalid() {
-                let _ = SetWindowPos(
-                    self.ocr_language_label,
-                    None,
-                    margin,
-                    y + LABEL_Y_OFFSET,
-                    LABEL_WIDTH,
-                    LABEL_HEIGHT,
-                    SWP_NOZORDER,
-                );
-            }
+            Self::position_label(self.ocr_language_label, &metrics, y);
             let _ = SetWindowPos(
                 self.ocr_language_combo,
                 None,
-                control_x,
+                metrics.control_x,
                 y,
-                160,
-                200,
+                OCR_LANGUAGE_WIDTH.min(metrics.control_width),
+                OCR_LANGUAGE_DROPDOWN_HEIGHT,
                 SWP_NOZORDER,
             );
+        }
+    }
+
+    fn position_label(label: HWND, metrics: &RowMetrics, y: i32) {
+        unsafe {
+            if !label.is_invalid() {
+                let _ = SetWindowPos(
+                    label,
+                    None,
+                    metrics.label_x,
+                    y + LABEL_Y_OFFSET,
+                    LABEL_WIDTH,
+                    LABEL_HEIGHT,
+                    SWP_NOZORDER,
+                );
+            }
+        }
+    }
+
+    fn position_control(control: HWND, x: i32, y: i32, width: i32) {
+        unsafe {
+            let _ = SetWindowPos(
+                control,
+                None,
+                x,
+                y,
+                width.max(CONTROL_HEIGHT),
+                CONTROL_HEIGHT,
+                SWP_NOZORDER,
+            );
+        }
+    }
+}
+
+struct RowMetrics {
+    label_x: i32,
+    control_x: i32,
+    control_width: i32,
+}
+
+impl RowMetrics {
+    fn new(tab_width: i32, margin: i32) -> Self {
+        let available_width = (tab_width - margin * 2).max(0);
+        let control_x = margin + LABEL_WIDTH + LABEL_CONTROL_GAP;
+        let control_width = available_width
+            .saturating_sub(LABEL_WIDTH + LABEL_CONTROL_GAP)
+            .max(CONTROL_HEIGHT);
+
+        Self {
+            label_x: margin,
+            control_x,
+            control_width,
         }
     }
 }
