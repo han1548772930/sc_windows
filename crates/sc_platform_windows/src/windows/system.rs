@@ -54,6 +54,7 @@ static HOOK_TOP: AtomicI32 = AtomicI32::new(0);
 static HOOK_RIGHT: AtomicI32 = AtomicI32::new(0);
 static HOOK_BOTTOM: AtomicI32 = AtomicI32::new(0);
 static SMOOTHING_GENERATION: AtomicU64 = AtomicU64::new(0);
+static SCROLL_PIPELINE_PRESSURE: AtomicU32 = AtomicU32::new(0);
 static PENDING_WHEEL_DELTAS: OnceLock<Mutex<VecDeque<i32>>> = OnceLock::new();
 
 const SMOOTH_WHEEL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
@@ -79,10 +80,9 @@ fn enqueue_wheel_delta(delta: i32) {
     }
 }
 
-fn take_smoothed_wheel_delta(queue: &mut VecDeque<i32>) -> Option<i32> {
+fn take_smoothed_wheel_delta(queue: &mut VecDeque<i32>, max_step: u32) -> Option<i32> {
     let remaining = queue.front_mut()?;
-    let emitted =
-        remaining.signum() * remaining.unsigned_abs().min(SMOOTH_WHEEL_STEP as u32) as i32;
+    let emitted = remaining.signum() * remaining.unsigned_abs().min(max_step) as i32;
     *remaining -= emitted;
     if *remaining == 0 {
         queue.pop_front();
@@ -110,11 +110,14 @@ fn send_smoothed_wheel_delta(delta: i32) {
 fn run_wheel_smoother(generation: u64) {
     while SMOOTHING_GENERATION.load(Ordering::Acquire) == generation {
         std::thread::sleep(SMOOTH_WHEEL_INTERVAL);
+        if SCROLL_PIPELINE_PRESSURE.load(Ordering::Acquire) >= 8 {
+            continue;
+        }
         let delta = {
             let mut queue = pending_wheel_deltas()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            take_smoothed_wheel_delta(&mut queue)
+            take_smoothed_wheel_delta(&mut queue, SMOOTH_WHEEL_STEP as u32)
         };
         if let Some(delta) = delta {
             send_smoothed_wheel_delta(delta);
@@ -149,6 +152,7 @@ pub fn start_scroll_wheel_hook(rect: Rect) -> Result<u64, String> {
     HOOK_RIGHT.store(rect.right, Ordering::Relaxed);
     HOOK_BOTTOM.store(rect.bottom, Ordering::Relaxed);
     let generation = SMOOTHING_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    SCROLL_PIPELINE_PRESSURE.store(0, Ordering::Release);
     pending_wheel_deltas()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -186,6 +190,7 @@ pub fn start_scroll_wheel_hook(rect: Rect) -> Result<u64, String> {
 
 pub fn stop_scroll_wheel_hook() {
     SMOOTHING_GENERATION.fetch_add(1, Ordering::AcqRel);
+    SCROLL_PIPELINE_PRESSURE.store(0, Ordering::Release);
     pending_wheel_deltas()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -194,6 +199,13 @@ pub fn stop_scroll_wheel_hook() {
     if thread_id != 0 {
         let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
     }
+}
+
+pub fn set_scroll_pipeline_pressure(pending_frames: usize) {
+    SCROLL_PIPELINE_PRESSURE.store(
+        pending_frames.min(u32::MAX as usize) as u32,
+        Ordering::Release,
+    );
 }
 
 pub fn scroll_wheel_sequence() -> u64 {
@@ -212,7 +224,7 @@ mod scroll_smoothing_tests {
     fn smoothing_preserves_total_delta_and_direction_order() {
         let mut queue = VecDeque::from([120, -80, 30]);
         let mut emitted = Vec::new();
-        while let Some(delta) = take_smoothed_wheel_delta(&mut queue) {
+        while let Some(delta) = take_smoothed_wheel_delta(&mut queue, SMOOTH_WHEEL_STEP as u32) {
             emitted.push(delta);
         }
         assert_eq!(emitted, [40, 40, 40, -40, -40, 30]);

@@ -1,4 +1,6 @@
 use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -8,6 +10,7 @@ use imageproc::template_matching::{MatchTemplateMethod, match_template_parallel}
 const MATCH_THRESHOLD: f32 = 18.0;
 const NORMAL_MIN_OVERLAP_DIVISOR: u32 = 2;
 const FAST_SCROLL_MIN_OVERLAP_DIVISOR: u32 = 8;
+const MAX_TRANSIENT_MATCH_FAILURES: u8 = 8;
 pub const MAX_STITCH_HEIGHT: u32 = 30_000;
 
 fn capped_growth(current_height: u32, requested_height: u32) -> u32 {
@@ -135,7 +138,7 @@ impl ScrollCaptureSession {
                 _ => "方向未知",
             };
             return Err(format!(
-                "已停止：当前帧与上一帧没有唯一可靠的重叠位置。可能原因：滚动过快、页面动画/视频发生变化、聊天内容高度重复；不一定只是滚动速度。方向={direction_label}，最后成功位移={:?}px，选区={}x{}。失败帧未被跳过或写入长图",
+                "重叠验证未通过：没有候选位移同时满足方向、最小重叠、唯一性和像素误差要求。方向={direction_label}，最后成功位移={:?}px，选区={}x{}。当前帧未写入长图",
                 self.last_shift,
                 self.previous.width(),
                 self.previous.height()
@@ -143,7 +146,7 @@ impl ScrollCaptureSession {
         };
         if score > MATCH_THRESHOLD {
             return Err(format!(
-                "已停止：当前帧匹配可信度不足（误差={score:.2}，允许上限={MATCH_THRESHOLD:.2}）。可能原因：滚动过快、页面动态内容变化或聊天内容高度重复。失败帧未被跳过或写入长图"
+                "像素误差验证未通过：候选位移={shift}px，实测误差={score:.2}，允许上限={MATCH_THRESHOLD:.2}。当前帧未写入长图"
             ));
         }
 
@@ -262,6 +265,7 @@ pub struct ScrollCaptureWorker {
     commands: Sender<WorkerCommand>,
     events: Receiver<ScrollCaptureEvent>,
     thread: Option<std::thread::JoinHandle<()>>,
+    pending_frames: Arc<AtomicUsize>,
 }
 
 impl ScrollCaptureWorker {
@@ -269,15 +273,20 @@ impl ScrollCaptureWorker {
         let session = ScrollCaptureSession::new(selection, bmp)?;
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let pending_frames = Arc::new(AtomicUsize::new(0));
+        let worker_pending_frames = pending_frames.clone();
         let thread = std::thread::Builder::new()
             .name("scroll-capture-worker".to_string())
-            .spawn(move || run_scroll_capture_worker(session, command_rx, event_tx))
+            .spawn(move || {
+                run_scroll_capture_worker(session, command_rx, event_tx, worker_pending_frames)
+            })
             .map_err(|error| format!("无法启动滚动截图后台线程: {error}"))?;
         Ok(Self {
             selection,
             commands: command_tx,
             events: event_rx,
             thread: Some(thread),
+            pending_frames,
         })
     }
 
@@ -295,12 +304,21 @@ impl ScrollCaptureWorker {
         direction: i8,
         preview_size: Option<(u32, u32)>,
     ) -> Result<(), String> {
-        self.send(WorkerCommand::Frame {
+        self.pending_frames.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.send(WorkerCommand::Frame {
             bmp,
             direction,
             preview_size,
             queued_at: Instant::now(),
-        })
+        }) {
+            self.pending_frames.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn pending_frames(&self) -> usize {
+        self.pending_frames.load(Ordering::Acquire)
     }
 
     pub fn finish_gesture(&self, preview_size: (u32, u32)) -> Result<(), String> {
@@ -338,15 +356,21 @@ fn run_scroll_capture_worker(
     mut session: ScrollCaptureSession,
     commands: Receiver<WorkerCommand>,
     events: Sender<ScrollCaptureEvent>,
+    pending_frames: Arc<AtomicUsize>,
 ) {
     let mut preview_dirty = false;
     let mut last_lag_warning = None;
     let mut terminal_error: Option<String> = None;
+    let mut pending_match_error: Option<String> = None;
+    let mut consecutive_match_failures = 0u8;
     while let Ok(command) = commands.recv() {
         if let Some(error) = terminal_error.as_ref() {
             match command {
                 WorkerCommand::Export(response) => {
                     let _ = response.send(Err(error.clone()));
+                }
+                WorkerCommand::Frame { .. } => {
+                    pending_frames.fetch_sub(1, Ordering::AcqRel);
                 }
                 WorkerCommand::Stop => break,
                 _ => {}
@@ -374,6 +398,14 @@ fn run_scroll_capture_worker(
                 }
                 match session.push_frame(&bmp, direction) {
                     Ok(outcome) => {
+                        if consecutive_match_failures > 0 {
+                            eprintln!(
+                                "[滚动截图] 已从运动中间帧恢复: 连续失败={}，后续帧已通过严格匹配",
+                                consecutive_match_failures
+                            );
+                            consecutive_match_failures = 0;
+                            pending_match_error = None;
+                        }
                         preview_dirty |= outcome.changed;
                         if outcome.finished {
                             let _ = events.send(ScrollCaptureEvent::Finished);
@@ -393,12 +425,33 @@ fn run_scroll_capture_worker(
                         }
                     }
                     Err(error) => {
-                        terminal_error = Some(error.clone());
-                        let _ = events.send(ScrollCaptureEvent::Error(error));
+                        consecutive_match_failures = consecutive_match_failures.saturating_add(1);
+                        pending_match_error = Some(error.clone());
+                        if consecutive_match_failures == 1 {
+                            eprintln!(
+                                "[滚动截图] 帧验证未通过，继续恢复 ({consecutive_match_failures}/{MAX_TRANSIENT_MATCH_FAILURES}): {error}"
+                            );
+                        }
+                        if consecutive_match_failures >= MAX_TRANSIENT_MATCH_FAILURES {
+                            let terminal = format!(
+                                "处理终止：连续 {consecutive_match_failures} 帧未能从最后正确锚点恢复。最后一次验证详情：{error}"
+                            );
+                            terminal_error = Some(terminal.clone());
+                            let _ = events.send(ScrollCaptureEvent::Error(terminal));
+                        }
                     }
                 }
+                pending_frames.fetch_sub(1, Ordering::AcqRel);
             }
             WorkerCommand::FinishGesture { preview_size } => {
+                if let Some(error) = pending_match_error.take() {
+                    let terminal = format!(
+                        "处理终止：滚动已经停止，但待恢复帧仍未通过验证。最后一次验证详情：{error}"
+                    );
+                    terminal_error = Some(terminal.clone());
+                    let _ = events.send(ScrollCaptureEvent::Error(terminal));
+                    continue;
+                }
                 preview_dirty |= session.finish_gesture();
                 if preview_dirty {
                     match session.preview_bmp_data(preview_size.0, preview_size.1) {
@@ -413,7 +466,10 @@ fn run_scroll_capture_worker(
                 }
             }
             WorkerCommand::Export(response) => {
-                let _ = response.send(session.bmp_data());
+                let result = pending_match_error
+                    .clone()
+                    .map_or_else(|| session.bmp_data(), Err);
+                let _ = response.send(result);
             }
             WorkerCommand::Stop => break,
         }
@@ -861,7 +917,7 @@ mod tests {
         };
         let mut session = ScrollCaptureSession::new(selection, &bmp(first.clone())).unwrap();
         let error = session.push_frame(&bmp(unrelated), 1).unwrap_err();
-        assert!(error.contains("失败帧未被跳过或写入长图"));
+        assert!(error.contains("当前帧未写入长图"));
         assert_eq!(session.stitched, first);
         assert_eq!(session.current_offset, 0);
     }
@@ -887,7 +943,36 @@ mod tests {
         let worker = ScrollCaptureWorker::new(selection, &bmp(first)).unwrap();
         worker.push_frame(bmp(unrelated), 1, None).unwrap();
         let error = worker.bmp_data().unwrap_err();
-        assert!(error.contains("失败帧未被跳过或写入长图"));
+        assert!(error.contains("当前帧未写入长图"));
+    }
+
+    #[test]
+    fn worker_recovers_from_one_unusable_motion_frame() {
+        fn bmp(image: RgbaImage) -> Vec<u8> {
+            let mut output = Cursor::new(Vec::new());
+            DynamicImage::ImageRgba8(image)
+                .write_to(&mut output, ImageFormat::Bmp)
+                .unwrap();
+            output.into_inner()
+        }
+
+        let document = RgbaImage::from_fn(120, 180, |x, y| {
+            let value = x.wrapping_mul(31).wrapping_add(y.wrapping_mul(67));
+            Rgba([value as u8, (value >> 2) as u8, (value >> 5) as u8, 255])
+        });
+        let first = image::imageops::crop_imm(&document, 0, 0, 120, 100).to_image();
+        let recovered = image::imageops::crop_imm(&document, 0, 35, 120, 100).to_image();
+        let unusable = RgbaImage::from_pixel(120, 100, Rgba([240, 20, 180, 255]));
+        let selection = sc_app::selection::RectI32 {
+            left: 0,
+            top: 0,
+            right: 120,
+            bottom: 100,
+        };
+        let worker = ScrollCaptureWorker::new(selection, &bmp(first)).unwrap();
+        worker.push_frame(bmp(unusable), 1, None).unwrap();
+        worker.push_frame(bmp(recovered), 1, None).unwrap();
+        assert!(worker.bmp_data().is_ok());
     }
 
     #[test]

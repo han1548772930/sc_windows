@@ -33,6 +33,24 @@ use sc_ui_windows::{
 
 use crate::HostEvent;
 
+fn bmp_frames_stable(previous: &[u8], next: &[u8]) -> bool {
+    if previous.len() != next.len() || previous.len() <= 54 {
+        return false;
+    }
+    let pixel_bytes = previous.len() - 54;
+    let stride = (pixel_bytes / 20_000).max(1);
+    let mut total_difference = 0u64;
+    let mut significant_changes = 0u64;
+    let mut samples = 0u64;
+    for index in (54..previous.len()).step_by(stride) {
+        let difference = previous[index].abs_diff(next[index]) as u64;
+        total_difference += difference;
+        significant_changes += u64::from(difference > 3);
+        samples += 1;
+    }
+    total_difference * 4 <= samples * 3 && significant_changes * 100 <= samples * 2
+}
+
 pub struct App {
     /// Core state/actions/effects (platform-neutral).
     core: AppModel,
@@ -62,6 +80,8 @@ pub struct App {
     scroll_wheel_delta: i64,
     scroll_pending_direction: i8,
     scroll_preview_ticks: u8,
+    scroll_frame_captured: bool,
+    scroll_probe_frame: Option<Vec<u8>>,
 }
 
 impl App {
@@ -102,6 +122,8 @@ impl App {
             scroll_wheel_delta: 0,
             scroll_pending_direction: 0,
             scroll_preview_ticks: 0,
+            scroll_frame_captured: true,
+            scroll_probe_frame: None,
         })
     }
 
@@ -146,6 +168,8 @@ impl App {
         sc_platform_windows::windows::system::stop_scroll_wheel_hook();
         self.scroll_capture = None;
         self.scroll_preview_ticks = 0;
+        self.scroll_frame_captured = true;
+        self.scroll_probe_frame = None;
         self.ui.set_scrolling_mode(false);
         ScrollPreviewWindow::close();
 
@@ -817,6 +841,8 @@ impl App {
         self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
         self.scroll_pending_direction = 0;
         self.scroll_preview_ticks = 0;
+        self.scroll_frame_captured = true;
+        self.scroll_probe_frame = None;
         ScrollPreviewWindow::show_or_update(selection, first).map_err(AppError::Screenshot)?;
         self.host_platform
             .start_timer(
@@ -835,6 +861,12 @@ impl App {
         if self.drain_scroll_capture_events(window, selection)? {
             return Ok(());
         }
+        let pending_frames = self
+            .scroll_capture
+            .as_ref()
+            .map_or(0, ScrollCaptureWorker::pending_frames);
+        sc_platform_windows::windows::system::set_scroll_pipeline_pressure(pending_frames);
+
         let sequence = sc_platform_windows::windows::system::scroll_wheel_sequence();
         if sequence != self.scroll_wheel_sequence {
             if self.scroll_quiet_ticks >= SCROLL_SETTLE_TICKS {
@@ -846,26 +878,41 @@ impl App {
             }
             self.scroll_wheel_sequence = sequence;
             self.scroll_quiet_ticks = 0;
-        } else if self.scroll_quiet_ticks < SCROLL_SETTLE_TICKS {
-            self.scroll_quiet_ticks += 1;
+            self.scroll_frame_captured = false;
+            self.scroll_probe_frame = None;
+            let wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
+            if wheel_delta != self.scroll_wheel_delta {
+                self.scroll_pending_direction = match wheel_delta.cmp(&self.scroll_wheel_delta) {
+                    std::cmp::Ordering::Less => 1,
+                    std::cmp::Ordering::Greater => -1,
+                    std::cmp::Ordering::Equal => 0,
+                };
+                self.scroll_wheel_delta = wheel_delta;
+            }
         } else {
-            return Ok(());
+            self.scroll_quiet_ticks = self.scroll_quiet_ticks.saturating_add(1);
+            if self.scroll_frame_captured {
+                return Ok(());
+            }
         }
+
         let bmp = sc_platform_windows::windows::gdi::capture_screen_region_to_bmp(selection.into())
             .map_err(|e| AppError::Screenshot(format!("滚动帧捕获失败: {e}")))?;
-        let wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
-        if wheel_delta != self.scroll_wheel_delta {
-            self.scroll_pending_direction = match wheel_delta.cmp(&self.scroll_wheel_delta) {
-                std::cmp::Ordering::Less => 1,
-                std::cmp::Ordering::Greater => -1,
-                std::cmp::Ordering::Equal => 0,
-            };
-            self.scroll_wheel_delta = wheel_delta;
+
+        let movement_active =
+            sequence != self.scroll_wheel_sequence || self.scroll_quiet_ticks == 0;
+        if !movement_active {
+            let stable = self
+                .scroll_probe_frame
+                .as_ref()
+                .is_some_and(|previous| bmp_frames_stable(previous, &bmp));
+            if !stable {
+                self.scroll_probe_frame = Some(bmp);
+                return Ok(());
+            }
+            self.scroll_probe_frame = None;
         }
-        // Smooth scrolling keeps repainting after the wheel message. Those settling frames still
-        // belong to the same directed gesture; marking them as unknown lets repeated chat rows
-        // match in the opposite direction.
-        let settled = self.scroll_quiet_ticks >= SCROLL_SETTLE_TICKS;
+
         self.scroll_preview_ticks = self.scroll_preview_ticks.saturating_add(1);
         let preview_size = (self.scroll_preview_ticks >= SCROLL_PREVIEW_REFRESH_TICKS)
             .then(|| self.scroll_preview_size());
@@ -874,10 +921,11 @@ impl App {
             .expect("scroll capture checked above")
             .push_frame(bmp, self.scroll_pending_direction, preview_size)
             .map_err(AppError::Screenshot)?;
+        self.scroll_frame_captured = !movement_active;
         if preview_size.is_some() {
             self.scroll_preview_ticks = 0;
         }
-        if settled {
+        if !movement_active {
             let preview_size = self.scroll_preview_size();
             self.scroll_capture
                 .as_ref()
@@ -885,6 +933,7 @@ impl App {
                 .finish_gesture(preview_size)
                 .map_err(AppError::Screenshot)?;
             self.scroll_pending_direction = 0;
+            self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
         }
         Ok(())
     }
@@ -1330,5 +1379,28 @@ impl From<SystemError> for AppError {
 impl From<PlatformError> for AppError {
     fn from(err: PlatformError) -> Self {
         AppError::Platform(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod scrolling_stability_tests {
+    use super::bmp_frames_stable;
+
+    #[test]
+    fn accepts_settled_frames_with_a_small_local_change() {
+        let previous = vec![128; 10_054];
+        let mut next = previous.clone();
+        next[500] = 132;
+        assert!(bmp_frames_stable(&previous, &next));
+    }
+
+    #[test]
+    fn rejects_a_frame_that_is_still_moving() {
+        let previous = vec![32; 10_054];
+        let mut next = previous.clone();
+        for byte in next.iter_mut().skip(54).step_by(4) {
+            *byte = 220;
+        }
+        assert!(!bmp_frames_stable(&previous, &next));
     }
 }
