@@ -24,6 +24,7 @@ pub struct ToolbarManager {
     pub pressed_button: ToolbarButton,
     /// Disabled buttons.
     pub disabled_buttons: HashSet<ToolbarButton>,
+    scrolling_mode: bool,
 }
 
 impl ToolbarManager {
@@ -36,6 +37,7 @@ impl ToolbarManager {
             clicked_button: ToolbarButton::None,
             pressed_button: ToolbarButton::None,
             disabled_buttons: HashSet::new(),
+            scrolling_mode: false,
         })
     }
 
@@ -48,10 +50,21 @@ impl ToolbarManager {
     ) {
         let style = sc_ui::toolbar::ToolbarStyle::default();
 
-        let Some(layout) = sc_ui::toolbar::layout_toolbar(
+        let buttons: &[ToolbarButton] = if self.scrolling_mode {
+            &[
+                ToolbarButton::Edit,
+                ToolbarButton::Save,
+                ToolbarButton::Cancel,
+                ToolbarButton::Confirm,
+            ]
+        } else {
+            &sc_ui::toolbar::TOOLBAR_BUTTONS
+        };
+        let Some(layout) = sc_ui::toolbar::layout_toolbar_with_buttons(
             (screen_width, screen_height),
             Some(selection_rect),
             &style,
+            buttons,
         ) else {
             return;
         };
@@ -84,6 +97,11 @@ impl ToolbarManager {
 
     /// Clear selected button state.
     pub fn clear_clicked_button(&mut self) {
+        self.clicked_button = ToolbarButton::None;
+    }
+
+    pub fn set_scrolling_mode(&mut self, active: bool) {
+        self.scrolling_mode = active;
         self.clicked_button = ToolbarButton::None;
     }
 
@@ -134,6 +152,8 @@ impl ToolbarManager {
             ))],
             ToolbarButton::Undo => vec![Command::Core(sc_app::Action::Undo)],
             ToolbarButton::ExtractText => vec![Command::Core(sc_app::Action::ExtractText)],
+            ToolbarButton::ScrollCapture => vec![Command::StartScrollingCapture],
+            ToolbarButton::Edit => vec![Command::EditScrollingCapture],
             ToolbarButton::Languages => {
                 // Reserved for future language selection UI.
                 vec![]

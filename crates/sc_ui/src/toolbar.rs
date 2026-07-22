@@ -13,6 +13,8 @@ pub enum ToolbarButton {
     Text,
     Undo,
     ExtractText,
+    ScrollCapture,
+    Edit,
     Languages,
     Confirm,
     Cancel,
@@ -22,7 +24,7 @@ pub enum ToolbarButton {
 
 /// Deterministic ordering of buttons in the toolbar.
 /// Keep this aligned with the legacy host toolbar ordering.
-pub const TOOLBAR_BUTTONS: [ToolbarButton; 12] = [
+pub const TOOLBAR_BUTTONS: [ToolbarButton; 13] = [
     ToolbarButton::Rectangle,
     ToolbarButton::Circle,
     ToolbarButton::Arrow,
@@ -30,6 +32,7 @@ pub const TOOLBAR_BUTTONS: [ToolbarButton; 12] = [
     ToolbarButton::Text,
     ToolbarButton::Undo,
     ToolbarButton::ExtractText,
+    ToolbarButton::ScrollCapture,
     ToolbarButton::Languages,
     ToolbarButton::Save,
     ToolbarButton::Pin,
@@ -133,12 +136,21 @@ pub fn layout_toolbar(
     selection_rect: Option<RectI32>,
     style: &ToolbarStyle,
 ) -> Option<ToolbarLayout> {
+    layout_toolbar_with_buttons(screen_size, selection_rect, style, &TOOLBAR_BUTTONS)
+}
+
+pub fn layout_toolbar_with_buttons(
+    screen_size: (i32, i32),
+    selection_rect: Option<RectI32>,
+    style: &ToolbarStyle,
+    buttons: &[ToolbarButton],
+) -> Option<ToolbarLayout> {
     let selection_rect = selection_rect?;
 
     let screen_width = screen_size.0 as f32;
     let screen_height = screen_size.1 as f32;
 
-    let button_count = TOOLBAR_BUTTONS.len() as f32;
+    let button_count = buttons.len() as f32;
     let toolbar_width = style.button_width * button_count
         + style.button_spacing * (button_count - 1.0)
         + style.toolbar_padding * 2.0;
@@ -168,21 +180,21 @@ pub fn layout_toolbar(
     let button_y = toolbar_y + (style.toolbar_height - style.button_height) / 2.0;
     let mut button_x = toolbar_x + style.toolbar_padding;
 
-    let mut buttons = Vec::with_capacity(TOOLBAR_BUTTONS.len());
-    for button in TOOLBAR_BUTTONS {
+    let mut layouts = Vec::with_capacity(buttons.len());
+    for &button in buttons {
         let rect = Rectangle {
             x: button_x,
             y: button_y,
             width: style.button_width,
             height: style.button_height,
         };
-        buttons.push(ToolbarButtonLayout { button, rect });
+        layouts.push(ToolbarButtonLayout { button, rect });
         button_x += style.button_width + style.button_spacing;
     }
 
     Some(ToolbarLayout {
         toolbar_rect,
-        buttons,
+        buttons: layouts,
     })
 }
 

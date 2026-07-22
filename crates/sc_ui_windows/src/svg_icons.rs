@@ -39,6 +39,8 @@ impl SvgIconManager {
             ToolbarButton::Text,
             ToolbarButton::Undo,
             ToolbarButton::ExtractText,
+            ToolbarButton::ScrollCapture,
+            ToolbarButton::Edit,
             ToolbarButton::Languages,
             ToolbarButton::Save,
             ToolbarButton::Pin,

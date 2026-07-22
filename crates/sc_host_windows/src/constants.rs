@@ -10,3 +10,6 @@ pub const HOTKEY_SCREENSHOT_ID: i32 = 1001;
 
 pub const TIMER_CAPTURE_DELAY_ID: usize = 2001;
 pub const TIMER_CAPTURE_DELAY_MS: u32 = 50;
+pub const TIMER_SCROLL_CAPTURE_ID: usize = 2002;
+pub const TIMER_SCROLL_CAPTURE_MS: u32 = 20;
+pub const SCROLL_STITCH_THROTTLE_TICKS: u8 = 5;

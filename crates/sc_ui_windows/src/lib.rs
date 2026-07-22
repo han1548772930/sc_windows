@@ -2,6 +2,7 @@ pub mod constants;
 pub mod cursor;
 pub mod icon_assets;
 pub mod preview;
+pub mod scroll_preview;
 pub mod settings;
 pub mod svg;
 pub mod svg_icons;
@@ -19,6 +20,7 @@ pub use cursor::CursorManager;
 pub use preview::PreviewWindow;
 pub use sc_ui::toolbar::ToolbarButton;
 
+pub use scroll_preview::ScrollPreviewWindow;
 pub use settings::SettingsWindow;
 
 use svg_icons::SvgIconManager;
@@ -173,6 +175,10 @@ impl UIManager {
     /// Replace disabled toolbar button state.
     pub fn set_toolbar_disabled(&mut self, buttons: HashSet<ToolbarButton>) {
         self.toolbar.set_disabled(buttons);
+    }
+
+    pub fn set_scrolling_mode(&mut self, active: bool) {
+        self.toolbar.set_scrolling_mode(active);
     }
 }
 

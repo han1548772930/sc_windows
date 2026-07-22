@@ -5,6 +5,7 @@ pub mod core_bridge;
 pub mod error;
 pub mod host_event;
 pub mod screenshot;
+mod scroll_capture;
 pub mod system;
 
 mod run;

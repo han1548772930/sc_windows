@@ -103,6 +103,13 @@ pub trait CommandExecutor {
 impl CommandExecutor for App {
     fn execute_command(&mut self, command: Command, window: WindowId) -> Vec<Command> {
         match command {
+            Command::Core(sc_app::Action::Cancel) if self.has_scrolling_capture() => {
+                let _ = self
+                    .host_platform()
+                    .stop_timer(window, crate::constants::TIMER_SCROLL_CAPTURE_ID as u32);
+                let _ = self.host_platform().hide_window(window);
+                self.reset_to_initial_state()
+            }
             Command::Core(action) => self.dispatch_core_action(action),
             Command::RequestRedraw => {
                 let _ = self.host_platform().request_redraw(window);
@@ -146,14 +153,31 @@ impl CommandExecutor for App {
                 vec![]
             }
             Command::SaveSelectionToFile => {
-                if self.has_valid_selection() {
+                if self.has_scrolling_capture() {
+                    match self.save_scrolling_to_file(window) {
+                        Ok(true) => {
+                            let _ = self.host_platform().hide_window(window);
+                            self.reset_to_initial_state()
+                        }
+                        Ok(false) => vec![],
+                        Err(e) => vec![Command::ShowError(format!("保存滚动截图失败: {e}"))],
+                    }
+                } else if self.has_valid_selection() {
                     self.handle_save_to_file(window)
                 } else {
                     vec![Command::ShowError("请先选择区域".to_string())]
                 }
             }
             Command::SaveSelectionToClipboard => {
-                if self.has_valid_selection() {
+                if self.has_scrolling_capture() {
+                    match self.save_scrolling_to_clipboard() {
+                        Ok(()) => {
+                            let _ = self.host_platform().hide_window(window);
+                            self.reset_to_initial_state()
+                        }
+                        Err(e) => vec![Command::ShowError(format!("复制滚动截图失败: {e}"))],
+                    }
+                } else if self.has_valid_selection() {
                     self.handle_save_to_clipboard(window)
                 } else {
                     vec![Command::ShowError("请先选择区域".to_string())]
@@ -177,6 +201,14 @@ impl CommandExecutor for App {
                     eprintln!("截图失败: {e}");
                     vec![Command::ShowError(format!("截图失败: {e}"))]
                 }
+            },
+            Command::StartScrollingCapture => match self.start_scrolling_capture(window) {
+                Ok(()) => vec![],
+                Err(e) => vec![Command::ShowError(format!("启动滚动截图失败: {e}"))],
+            },
+            Command::EditScrollingCapture => match self.edit_scrolling_capture(window) {
+                Ok(()) => vec![],
+                Err(e) => vec![Command::ShowError(format!("编辑滚动截图失败: {e}"))],
             },
             Command::ExtractText => {
                 if self.has_valid_selection() {

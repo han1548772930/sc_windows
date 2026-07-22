@@ -1741,6 +1741,7 @@ dependencies = [
 name = "sc_host_windows"
 version = "0.1.0"
 dependencies = [
+ "image",
  "sc_app",
  "sc_drawing",
  "sc_drawing_host",

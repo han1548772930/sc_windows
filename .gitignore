@@ -1,5 +1,9 @@
 /target
 sc_windows*
+!apps/sc_windows/
+!apps/sc_windows/icons/
+!apps/sc_windows/icons/scroll-capture.svg
+!apps/sc_windows/icons/edit.svg
 PaddleOCR-json_v1.4.1*
 DRAWING_CRATE_ANALYSIS*
 crates/*/Cargo.lock

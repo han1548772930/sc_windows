@@ -86,6 +86,14 @@ pub fn toolbar_icon_svg(button: ToolbarButton) -> Option<&'static str> {
             env!("CARGO_MANIFEST_DIR"),
             "/../../apps/sc_windows/icons/extracttext.svg"
         ))),
+        ToolbarButton::ScrollCapture => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/sc_windows/icons/scroll-capture.svg"
+        ))),
+        ToolbarButton::Edit => Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../apps/sc_windows/icons/edit.svg"
+        ))),
         ToolbarButton::Languages => Some(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../apps/sc_windows/icons/languages.svg"

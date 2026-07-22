@@ -59,6 +59,11 @@ pub enum Command {
     /// Take screenshot.
     TakeScreenshot,
 
+    /// Start automatic scrolling capture for the current selection.
+    StartScrollingCapture,
+    /// Open the stitched scrolling capture in the preview editor.
+    EditScrollingCapture,
+
     /// Select drawing tool.
     SelectDrawingTool(DrawingTool),
 
