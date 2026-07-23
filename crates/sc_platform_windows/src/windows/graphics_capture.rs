@@ -252,11 +252,7 @@ impl GraphicsCaptureSource {
                 score.is_finite()
                     && *score <= 0.08
                     && shift.unsigned_abs() <= self.height / 2
-                    && match direction {
-                        1 => *shift >= 0,
-                        -1 => *shift <= 0,
-                        _ => true,
-                    }
+                    && direction_allows_shift(direction, *shift)
             })
             .collect();
         let Some(best) = choose_continuous_shift(&candidates, expected_shift) else {
@@ -442,6 +438,14 @@ fn choose_continuous_shift(
                 },
             )
         })
+}
+
+fn direction_allows_shift(direction: i8, shift: i32) -> bool {
+    match direction {
+        1 => shift >= 0,
+        -1 => shift <= 0,
+        _ => true,
+    }
 }
 
 impl Drop for GraphicsCaptureSource {
@@ -698,6 +702,23 @@ mod tests {
         let candidates = [(0, 0.0), (60, 0.002), (120, 0.004)];
         let selected = choose_continuous_shift(&candidates, Some(60)).unwrap();
         assert_eq!(selected.0, 0);
+    }
+
+    #[test]
+    fn wheel_direction_rejects_opposite_motion() {
+        assert!(direction_allows_shift(-1, -67));
+        assert!(!direction_allows_shift(-1, 26));
+        assert!(direction_allows_shift(1, 75));
+        assert!(!direction_allows_shift(1, -34));
+        assert!(direction_allows_shift(0, -34));
+    }
+
+    #[test]
+    fn adjacent_motion_accumulates_without_dropping_small_steps() {
+        let steps = [-7i32, -8, -6, -9];
+        let accumulated = steps.into_iter().fold(0i32, i32::saturating_add);
+        assert_eq!(accumulated, -30);
+        assert!(accumulated.unsigned_abs() >= 24);
     }
 
     #[test]
