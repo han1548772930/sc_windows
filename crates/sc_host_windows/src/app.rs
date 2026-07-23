@@ -883,18 +883,40 @@ impl App {
             .scroll_frame_source
             .as_ref()
             .ok_or_else(|| AppError::Screenshot("WGC 滚动捕获会话未启动".to_string()))?
-            .try_next_gpu_frame(self.scroll_pending_direction, None, !movement_active)
+            .try_next_gpu_frame(self.scroll_pending_direction, !movement_active)
             .map_err(AppError::Screenshot)?
         else {
             return Ok(());
         };
-        let (frame, shift) = match decision {
+        let (frame_id, frame, shift) = match decision {
             GpuFrameDecision::Skipped => return Ok(()),
             GpuFrameDecision::Unmatched => {
-                self.scroll_frame_captured = false;
+                if !movement_active {
+                    self.scroll_capture
+                        .as_ref()
+                        .expect("scroll capture checked above")
+                        .finish_gesture(self.scroll_preview_size())
+                        .map_err(AppError::Screenshot)?;
+                    self.scroll_frame_captured = true;
+                    self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
+                } else {
+                    self.scroll_frame_captured = false;
+                }
+                return Ok(());
+            }
+            GpuFrameDecision::Boundary => {
+                self.scroll_frame_captured = true;
+                self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
+                self.scroll_pending_direction = 0;
+                self.scroll_capture
+                    .as_ref()
+                    .expect("scroll capture checked above")
+                    .finish_gesture(self.scroll_preview_size())
+                    .map_err(AppError::Screenshot)?;
                 return Ok(());
             }
             GpuFrameDecision::Keyframe {
+                frame_id,
                 frame,
                 shift,
                 score,
@@ -903,17 +925,18 @@ impl App {
                     "[scroll capture] GPU keyframe shift={}px, score={:.5}, direction={}",
                     shift, score, self.scroll_pending_direction
                 );
-                (frame, shift)
+                (frame_id, frame, shift)
             }
         };
 
-        let preview_size = (self.scroll_last_preview.elapsed() >= Duration::from_millis(300))
+        let preview_size = (self.scroll_last_preview.elapsed() >= Duration::from_millis(100))
             .then(|| self.scroll_preview_size());
         let submitted = self
             .scroll_capture
             .as_ref()
             .expect("scroll capture checked above")
             .push_gpu_keyframe(
+                frame_id,
                 frame,
                 self.scroll_pending_direction,
                 shift,
@@ -922,6 +945,9 @@ impl App {
             )
             .map_err(AppError::Screenshot)?;
         if !submitted {
+            if let Some(source) = self.scroll_frame_source.as_ref() {
+                source.discard_gpu_candidate(frame_id);
+            }
             return Ok(());
         }
         if preview_size.is_some() {
@@ -946,9 +972,8 @@ impl App {
         selection: core_selection::RectI32,
     ) -> AppResult<bool> {
         let mut latest_preview = None;
-        let mut frame_accepted = false;
-        let mut frame_discarded = false;
-        let mut gesture_finished = false;
+        let mut accepted_frames = Vec::new();
+        let mut discarded_frames = Vec::new();
         loop {
             let event = self
                 .scroll_capture
@@ -956,28 +981,29 @@ impl App {
                 .and_then(ScrollCaptureWorker::poll_event);
             match event {
                 Some(ScrollCaptureEvent::Preview(bmp)) => latest_preview = Some(bmp),
-                Some(ScrollCaptureEvent::FrameAccepted) => frame_accepted = true,
-                Some(ScrollCaptureEvent::FrameDiscarded) => frame_discarded = true,
-                Some(ScrollCaptureEvent::GestureFinished) => gesture_finished = true,
+                Some(ScrollCaptureEvent::FrameAccepted(frame_id)) => accepted_frames.push(frame_id),
+                Some(ScrollCaptureEvent::FrameDiscarded(frame_id)) => {
+                    discarded_frames.push(frame_id)
+                }
+                // Gesture completion can arrive after the next wheel event. It must not
+                // clear direction or delta belonging to that newer gesture.
+                Some(ScrollCaptureEvent::GestureFinished) => {}
                 None => break,
             }
         }
         if let Some(bmp) = latest_preview {
             ScrollPreviewWindow::show_or_update(selection, bmp).map_err(AppError::Screenshot)?;
         }
-        if frame_accepted {
-            if let Some(source) = self.scroll_frame_source.as_ref() {
-                source.accept_gpu_candidate();
-            }
+        for frame_id in accepted_frames {
+            if let Some(source) = self.scroll_frame_source.as_ref()
+                && source.accept_gpu_candidate(frame_id)
+            {}
         }
-        if frame_discarded {
+        for frame_id in discarded_frames {
             if let Some(source) = self.scroll_frame_source.as_ref() {
-                source.discard_gpu_candidate();
+                source.discard_gpu_candidate(frame_id);
             }
             self.scroll_frame_captured = false;
-        }
-        if gesture_finished {
-            self.scroll_pending_direction = 0;
         }
         Ok(false)
     }

@@ -214,7 +214,7 @@ pub fn post_wheel_down(window: WindowId, x: i32, y: i32) -> Result<(), String> {
     Ok(())
 }
 
-/// Send a real wheel event through hit testing at the given screen point.
+/// Send one wheel-down notch through hit testing at the given screen point.
 pub fn send_real_wheel_down(x: i32, y: i32) -> Result<(), String> {
     let mut original = POINT::default();
     unsafe { GetCursorPos(&mut original) }.map_err(|e| e.to_string())?;
@@ -223,7 +223,7 @@ pub fn send_real_wheel_down(x: i32, y: i32) -> Result<(), String> {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {
             mi: MOUSEINPUT {
-                mouseData: (-600i32) as u32,
+                mouseData: (-120i32) as u32,
                 dwFlags: MOUSEEVENTF_WHEEL,
                 ..Default::default()
             },

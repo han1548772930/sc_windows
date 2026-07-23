@@ -28,6 +28,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetWindowRect};
 use windows::core::{Interface, PCSTR, factory, s};
 
+const WGC_FRAME_BUFFER_COUNT: i32 = 8;
 #[derive(Clone, Debug)]
 pub struct BgraFrame {
     pub width: u32,
@@ -38,7 +39,9 @@ pub struct BgraFrame {
 pub enum GpuFrameDecision {
     Skipped,
     Unmatched,
+    Boundary,
     Keyframe {
+        frame_id: u64,
         frame: BgraFrame,
         shift: i32,
         score: f32,
@@ -61,9 +64,8 @@ pub struct GraphicsCaptureSource {
     motion_shader: ID3D11ComputeShader,
     gpu_anchor_ready: std::cell::Cell<bool>,
     gpu_candidate_pending: std::cell::Cell<bool>,
-    gpu_pending_shift: std::cell::Cell<Option<i32>>,
-    gpu_last_shift: std::cell::Cell<Option<i32>>,
-    gpu_accumulated_shift: std::cell::Cell<i32>,
+    gpu_pending_id: std::cell::Cell<Option<u64>>,
+    gpu_next_id: std::cell::Cell<u64>,
     gpu_unmatched_count: std::cell::Cell<u32>,
     max_shift: i32,
     crop: D3D11_BOX,
@@ -138,7 +140,7 @@ impl GraphicsCaptureSource {
         let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            4,
+            WGC_FRAME_BUFFER_COUNT,
             size,
         )
         .map_err(display_error)?;
@@ -153,6 +155,8 @@ impl GraphicsCaptureSource {
         let gpu_candidate = create_gpu_frame_texture(&device, width as u32, height as u32)?;
         let anchor_srv = create_texture_srv(&device, &gpu_anchor)?;
         let candidate_srv = create_texture_srv(&device, &gpu_candidate)?;
+        // A keyframe must overlap at least half of the previous frame. Smaller
+        // overlap is too ambiguous on chat lists and other repeated layouts.
         let max_shift = (height as u32 / 2) as i32;
         let score_count = (max_shift * 2 + 1) as u32;
         let (score_texture, score_staging, score_uav) =
@@ -175,9 +179,8 @@ impl GraphicsCaptureSource {
             motion_shader,
             gpu_anchor_ready: std::cell::Cell::new(false),
             gpu_candidate_pending: std::cell::Cell::new(false),
-            gpu_pending_shift: std::cell::Cell::new(None),
-            gpu_last_shift: std::cell::Cell::new(None),
-            gpu_accumulated_shift: std::cell::Cell::new(0),
+            gpu_pending_id: std::cell::Cell::new(None),
+            gpu_next_id: std::cell::Cell::new(1),
             gpu_unmatched_count: std::cell::Cell::new(0),
             max_shift,
             crop: D3D11_BOX {
@@ -204,7 +207,6 @@ impl GraphicsCaptureSource {
     pub fn try_next_gpu_frame(
         &self,
         direction: i8,
-        expected_shift: Option<i32>,
         force_keyframe: bool,
     ) -> Result<Option<GpuFrameDecision>, String> {
         if self.gpu_candidate_pending.get() {
@@ -225,6 +227,7 @@ impl GraphicsCaptureSource {
             };
             self.gpu_anchor_ready.set(true);
             return Ok(Some(GpuFrameDecision::Keyframe {
+                frame_id: 0,
                 frame: pixels,
                 shift: 0,
                 score: 0.0,
@@ -233,72 +236,85 @@ impl GraphicsCaptureSource {
 
         let scores = self.run_motion_shader()?;
         let raw_minimum_score = scores.iter().copied().min_by(f32::total_cmp).unwrap_or(1.0);
-        let expected_shift = expected_shift
-            .or(self.gpu_last_shift.get())
-            .map(|expected| {
-                if direction > 0 {
-                    expected.abs()
-                } else if direction < 0 {
-                    -expected.abs()
-                } else {
-                    expected
-                }
-            });
         let candidates: Vec<_> = scores
             .into_iter()
             .enumerate()
             .map(|(index, score)| (index as i32 - self.max_shift, score))
             .filter(|(shift, score)| {
                 score.is_finite()
-                    && *score <= 0.08
-                    && shift.unsigned_abs() <= self.height / 2
+                    && *score < 1.0
+                    && shift.unsigned_abs() <= self.max_shift as u32
                     && direction_allows_shift(direction, *shift)
             })
             .collect();
-        let Some(best) = choose_continuous_shift(&candidates, expected_shift) else {
+        let Some(best) = choose_best_shift(&candidates) else {
             let failures = self.gpu_unmatched_count.get().saturating_add(1);
             self.gpu_unmatched_count.set(failures);
-            if failures == 1 || failures % 30 == 0 {
+            if failures == 1 || failures.is_multiple_of(30) {
                 eprintln!(
-                    "[scroll capture] GPU unmatched count={}, raw_min={:.5}, direction={}, expected={:?}",
-                    failures, raw_minimum_score, direction, expected_shift
+                    "[scroll capture] GPU unmatched count={}, raw_min={:.5}, direction={}",
+                    failures, raw_minimum_score, direction
                 );
             }
             self.gpu_candidate_pending.set(false);
             return Ok(Some(GpuFrameDecision::Unmatched));
         };
-        let accumulated = self.gpu_accumulated_shift.get().saturating_add(best.0);
-        unsafe {
-            self.context
-                .CopyResource(&self.gpu_anchor, &self.gpu_candidate)
-        };
-        self.gpu_last_shift.set(Some(best.0));
-        self.gpu_accumulated_shift.set(accumulated);
-        if !force_keyframe && accumulated.unsigned_abs() < 24 {
+        if has_equal_alternative(&candidates, best) {
+            self.gpu_unmatched_count
+                .set(self.gpu_unmatched_count.get().saturating_add(1));
+            return Ok(Some(GpuFrameDecision::Unmatched));
+        }
+        if force_keyframe && best.0 == 0 && direction != 0 {
+            unsafe {
+                self.context
+                    .CopyResource(&self.gpu_anchor, &self.gpu_candidate)
+            };
+            self.gpu_unmatched_count.set(0);
+            return Ok(Some(GpuFrameDecision::Boundary));
+        }
+        if best.0 == 0 {
+            unsafe {
+                self.context
+                    .CopyResource(&self.gpu_anchor, &self.gpu_candidate)
+            };
             self.gpu_candidate_pending.set(false);
             return Ok(Some(GpuFrameDecision::Skipped));
         }
         let pixels = self.read_texture(&self.gpu_candidate)?;
+        let frame_id = self.gpu_next_id.get();
+        self.gpu_next_id.set(frame_id.wrapping_add(1).max(1));
         self.gpu_unmatched_count.set(0);
         self.gpu_candidate_pending.set(true);
-        self.gpu_pending_shift.set(Some(accumulated));
+        self.gpu_pending_id.set(Some(frame_id));
         Ok(Some(GpuFrameDecision::Keyframe {
+            frame_id,
             frame: pixels,
-            shift: accumulated,
+            shift: best.0,
             score: best.1,
         }))
     }
 
-    pub fn accept_gpu_candidate(&self) {
-        if self.gpu_candidate_pending.replace(false) {
-            self.gpu_pending_shift.set(None);
-            self.gpu_accumulated_shift.set(0);
+    pub fn accept_gpu_candidate(&self, frame_id: u64) -> bool {
+        if self.gpu_pending_id.get() == Some(frame_id) && self.gpu_candidate_pending.replace(false)
+        {
+            unsafe {
+                self.context
+                    .CopyResource(&self.gpu_anchor, &self.gpu_candidate)
+            };
+            self.gpu_pending_id.set(None);
+            true
+        } else {
+            false
         }
     }
 
-    pub fn discard_gpu_candidate(&self) {
+    pub fn discard_gpu_candidate(&self, frame_id: u64) -> bool {
+        if self.gpu_pending_id.get() != Some(frame_id) {
+            return false;
+        }
         self.gpu_candidate_pending.set(false);
-        self.gpu_pending_shift.set(None);
+        self.gpu_pending_id.set(None);
+        true
     }
 
     pub fn wait_for_first_frame(&self, timeout: Duration) -> Result<BgraFrame, String> {
@@ -408,43 +424,24 @@ impl GraphicsCaptureSource {
     }
 }
 
-fn choose_continuous_shift(
-    candidates: &[(i32, f32)],
-    expected_shift: Option<i32>,
-) -> Option<(i32, f32)> {
-    let minimum_score = candidates
-        .iter()
-        .map(|candidate| candidate.1)
-        .min_by(f32::total_cmp)?;
-    if let Some(unchanged) = candidates
-        .iter()
-        .copied()
-        .find(|candidate| candidate.0 == 0 && candidate.1 <= 0.001)
-    {
-        return Some(unchanged);
-    }
+fn choose_best_shift(candidates: &[(i32, f32)]) -> Option<(i32, f32)> {
     candidates
         .iter()
         .copied()
-        .filter(|candidate| candidate.1 <= minimum_score + 0.006)
-        .min_by(|a, b| {
-            expected_shift.map_or_else(
-                || a.0.abs().cmp(&b.0.abs()).then_with(|| a.1.total_cmp(&b.1)),
-                |expected| {
-                    (a.0 - expected)
-                        .abs()
-                        .cmp(&(b.0 - expected).abs())
-                        .then_with(|| a.1.total_cmp(&b.1))
-                },
-            )
-        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.abs().cmp(&b.0.abs())))
+}
+
+fn has_equal_alternative(candidates: &[(i32, f32)], selected: (i32, f32)) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.0 != selected.0 && candidate.1 == selected.1)
 }
 
 fn direction_allows_shift(direction: i8, shift: i32) -> bool {
     match direction {
         1 => shift >= 0,
         -1 => shift <= 0,
-        _ => true,
+        _ => shift == 0,
     }
 }
 
@@ -623,21 +620,38 @@ void main(uint3 id : SV_DispatchThreadID) {{
     int shift = index - MAX_SHIFT;
     int y0 = max(1, 1 - shift);
     int y1 = min(HEIGHT - 1, HEIGHT - 1 - shift);
-    float error = 0.0;
-    uint evidence = 0;
+    float bandError[4] = {{ 0.0, 0.0, 0.0, 0.0 }};
+    uint bandEvidence[4] = {{ 0, 0, 0, 0 }};
     for (int y = y0; y < y1; y += 2) {{
         int oldY = y + shift;
+        int band = min(3, ((y - y0) * 4) / max(1, y1 - y0));
         for (int x = 2; x < WIDTH - 1; x += 4) {{
             float oldValue = luma(Anchor.Load(int3(x, oldY, 0)));
             float edge = max(abs(oldValue - luma(Anchor.Load(int3(x - 2, oldY, 0)))),
                              abs(oldValue - luma(Anchor.Load(int3(x, oldY - 1, 0)))));
             if (edge < 0.012) continue;
             float nextValue = luma(Candidate.Load(int3(x, y, 0)));
-            error += min(abs(oldValue - nextValue), 0.20);
-            evidence++;
+            bandError[band] += min(abs(oldValue - nextValue), 0.20);
+            bandEvidence[band]++;
         }}
     }}
-    Scores[int2(index, 0)] = evidence >= 64 ? error / evidence : 1.0;
+    float scoreSum = 0.0;
+    float worstScore = 0.0;
+    uint validBands = 0;
+    for (int band = 0; band < 4; band++) {{
+        if (bandEvidence[band] >= 16) {{
+            float bandScore = bandError[band] / bandEvidence[band];
+            scoreSum += bandScore;
+            worstScore = max(worstScore, bandScore);
+            validBands++;
+        }}
+    }}
+    // A cursor, video, or loading animation may disturb one horizontal band.
+    // Match on the consensus of the remaining bands instead of letting that
+    // single dynamic region move an otherwise stationary frame.
+    Scores[int2(index, 0)] = validBands >= 3
+        ? (scoreSum - worstScore) / (validBands - 1)
+        : 1.0;
 }}
 "#
     );
@@ -691,17 +705,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repeated_rows_choose_the_shift_nearest_motion_history() {
+    fn lowest_error_shift_is_selected_without_prediction() {
         let candidates = [(-150, 0.020), (-90, 0.018), (-30, 0.017)];
-        let selected = choose_continuous_shift(&candidates, Some(-82)).unwrap();
-        assert_eq!(selected.0, -90);
+        let selected = choose_best_shift(&candidates).unwrap();
+        assert_eq!(selected.0, -30);
+    }
+
+    #[test]
+    fn continuity_selection_does_not_require_a_global_photometric_threshold() {
+        let candidates = [(-120, 0.19), (-82, 0.11), (-40, 0.18), (0, 0.20)];
+        let selected = choose_best_shift(&candidates).unwrap();
+        assert_eq!(selected.0, -82);
+        assert!(!has_equal_alternative(&candidates, selected));
     }
 
     #[test]
     fn unchanged_boundary_frame_always_resolves_to_zero() {
         let candidates = [(0, 0.0), (60, 0.002), (120, 0.004)];
-        let selected = choose_continuous_shift(&candidates, Some(60)).unwrap();
+        let selected = choose_best_shift(&candidates).unwrap();
         assert_eq!(selected.0, 0);
+    }
+
+    #[test]
+    fn lowest_dynamic_error_is_selected() {
+        let candidates = [(0, 0.012), (60, 0.010), (120, 0.018)];
+        let selected = choose_best_shift(&candidates).unwrap();
+        assert_eq!(selected.0, 60);
     }
 
     #[test]
@@ -710,15 +739,18 @@ mod tests {
         assert!(!direction_allows_shift(-1, 26));
         assert!(direction_allows_shift(1, 75));
         assert!(!direction_allows_shift(1, -34));
-        assert!(direction_allows_shift(0, -34));
+        assert!(!direction_allows_shift(0, -34));
+        assert!(direction_allows_shift(0, 0));
     }
 
     #[test]
-    fn adjacent_motion_accumulates_without_dropping_small_steps() {
-        let steps = [-7i32, -8, -6, -9];
-        let accumulated = steps.into_iter().fold(0i32, i32::saturating_add);
-        assert_eq!(accumulated, -30);
-        assert!(accumulated.unsigned_abs() >= 24);
+    fn exactly_equal_scores_are_rejected_as_ambiguous() {
+        let candidates = [(0, 0.02), (60, 0.001), (120, 0.001)];
+        assert!(has_equal_alternative(&candidates, (60, 0.001)));
+        assert!(!has_equal_alternative(
+            &[(60, 0.001), (120, 0.0012)],
+            (60, 0.001)
+        ));
     }
 
     #[test]
@@ -809,5 +841,39 @@ mod tests {
         );
         assert_eq!(best.0 as i32 - max_shift, SHIFT);
         assert!(best.1 <= 0.0001, "unexpected GPU overlap error: {}", best.1);
+
+        let mut stationary_with_dynamic_band = anchor_pixels.clone();
+        for y in 0..HEIGHT / 4 {
+            for x in 0..WIDTH {
+                let index = ((y * WIDTH + x) * 4) as usize;
+                stationary_with_dynamic_band[index] ^= 0x7f;
+                stationary_with_dynamic_band[index + 1] ^= 0x55;
+                stationary_with_dynamic_band[index + 2] ^= 0x33;
+            }
+        }
+        unsafe {
+            context.UpdateSubresource(
+                &candidate,
+                0,
+                None,
+                stationary_with_dynamic_band.as_ptr().cast(),
+                WIDTH * 4,
+                0,
+            );
+            context.Dispatch(score_count.div_ceil(64), 1, 1);
+            context.CopyResource(&staging, &score);
+            context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+        }
+        .unwrap();
+        let scores =
+            unsafe { std::slice::from_raw_parts(mapped.pData.cast::<f32>(), score_count as usize) };
+        let best = scores
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        unsafe { context.Unmap(&staging, 0) };
+        assert_eq!(best.0 as i32 - max_shift, 0);
     }
 }
