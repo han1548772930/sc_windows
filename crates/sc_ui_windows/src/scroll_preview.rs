@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 use sc_app::selection::RectI32;
+use sc_platform_windows::windows::graphics_capture::BgraFrame;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -11,7 +12,7 @@ thread_local! {
 }
 
 struct PreviewState {
-    bmp: Vec<u8>,
+    pixels: Vec<u8>,
     width: i32,
     height: i32,
     target_geometry: (i32, i32, i32, i32),
@@ -20,14 +21,18 @@ struct PreviewState {
 pub struct ScrollPreviewWindow;
 
 impl ScrollPreviewWindow {
-    pub fn show_or_update(selection: RectI32, bmp: Vec<u8>) -> Result<(), String> {
-        let (width, height) = bmp_dimensions(&bmp)?;
+    pub fn show_or_update(selection: RectI32, frame: BgraFrame) -> Result<(), String> {
+        let width = frame.width as i32;
+        let height = frame.height as i32;
+        if width <= 0 || height <= 0 || frame.pixels.len() != width as usize * height as usize * 4 {
+            return Err("滚动预览像素缓冲区无效".to_string());
+        }
         let existing = PREVIEW_HWND.with(Cell::get);
         if !existing.0.is_null() && unsafe { IsWindow(Some(existing)) }.as_bool() {
             unsafe {
                 let state = GetWindowLongPtrW(existing, GWLP_USERDATA) as *mut PreviewState;
                 if !state.is_null() {
-                    (*state).bmp = bmp;
+                    (*state).pixels = frame.pixels;
                     (*state).width = width;
                     (*state).height = height;
                     (*state).target_geometry = preview_geometry(selection, width, height);
@@ -65,7 +70,7 @@ impl ScrollPreviewWindow {
 
             let (x, y, preview_width, preview_height) = preview_geometry(selection, width, height);
             let state = Box::new(PreviewState {
-                bmp,
+                pixels: frame.pixels,
                 width,
                 height,
                 target_geometry: (x, y, preview_width, preview_height),
@@ -126,15 +131,6 @@ fn preview_geometry(
     (x, y, width, height)
 }
 
-fn bmp_dimensions(bmp: &[u8]) -> Result<(i32, i32), String> {
-    if bmp.len() < 54 || &bmp[..2] != b"BM" {
-        return Err("滚动预览数据不是有效 BMP".to_string());
-    }
-    let width = i32::from_le_bytes(bmp[18..22].try_into().unwrap()).abs();
-    let height = i32::from_le_bytes(bmp[22..26].try_into().unwrap()).abs();
-    Ok((width, height))
-}
-
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -163,7 +159,6 @@ unsafe extern "system" fn window_proc(
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PreviewState };
             if !state.is_null() {
                 let state = unsafe { &*state };
-                let offset = u32::from_le_bytes(state.bmp[10..14].try_into().unwrap()) as usize;
                 let available_w = (client.right - client.left - 16).max(1);
                 let available_h = (client.bottom - client.top - 16).max(1);
                 let scale = (available_w as f32 / state.width as f32)
@@ -172,6 +167,18 @@ unsafe extern "system" fn window_proc(
                 let draw_h = (state.height as f32 * scale) as i32;
                 let x = (client.right - draw_w) / 2;
                 let y = (client.bottom - draw_h) / 2;
+                let bitmap_info = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: state.width,
+                        biHeight: -state.height,
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB.0,
+                        ..Default::default()
+                    },
+                    bmiColors: [RGBQUAD::default(); 1],
+                };
                 unsafe {
                     SetStretchBltMode(memory_dc, HALFTONE);
                     StretchDIBits(
@@ -184,8 +191,8 @@ unsafe extern "system" fn window_proc(
                         0,
                         state.width,
                         state.height,
-                        Some(state.bmp[offset..].as_ptr().cast()),
-                        state.bmp[14..].as_ptr().cast(),
+                        Some(state.pixels.as_ptr().cast()),
+                        &bitmap_info,
                         DIB_RGB_COLORS,
                         SRCCOPY,
                     );

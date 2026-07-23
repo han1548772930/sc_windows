@@ -7,6 +7,7 @@ pub mod d2d;
 pub mod factory;
 pub mod file_dialog;
 pub mod gdi;
+pub mod graphics_capture;
 pub mod host_platform;
 pub mod hotkey_manager;
 pub mod hotkeys;

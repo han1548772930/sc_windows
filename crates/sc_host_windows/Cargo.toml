@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 thiserror = { workspace = true }
 image = { workspace = true }
-imageproc = { workspace = true }
 
 # Internal crates
 sc_app = { path = "../sc_app" }

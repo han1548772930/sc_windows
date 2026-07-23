@@ -22,7 +22,6 @@ anyhow = "1.0.104"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 embed-resource = "3.0.11"
 image = "0.25.10"
-imageproc = "0.27.0"
 ocr-rs = "2.3.3"
 resvg = "0.47.0"
 serde = { version = "1.0.229", features = ["derive"] }

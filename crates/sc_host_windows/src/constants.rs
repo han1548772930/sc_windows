@@ -13,4 +13,3 @@ pub const TIMER_CAPTURE_DELAY_MS: u32 = 50;
 pub const TIMER_SCROLL_CAPTURE_ID: usize = 2002;
 pub const TIMER_SCROLL_CAPTURE_MS: u32 = 15;
 pub const SCROLL_SETTLE_TICKS: u8 = 8;
-pub const SCROLL_PREVIEW_REFRESH_TICKS: u8 = 3;

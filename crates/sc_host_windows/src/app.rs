@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use sc_platform::WindowId;
 
@@ -22,9 +23,12 @@ use sc_platform::{
     WindowEvent,
 };
 use sc_platform_windows::windows::bmp::crop_bmp;
+use sc_platform_windows::windows::graphics_capture::{GpuFrameDecision, GraphicsCaptureSource};
 use sc_platform_windows::windows::{Direct2DRenderer, UserEventSender};
+use sc_rendering::DirtyRectTracker;
+#[cfg(debug_assertions)]
+use sc_rendering::DirtyType;
 use sc_rendering::Rectangle;
-use sc_rendering::{DirtyRectTracker, DirtyType};
 use sc_settings::{ConfigManager, Settings};
 use sc_ui_windows::cursor::CursorContext;
 use sc_ui_windows::{
@@ -32,24 +36,6 @@ use sc_ui_windows::{
 };
 
 use crate::HostEvent;
-
-fn bmp_frames_stable(previous: &[u8], next: &[u8]) -> bool {
-    if previous.len() != next.len() || previous.len() <= 54 {
-        return false;
-    }
-    let pixel_bytes = previous.len() - 54;
-    let stride = (pixel_bytes / 20_000).max(1);
-    let mut total_difference = 0u64;
-    let mut significant_changes = 0u64;
-    let mut samples = 0u64;
-    for index in (54..previous.len()).step_by(stride) {
-        let difference = previous[index].abs_diff(next[index]) as u64;
-        total_difference += difference;
-        significant_changes += u64::from(difference > 3);
-        samples += 1;
-    }
-    total_difference * 4 <= samples * 3 && significant_changes * 100 <= samples * 2
-}
 
 pub struct App {
     /// Core state/actions/effects (platform-neutral).
@@ -74,14 +60,14 @@ pub struct App {
     /// Cached OCR completion payload (set by `HostEvent::OcrCompleted`, consumed by `Command::ShowOcrPreview`).
     last_ocr_completion: Option<OcrCompletionData>,
     scroll_capture: Option<ScrollCaptureWorker>,
+    scroll_frame_source: Option<GraphicsCaptureSource>,
     scroll_overlay_window: Option<WindowId>,
     scroll_wheel_sequence: u64,
     scroll_quiet_ticks: u8,
     scroll_wheel_delta: i64,
     scroll_pending_direction: i8,
-    scroll_preview_ticks: u8,
+    scroll_last_preview: Instant,
     scroll_frame_captured: bool,
-    scroll_probe_frame: Option<Vec<u8>>,
 }
 
 impl App {
@@ -116,14 +102,14 @@ impl App {
             ocr_available: false,
             last_ocr_completion: None,
             scroll_capture: None,
+            scroll_frame_source: None,
             scroll_overlay_window: None,
             scroll_wheel_sequence: 0,
             scroll_quiet_ticks: SCROLL_SETTLE_TICKS,
             scroll_wheel_delta: 0,
             scroll_pending_direction: 0,
-            scroll_preview_ticks: 0,
+            scroll_last_preview: Instant::now(),
             scroll_frame_captured: true,
-            scroll_probe_frame: None,
         })
     }
 
@@ -167,9 +153,9 @@ impl App {
         }
         sc_platform_windows::windows::system::stop_scroll_wheel_hook();
         self.scroll_capture = None;
-        self.scroll_preview_ticks = 0;
+        self.scroll_frame_source = None;
+        self.scroll_last_preview = Instant::now();
         self.scroll_frame_captured = true;
-        self.scroll_probe_frame = None;
         self.ui.set_scrolling_mode(false);
         ScrollPreviewWindow::close();
 
@@ -224,10 +210,8 @@ impl App {
     }
 
     pub fn render(&mut self) -> AppResult<()> {
-        let dirty_type = self.dirty_tracker.dirty_type();
-
         #[cfg(debug_assertions)]
-        if dirty_type == DirtyType::Partial
+        if self.dirty_tracker.dirty_type() == DirtyType::Partial
             && let Some(rect) = self.dirty_tracker.get_combined_dirty_rect()
         {
             eprintln!(
@@ -803,12 +787,16 @@ impl App {
         self.ui.set_scrolling_mode(true);
         self.screenshot.set_show_selection_handles(false);
         let _ = self.handle_ui_message(UIMessage::ShowToolbar(selection));
+        self.dirty_tracker.mark_full_redraw();
+        let _ = self.host_platform.request_redraw(window);
         let center_x = selection.left + (selection.right - selection.left) / 2;
         let center_y = selection.top + (selection.bottom - selection.top) / 2;
-        sc_platform_windows::windows::system::window_below_at_screen_point(
+        let target_window = sc_platform_windows::windows::system::window_below_at_screen_point(
             window, center_x, center_y,
         )
         .ok_or_else(|| AppError::Screenshot("未找到选区下方的可滚动窗口".to_string()))?;
+        let frame_source = GraphicsCaptureSource::new(target_window, selection.into())
+            .map_err(AppError::Screenshot)?;
         self.scroll_overlay_window = Some(window);
         sc_platform_windows::windows::system::set_window_region_hole(
             window,
@@ -816,33 +804,33 @@ impl App {
             Some(selection.into()),
         )
         .map_err(AppError::Screenshot)?;
-        let first =
-            match sc_platform_windows::windows::gdi::capture_screen_region_to_bmp(selection.into())
-            {
-                Ok(first) => first,
-                Err(error) => {
-                    let _ = sc_platform_windows::windows::system::set_window_region_hole(
-                        window,
-                        self.screen_size,
-                        None,
-                    );
-                    self.ui.set_scrolling_mode(false);
-                    self.screenshot.set_show_selection_handles(true);
-                    return Err(AppError::Screenshot(format!("滚动首帧捕获失败: {error}")));
-                }
-            };
-        self.scroll_capture =
-            Some(ScrollCaptureWorker::new(selection, &first).map_err(AppError::Screenshot)?);
+        let first = match frame_source.wait_for_first_frame(Duration::from_millis(750)) {
+            Ok(first) => first,
+            Err(error) => {
+                let _ = sc_platform_windows::windows::system::set_window_region_hole(
+                    window,
+                    self.screen_size,
+                    None,
+                );
+                self.ui.set_scrolling_mode(false);
+                self.screenshot.set_show_selection_handles(true);
+                return Err(AppError::Screenshot(format!("滚动首帧捕获失败: {error}")));
+            }
+        };
+        self.scroll_capture = Some(
+            ScrollCaptureWorker::from_bgra(selection, first.clone())
+                .map_err(AppError::Screenshot)?,
+        );
         let sequence =
             sc_platform_windows::windows::system::start_scroll_wheel_hook(selection.into())
                 .map_err(AppError::Screenshot)?;
+        self.scroll_frame_source = Some(frame_source);
         self.scroll_wheel_sequence = sequence;
         self.scroll_wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
         self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
         self.scroll_pending_direction = 0;
-        self.scroll_preview_ticks = 0;
+        self.scroll_last_preview = Instant::now();
         self.scroll_frame_captured = true;
-        self.scroll_probe_frame = None;
         ScrollPreviewWindow::show_or_update(selection, first).map_err(AppError::Screenshot)?;
         self.host_platform
             .start_timer(
@@ -861,25 +849,19 @@ impl App {
         if self.drain_scroll_capture_events(window, selection)? {
             return Ok(());
         }
-        let pending_frames = self
+        if self
             .scroll_capture
             .as_ref()
-            .map_or(0, ScrollCaptureWorker::pending_frames);
-        sc_platform_windows::windows::system::set_scroll_pipeline_pressure(pending_frames);
+            .is_some_and(|capture| !capture.can_accept_frame())
+        {
+            return Ok(());
+        }
 
         let sequence = sc_platform_windows::windows::system::scroll_wheel_sequence();
         if sequence != self.scroll_wheel_sequence {
-            if self.scroll_quiet_ticks >= SCROLL_SETTLE_TICKS {
-                self.scroll_capture
-                    .as_ref()
-                    .expect("scroll capture checked above")
-                    .begin_gesture()
-                    .map_err(AppError::Screenshot)?;
-            }
             self.scroll_wheel_sequence = sequence;
             self.scroll_quiet_ticks = 0;
             self.scroll_frame_captured = false;
-            self.scroll_probe_frame = None;
             let wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
             if wheel_delta != self.scroll_wheel_delta {
                 self.scroll_pending_direction = match wheel_delta.cmp(&self.scroll_wheel_delta) {
@@ -896,35 +878,56 @@ impl App {
             }
         }
 
-        let bmp = sc_platform_windows::windows::gdi::capture_screen_region_to_bmp(selection.into())
-            .map_err(|e| AppError::Screenshot(format!("滚动帧捕获失败: {e}")))?;
-
-        let movement_active =
-            sequence != self.scroll_wheel_sequence || self.scroll_quiet_ticks == 0;
-        if !movement_active {
-            let stable = self
-                .scroll_probe_frame
-                .as_ref()
-                .is_some_and(|previous| bmp_frames_stable(previous, &bmp));
-            if !stable {
-                self.scroll_probe_frame = Some(bmp);
+        let movement_active = self.scroll_quiet_ticks < SCROLL_SETTLE_TICKS;
+        let Some(decision) = self
+            .scroll_frame_source
+            .as_ref()
+            .ok_or_else(|| AppError::Screenshot("WGC 滚动捕获会话未启动".to_string()))?
+            .try_next_gpu_frame(self.scroll_pending_direction, None, !movement_active)
+            .map_err(AppError::Screenshot)?
+        else {
+            return Ok(());
+        };
+        let (frame, shift) = match decision {
+            GpuFrameDecision::Skipped => return Ok(()),
+            GpuFrameDecision::Unmatched => {
+                self.scroll_frame_captured = false;
                 return Ok(());
             }
-            self.scroll_probe_frame = None;
-        }
+            GpuFrameDecision::Keyframe {
+                frame,
+                shift,
+                score,
+            } => {
+                eprintln!(
+                    "[scroll capture] GPU keyframe shift={}px, score={:.5}, direction={}",
+                    shift, score, self.scroll_pending_direction
+                );
+                (frame, shift)
+            }
+        };
 
-        self.scroll_preview_ticks = self.scroll_preview_ticks.saturating_add(1);
-        let preview_size = (self.scroll_preview_ticks >= SCROLL_PREVIEW_REFRESH_TICKS)
+        let preview_size = (self.scroll_last_preview.elapsed() >= Duration::from_millis(300))
             .then(|| self.scroll_preview_size());
-        self.scroll_capture
+        let submitted = self
+            .scroll_capture
             .as_ref()
             .expect("scroll capture checked above")
-            .push_frame(bmp, self.scroll_pending_direction, preview_size)
+            .push_gpu_keyframe(
+                frame,
+                self.scroll_pending_direction,
+                shift,
+                !movement_active,
+                preview_size,
+            )
             .map_err(AppError::Screenshot)?;
-        self.scroll_frame_captured = !movement_active;
-        if preview_size.is_some() {
-            self.scroll_preview_ticks = 0;
+        if !submitted {
+            return Ok(());
         }
+        if preview_size.is_some() {
+            self.scroll_last_preview = Instant::now();
+        }
+        self.scroll_frame_captured = !movement_active;
         if !movement_active {
             let preview_size = self.scroll_preview_size();
             self.scroll_capture
@@ -932,7 +935,6 @@ impl App {
                 .expect("scroll capture checked above")
                 .finish_gesture(preview_size)
                 .map_err(AppError::Screenshot)?;
-            self.scroll_pending_direction = 0;
             self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
         }
         Ok(())
@@ -940,12 +942,13 @@ impl App {
 
     fn drain_scroll_capture_events(
         &mut self,
-        window: WindowId,
+        _window: WindowId,
         selection: core_selection::RectI32,
     ) -> AppResult<bool> {
-        let mut finished = false;
         let mut latest_preview = None;
-        let mut terminal_error = None;
+        let mut frame_accepted = false;
+        let mut frame_discarded = false;
+        let mut gesture_finished = false;
         loop {
             let event = self
                 .scroll_capture
@@ -953,25 +956,30 @@ impl App {
                 .and_then(ScrollCaptureWorker::poll_event);
             match event {
                 Some(ScrollCaptureEvent::Preview(bmp)) => latest_preview = Some(bmp),
-                Some(ScrollCaptureEvent::Finished) => finished = true,
-                Some(ScrollCaptureEvent::Error(error)) => terminal_error = Some(error),
+                Some(ScrollCaptureEvent::FrameAccepted) => frame_accepted = true,
+                Some(ScrollCaptureEvent::FrameDiscarded) => frame_discarded = true,
+                Some(ScrollCaptureEvent::GestureFinished) => gesture_finished = true,
                 None => break,
             }
         }
         if let Some(bmp) = latest_preview {
             ScrollPreviewWindow::show_or_update(selection, bmp).map_err(AppError::Screenshot)?;
         }
-        if let Some(error) = terminal_error {
-            return Err(AppError::Screenshot(error));
+        if frame_accepted {
+            if let Some(source) = self.scroll_frame_source.as_ref() {
+                source.accept_gpu_candidate();
+            }
         }
-        if finished {
-            let _ = self
-                .host_platform
-                .stop_timer(window, TIMER_SCROLL_CAPTURE_ID as u32);
-            sc_platform_windows::windows::system::stop_scroll_wheel_hook();
-            let _ = self.host_platform.request_redraw(window);
+        if frame_discarded {
+            if let Some(source) = self.scroll_frame_source.as_ref() {
+                source.discard_gpu_candidate();
+            }
+            self.scroll_frame_captured = false;
         }
-        Ok(finished)
+        if gesture_finished {
+            self.scroll_pending_direction = 0;
+        }
+        Ok(false)
     }
 
     fn scrolling_bmp(&self) -> AppResult<Vec<u8>> {
@@ -1204,6 +1212,20 @@ impl sc_platform::WindowMessageHandler for App {
 
     fn handle_input_event(&mut self, window: WindowId, event: InputEvent) -> Option<isize> {
         match event {
+            InputEvent::Tray(sc_platform::TrayEvent::MenuCommand(1001)) => {
+                // Let the native popup menu disappear before capturing, then use the same
+                // complete capture path as the global hotkey.
+                if self.host_platform.is_window_visible(window) {
+                    let _ = self.host_platform.hide_window(window);
+                }
+                let _ = self.host_platform.start_timer(
+                    window,
+                    TIMER_CAPTURE_DELAY_ID as u32,
+                    TIMER_CAPTURE_DELAY_MS,
+                );
+                Some(0)
+            }
+
             InputEvent::Hotkey { id } if id == HOTKEY_SCREENSHOT_ID as u32 => {
                 if self.host_platform.is_window_visible(window) {
                     let _ = self.host_platform.hide_window(window);
@@ -1379,28 +1401,5 @@ impl From<SystemError> for AppError {
 impl From<PlatformError> for AppError {
     fn from(err: PlatformError) -> Self {
         AppError::Platform(err.to_string())
-    }
-}
-
-#[cfg(test)]
-mod scrolling_stability_tests {
-    use super::bmp_frames_stable;
-
-    #[test]
-    fn accepts_settled_frames_with_a_small_local_change() {
-        let previous = vec![128; 10_054];
-        let mut next = previous.clone();
-        next[500] = 132;
-        assert!(bmp_frames_stable(&previous, &next));
-    }
-
-    #[test]
-    fn rejects_a_frame_that_is_still_moving() {
-        let previous = vec![32; 10_054];
-        let mut next = previous.clone();
-        for byte in next.iter_mut().skip(54).step_by(4) {
-            *byte = 220;
-        }
-        assert!(!bmp_frames_stable(&previous, &next));
     }
 }

@@ -36,9 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use sc_drawing::Rect;
 use sc_platform::WindowId;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::LRESULT;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -53,77 +51,6 @@ static HOOK_LEFT: AtomicI32 = AtomicI32::new(0);
 static HOOK_TOP: AtomicI32 = AtomicI32::new(0);
 static HOOK_RIGHT: AtomicI32 = AtomicI32::new(0);
 static HOOK_BOTTOM: AtomicI32 = AtomicI32::new(0);
-static SMOOTHING_GENERATION: AtomicU64 = AtomicU64::new(0);
-static SCROLL_PIPELINE_PRESSURE: AtomicU32 = AtomicU32::new(0);
-static PENDING_WHEEL_DELTAS: OnceLock<Mutex<VecDeque<i32>>> = OnceLock::new();
-
-const SMOOTH_WHEEL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
-const SMOOTH_WHEEL_STEP: i32 = 40;
-
-fn pending_wheel_deltas() -> &'static Mutex<VecDeque<i32>> {
-    PENDING_WHEEL_DELTAS.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-fn enqueue_wheel_delta(delta: i32) {
-    let mut queue = pending_wheel_deltas()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if queue
-        .back()
-        .is_some_and(|queued| queued.signum() == delta.signum())
-    {
-        if let Some(queued) = queue.back_mut() {
-            *queued = queued.saturating_add(delta);
-        }
-    } else {
-        queue.push_back(delta);
-    }
-}
-
-fn take_smoothed_wheel_delta(queue: &mut VecDeque<i32>, max_step: u32) -> Option<i32> {
-    let remaining = queue.front_mut()?;
-    let emitted = remaining.signum() * remaining.unsigned_abs().min(max_step) as i32;
-    *remaining -= emitted;
-    if *remaining == 0 {
-        queue.pop_front();
-    }
-    Some(emitted)
-}
-
-fn send_smoothed_wheel_delta(delta: i32) {
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                mouseData: delta as u32,
-                dwFlags: MOUSEEVENTF_WHEEL,
-                ..Default::default()
-            },
-        },
-    };
-    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
-    if sent != 1 {
-        eprintln!("[滚动截图] 匀速滚轮注入失败: delta={delta}");
-    }
-}
-
-fn run_wheel_smoother(generation: u64) {
-    while SMOOTHING_GENERATION.load(Ordering::Acquire) == generation {
-        std::thread::sleep(SMOOTH_WHEEL_INTERVAL);
-        if SCROLL_PIPELINE_PRESSURE.load(Ordering::Acquire) >= 8 {
-            continue;
-        }
-        let delta = {
-            let mut queue = pending_wheel_deltas()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            take_smoothed_wheel_delta(&mut queue, SMOOTH_WHEEL_STEP as u32)
-        };
-        if let Some(delta) = delta {
-            send_smoothed_wheel_delta(delta);
-        }
-    }
-}
 
 unsafe extern "system" fn scroll_mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && wparam.0 as u32 == WM_MOUSEWHEEL {
@@ -135,11 +62,9 @@ unsafe extern "system" fn scroll_mouse_hook(code: i32, wparam: WPARAM, lparam: L
         if inside_capture {
             let delta = (info.mouseData >> 16) as u16 as i16 as i32;
             if info.flags & LLMHF_INJECTED == 0 {
-                enqueue_wheel_delta(delta);
-                return LRESULT(1);
+                WHEEL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                WHEEL_DELTA_TOTAL.fetch_add(delta as i64, Ordering::Relaxed);
             }
-            WHEEL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            WHEEL_DELTA_TOTAL.fetch_add(delta as i64, Ordering::Relaxed);
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -151,12 +76,6 @@ pub fn start_scroll_wheel_hook(rect: Rect) -> Result<u64, String> {
     HOOK_TOP.store(rect.top, Ordering::Relaxed);
     HOOK_RIGHT.store(rect.right, Ordering::Relaxed);
     HOOK_BOTTOM.store(rect.bottom, Ordering::Relaxed);
-    let generation = SMOOTHING_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    SCROLL_PIPELINE_PRESSURE.store(0, Ordering::Release);
-    pending_wheel_deltas()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let thread_id = unsafe { GetCurrentThreadId() };
@@ -181,31 +100,14 @@ pub fn start_scroll_wheel_hook(rect: Rect) -> Result<u64, String> {
     ready_rx
         .recv_timeout(std::time::Duration::from_secs(2))
         .map_err(|e| format!("scroll hook thread failed: {e}"))??;
-    std::thread::Builder::new()
-        .name("scroll-wheel-smoother".to_string())
-        .spawn(move || run_wheel_smoother(generation))
-        .map_err(|error| format!("scroll smoother thread failed: {error}"))?;
     Ok(WHEEL_SEQUENCE.load(Ordering::Relaxed))
 }
 
 pub fn stop_scroll_wheel_hook() {
-    SMOOTHING_GENERATION.fetch_add(1, Ordering::AcqRel);
-    SCROLL_PIPELINE_PRESSURE.store(0, Ordering::Release);
-    pending_wheel_deltas()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
     let thread_id = HOOK_THREAD_ID.swap(0, Ordering::AcqRel);
     if thread_id != 0 {
         let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
     }
-}
-
-pub fn set_scroll_pipeline_pressure(pending_frames: usize) {
-    SCROLL_PIPELINE_PRESSURE.store(
-        pending_frames.min(u32::MAX as usize) as u32,
-        Ordering::Release,
-    );
 }
 
 pub fn scroll_wheel_sequence() -> u64 {
@@ -214,22 +116,6 @@ pub fn scroll_wheel_sequence() -> u64 {
 
 pub fn scroll_wheel_delta_total() -> i64 {
     WHEEL_DELTA_TOTAL.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
-mod scroll_smoothing_tests {
-    use super::*;
-
-    #[test]
-    fn smoothing_preserves_total_delta_and_direction_order() {
-        let mut queue = VecDeque::from([120, -80, 30]);
-        let mut emitted = Vec::new();
-        while let Some(delta) = take_smoothed_wheel_delta(&mut queue, SMOOTH_WHEEL_STEP as u32) {
-            emitted.push(delta);
-        }
-        assert_eq!(emitted, [40, 40, 40, -40, -40, 30]);
-        assert_eq!(emitted.iter().sum::<i32>(), 70);
-    }
 }
 
 /// Exclude a rectangle from a window's visible and hit-test region.
