@@ -956,15 +956,19 @@ impl App {
                     eprintln!("[scroll capture] state changed: {state:?}");
                     match state {
                         crate::scroll_capture::ScrollCaptureState::Broken { .. } => {
-                            ScrollPreviewWindow::set_status(Some(
-                                "截图中断，请回到中断位置继续滚动",
-                            ));
+                            ScrollPreviewWindow::set_status(
+                                selection,
+                                Some("截图中断 返回截图位置继续滚动"),
+                            );
                         }
                         crate::scroll_capture::ScrollCaptureState::Recovered => {
-                            ScrollPreviewWindow::set_status(None);
+                            ScrollPreviewWindow::set_status(selection, None);
                         }
                         crate::scroll_capture::ScrollCaptureState::MaximumLength { .. } => {
-                            ScrollPreviewWindow::set_status(Some("已达最大长度，无法继续截图"));
+                            ScrollPreviewWindow::set_status(
+                                selection,
+                                Some("已达最大长度，无法继续截图"),
+                            );
                             self.scroll_frame_captured = true;
                         }
                     }
