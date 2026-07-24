@@ -836,6 +836,9 @@ enum SpliceCommand {
         frame: BgraFrame,
         native_scroll_position: Option<i32>,
     },
+    Advance {
+        matched: MatchedFrame,
+    },
     Frame {
         matched: MatchedFrame,
         preview_size: Option<(u32, u32)>,
@@ -1023,7 +1026,7 @@ fn run_scroll_capture_worker(
                 }
                 expected_splice_id = expected_splice_id.saturating_add(1);
                 if frame.discontinuity {
-                    pipeline_state = SplicePipelineState::Rebaseline;
+                    pipeline_state = SplicePipelineState::Confirm;
                     let splice_frame = frame.frame.clone();
                     if let Err(error) =
                         session.rebaseline(frame.frame, frame.native_scroll_position)
@@ -1063,9 +1066,6 @@ fn run_scroll_capture_worker(
                 let processing_started = Instant::now();
                 let native_scroll_position = frame.native_scroll_position;
                 let previous_native_scroll_position = session.native_scroll_position;
-                if pipeline_state == SplicePipelineState::Rebaseline {
-                    pipeline_state = SplicePipelineState::Confirm;
-                }
                 let result = session.match_bgra_frame(
                     splice_id,
                     frame.frame,
@@ -1076,33 +1076,26 @@ fn run_scroll_capture_worker(
                 stats_frames = stats_frames.saturating_add(1);
                 match result {
                     Ok(matched) => {
-                        if matches!(
-                            pipeline_state,
-                            SplicePipelineState::Rebaseline | SplicePipelineState::Confirm
-                        ) {
-                            if broken_visible {
+                        if pipeline_state == SplicePipelineState::Rebaseline {
+                            // The first valid frame after a rejected frame repairs
+                            // the ordered position chain but must not touch canvas.
+                            session.advance_match_state(&matched);
+                            pipeline_state = SplicePipelineState::Confirm;
+                            consecutive_failures = 0;
+                            if splice_tx.send(SpliceCommand::Advance { matched }).is_err() {
+                                pending_frames.fetch_sub(1, Ordering::AcqRel);
+                                break;
+                            }
+                        } else {
+                            if pipeline_state == SplicePipelineState::Confirm && broken_visible {
                                 let _ = events.send(ScrollCaptureEvent::StateChanged(
                                     ScrollCaptureState::Recovered,
                                 ));
                                 broken_visible = false;
                             }
                             consecutive_failures = 0;
-                            session.advance_match_state(&matched);
                             pipeline_state = SplicePipelineState::Splicing;
-                            if splice_tx
-                                .send(SpliceCommand::Frame {
-                                    matched,
-                                    preview_size,
-                                })
-                                .is_err()
-                            {
-                                pending_frames.fetch_sub(1, Ordering::AcqRel);
-                                break;
-                            }
-                        } else {
-                            consecutive_failures = 0;
                             session.advance_match_state(&matched);
-                            pipeline_state = SplicePipelineState::Splicing;
                             if splice_tx
                                 .send(SpliceCommand::Frame {
                                     matched,
@@ -1199,6 +1192,12 @@ fn run_splice_worker(
                 if let Err(error) = session.rebaseline(frame, native_scroll_position) {
                     eprintln!("[scroll capture] splice rebaseline failed: {error}");
                 }
+            }
+            SpliceCommand::Advance { matched } => {
+                last_splice_id = last_splice_id.max(matched.splice_id);
+                session.advance_match_state(&matched);
+                let _ = events.send(ScrollCaptureEvent::FrameDiscarded);
+                pending_frames.fetch_sub(1, Ordering::AcqRel);
             }
             SpliceCommand::Frame {
                 matched,
@@ -1669,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_frame_keeps_the_last_accepted_anchor() {
+    fn rejected_frame_requires_confirmation_before_splicing_resumes() {
         let selection = sc_app::selection::RectI32::from_points(0, 0, 160, 180);
         let source = document(160, 600);
         let worker =
@@ -1688,12 +1687,19 @@ mod tests {
                 .push_frame(captured(document_frame(&source, 40, 180), None), 1, None)
                 .unwrap()
         );
+        assert!(!wait_for_frame_event(&worker));
+
+        assert!(
+            worker
+                .push_frame(captured(document_frame(&source, 60, 180), None), 1, None)
+                .unwrap()
+        );
         assert!(wait_for_frame_event(&worker));
         let recovered = image::load_from_memory(&worker.bmp_data().unwrap()).unwrap();
-        assert_eq!(recovered.height(), 220);
+        assert_eq!(recovered.height(), 240);
         assert_eq!(
             recovered.to_rgba8(),
-            image::imageops::crop_imm(&source, 0, 0, 160, 220).to_image()
+            image::imageops::crop_imm(&source, 0, 0, 160, 240).to_image()
         );
     }
 }
