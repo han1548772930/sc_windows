@@ -9,6 +9,7 @@ description = "Windows platform implementation"
 sc_platform = { path = "../sc_platform" }
 sc_rendering = { path = "../sc_rendering" }
 sc_drawing = { path = "../sc_drawing" }
+image = { workspace = true }
 windows-numerics = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

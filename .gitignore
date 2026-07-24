@@ -7,3 +7,7 @@ sc_windows*
 PaddleOCR-json_v1.4.1*
 DRAWING_CRATE_ANALYSIS*
 crates/*/Cargo.lock
+third_party/opencv-*-windows.exe
+third_party/opencv-sdk/
+third_party/opencv-static-build/
+third_party/opencv-static/

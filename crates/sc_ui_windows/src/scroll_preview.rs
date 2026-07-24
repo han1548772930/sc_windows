@@ -16,11 +16,26 @@ struct PreviewState {
     width: i32,
     height: i32,
     target_geometry: (i32, i32, i32, i32),
+    status: Option<String>,
 }
 
 pub struct ScrollPreviewWindow;
 
 impl ScrollPreviewWindow {
+    pub fn set_status(status: Option<&str>) {
+        let hwnd = PREVIEW_HWND.with(Cell::get);
+        if hwnd.0.is_null() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            return;
+        }
+        unsafe {
+            let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PreviewState;
+            if !state.is_null() {
+                (*state).status = status.map(str::to_owned);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+        }
+    }
+
     pub fn show_or_update(selection: RectI32, frame: BgraFrame) -> Result<(), String> {
         let width = frame.width as i32;
         let height = frame.height as i32;
@@ -74,6 +89,7 @@ impl ScrollPreviewWindow {
                 width,
                 height,
                 target_geometry: (x, y, preview_width, preview_height),
+                status: None,
             });
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -196,6 +212,27 @@ unsafe extern "system" fn window_proc(
                         DIB_RGB_COLORS,
                         SRCCOPY,
                     );
+                }
+                if let Some(status) = &state.status {
+                    let bar = RECT {
+                        left: 0,
+                        top: client_height - 36,
+                        right: client_width,
+                        bottom: client_height,
+                    };
+                    let brush = unsafe { CreateSolidBrush(COLORREF(0x003535d8)) };
+                    let _ = unsafe { FillRect(memory_dc, &bar, brush) };
+                    let _ = unsafe { DeleteObject(brush.into()) };
+                    unsafe {
+                        SetBkMode(memory_dc, TRANSPARENT);
+                        SetTextColor(memory_dc, COLORREF(0x00ffffff));
+                        let _ = TextOutW(
+                            memory_dc,
+                            12,
+                            client_height - 27,
+                            &status.encode_utf16().collect::<Vec<_>>(),
+                        );
+                    }
                 }
             }
             unsafe {

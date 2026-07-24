@@ -1,5 +1,6 @@
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXSCREEN, SM_CYBORDER, SM_CYCAPTION, SM_CYFRAME, SM_CYSCREEN,
+    GetParent, GetScrollInfo, GetSystemMetrics, SB_VERT, SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE,
+    SM_CXSCREEN, SM_CYBORDER, SM_CYCAPTION, SM_CYFRAME, SM_CYSCREEN,
 };
 
 pub fn get_screen_size() -> (i32, i32) {
@@ -18,6 +19,31 @@ pub fn get_border_height() -> i32 {
 
 pub fn get_frame_height() -> i32 {
     unsafe { GetSystemMetrics(SM_CYFRAME) }
+}
+
+pub fn vertical_scroll_position(window: WindowId) -> Option<i32> {
+    let mut hwnd = super::hwnd(window);
+    for _ in 0..8 {
+        let mut info = SCROLLINFO {
+            cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_POS | SIF_RANGE | SIF_PAGE,
+            ..Default::default()
+        };
+        if unsafe { GetScrollInfo(hwnd, SB_VERT, &mut info) }.is_ok()
+            && info.nMax > info.nMin
+            && (info.nMax - info.nMin + 1) as u32 > info.nPage
+        {
+            return Some(info.nPos);
+        }
+        let Ok(parent) = (unsafe { GetParent(hwnd) }) else {
+            break;
+        };
+        if parent.0.is_null() {
+            break;
+        }
+        hwnd = parent;
+    }
+    None
 }
 use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;

@@ -23,7 +23,7 @@ use sc_platform::{
     WindowEvent,
 };
 use sc_platform_windows::windows::bmp::crop_bmp;
-use sc_platform_windows::windows::graphics_capture::{GpuFrameDecision, GraphicsCaptureSource};
+use sc_platform_windows::windows::graphics_capture::GraphicsCaptureSource;
 use sc_platform_windows::windows::{Direct2DRenderer, UserEventSender};
 use sc_rendering::DirtyRectTracker;
 #[cfg(debug_assertions)]
@@ -62,6 +62,7 @@ pub struct App {
     scroll_capture: Option<ScrollCaptureWorker>,
     scroll_frame_source: Option<GraphicsCaptureSource>,
     scroll_overlay_window: Option<WindowId>,
+    scroll_target_window: Option<WindowId>,
     scroll_wheel_sequence: u64,
     scroll_quiet_ticks: u8,
     scroll_wheel_delta: i64,
@@ -104,6 +105,7 @@ impl App {
             scroll_capture: None,
             scroll_frame_source: None,
             scroll_overlay_window: None,
+            scroll_target_window: None,
             scroll_wheel_sequence: 0,
             scroll_quiet_ticks: SCROLL_SETTLE_TICKS,
             scroll_wheel_delta: 0,
@@ -154,6 +156,7 @@ impl App {
         sc_platform_windows::windows::system::stop_scroll_wheel_hook();
         self.scroll_capture = None;
         self.scroll_frame_source = None;
+        self.scroll_target_window = None;
         self.scroll_last_preview = Instant::now();
         self.scroll_frame_captured = true;
         self.ui.set_scrolling_mode(false);
@@ -795,16 +798,26 @@ impl App {
             window, center_x, center_y,
         )
         .ok_or_else(|| AppError::Screenshot("未找到选区下方的可滚动窗口".to_string()))?;
-        let frame_source = GraphicsCaptureSource::new(target_window, selection.into())
-            .map_err(AppError::Screenshot)?;
-        self.scroll_overlay_window = Some(window);
         sc_platform_windows::windows::system::set_window_region_hole(
             window,
             self.screen_size,
             Some(selection.into()),
         )
         .map_err(AppError::Screenshot)?;
-        let first = match frame_source.wait_for_first_frame(Duration::from_millis(750)) {
+        let frame_source = match GraphicsCaptureSource::new(selection.into()) {
+            Ok(source) => source,
+            Err(error) => {
+                let _ = sc_platform_windows::windows::system::set_window_region_hole(
+                    window,
+                    self.screen_size,
+                    None,
+                );
+                return Err(AppError::Screenshot(error));
+            }
+        };
+        self.scroll_overlay_window = Some(window);
+        self.scroll_target_window = Some(target_window);
+        let mut first = match frame_source.wait_for_first_frame(Duration::from_millis(750)) {
             Ok(first) => first,
             Err(error) => {
                 let _ = sc_platform_windows::windows::system::set_window_region_hole(
@@ -817,8 +830,11 @@ impl App {
                 return Err(AppError::Screenshot(format!("滚动首帧捕获失败: {error}")));
             }
         };
+        let initial_scroll_position =
+            sc_platform_windows::windows::system::vertical_scroll_position(target_window);
+        first.native_scroll_position = initial_scroll_position;
         self.scroll_capture = Some(
-            ScrollCaptureWorker::from_bgra(selection, first.clone())
+            ScrollCaptureWorker::from_bgra(selection, first.frame.clone(), initial_scroll_position)
                 .map_err(AppError::Screenshot)?,
         );
         let sequence =
@@ -831,7 +847,8 @@ impl App {
         self.scroll_pending_direction = 0;
         self.scroll_last_preview = Instant::now();
         self.scroll_frame_captured = true;
-        ScrollPreviewWindow::show_or_update(selection, first).map_err(AppError::Screenshot)?;
+        ScrollPreviewWindow::show_or_update(selection, first.frame)
+            .map_err(AppError::Screenshot)?;
         self.host_platform
             .start_timer(
                 window,
@@ -857,6 +874,10 @@ impl App {
             return Ok(());
         }
 
+        let source = self
+            .scroll_frame_source
+            .as_ref()
+            .ok_or_else(|| AppError::Screenshot("scroll capture source not started".to_string()))?;
         let sequence = sc_platform_windows::windows::system::scroll_wheel_sequence();
         if sequence != self.scroll_wheel_sequence {
             self.scroll_wheel_sequence = sequence;
@@ -873,81 +894,28 @@ impl App {
             }
         } else {
             self.scroll_quiet_ticks = self.scroll_quiet_ticks.saturating_add(1);
-            if self.scroll_frame_captured {
-                return Ok(());
-            }
         }
 
         let movement_active = self.scroll_quiet_ticks < SCROLL_SETTLE_TICKS;
-        let Some(decision) = self
-            .scroll_frame_source
-            .as_ref()
-            .ok_or_else(|| AppError::Screenshot("WGC 滚动捕获会话未启动".to_string()))?
-            .try_next_gpu_frame(self.scroll_pending_direction, !movement_active)
-            .map_err(AppError::Screenshot)?
-        else {
+        let native_scroll_position = self
+            .scroll_target_window
+            .and_then(sc_platform_windows::windows::system::vertical_scroll_position);
+        // WeChat's GrabWorker feeds numbered frames continuously. Keep the GDI
+        // sequence intact; wheel metadata must not create gaps in pixel frames.
+        let Some(mut frame) = source.try_next_frame().map_err(AppError::Screenshot)? else {
             return Ok(());
         };
-        let (frame_id, frame, shift) = match decision {
-            GpuFrameDecision::Skipped => return Ok(()),
-            GpuFrameDecision::Unmatched => {
-                if !movement_active {
-                    self.scroll_capture
-                        .as_ref()
-                        .expect("scroll capture checked above")
-                        .finish_gesture(self.scroll_preview_size())
-                        .map_err(AppError::Screenshot)?;
-                    self.scroll_frame_captured = true;
-                    self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
-                } else {
-                    self.scroll_frame_captured = false;
-                }
-                return Ok(());
-            }
-            GpuFrameDecision::Boundary => {
-                self.scroll_frame_captured = true;
-                self.scroll_quiet_ticks = SCROLL_SETTLE_TICKS;
-                self.scroll_pending_direction = 0;
-                self.scroll_capture
-                    .as_ref()
-                    .expect("scroll capture checked above")
-                    .finish_gesture(self.scroll_preview_size())
-                    .map_err(AppError::Screenshot)?;
-                return Ok(());
-            }
-            GpuFrameDecision::Keyframe {
-                frame_id,
-                frame,
-                shift,
-                score,
-            } => {
-                eprintln!(
-                    "[scroll capture] GPU keyframe shift={}px, score={:.5}, direction={}",
-                    shift, score, self.scroll_pending_direction
-                );
-                (frame_id, frame, shift)
-            }
-        };
-
+        frame.native_scroll_position = native_scroll_position;
+        frame.wheel_sequence = sequence;
         let preview_size = (self.scroll_last_preview.elapsed() >= Duration::from_millis(100))
             .then(|| self.scroll_preview_size());
         let submitted = self
             .scroll_capture
             .as_ref()
             .expect("scroll capture checked above")
-            .push_gpu_keyframe(
-                frame_id,
-                frame,
-                self.scroll_pending_direction,
-                shift,
-                !movement_active,
-                preview_size,
-            )
+            .push_frame(frame, self.scroll_pending_direction, preview_size)
             .map_err(AppError::Screenshot)?;
         if !submitted {
-            if let Some(source) = self.scroll_frame_source.as_ref() {
-                source.discard_gpu_candidate(frame_id);
-            }
             return Ok(());
         }
         if preview_size.is_some() {
@@ -972,8 +940,6 @@ impl App {
         selection: core_selection::RectI32,
     ) -> AppResult<bool> {
         let mut latest_preview = None;
-        let mut accepted_frames = Vec::new();
-        let mut discarded_frames = Vec::new();
         loop {
             let event = self
                 .scroll_capture
@@ -981,29 +947,33 @@ impl App {
                 .and_then(ScrollCaptureWorker::poll_event);
             match event {
                 Some(ScrollCaptureEvent::Preview(bmp)) => latest_preview = Some(bmp),
-                Some(ScrollCaptureEvent::FrameAccepted(frame_id)) => accepted_frames.push(frame_id),
-                Some(ScrollCaptureEvent::FrameDiscarded(frame_id)) => {
-                    discarded_frames.push(frame_id)
-                }
+                Some(ScrollCaptureEvent::FrameAccepted) => {}
+                Some(ScrollCaptureEvent::FrameDiscarded) => self.scroll_frame_captured = false,
                 // Gesture completion can arrive after the next wheel event. It must not
                 // clear direction or delta belonging to that newer gesture.
                 Some(ScrollCaptureEvent::GestureFinished) => {}
+                Some(ScrollCaptureEvent::StateChanged(state)) => {
+                    eprintln!("[scroll capture] state changed: {state:?}");
+                    match state {
+                        crate::scroll_capture::ScrollCaptureState::Broken { .. } => {
+                            ScrollPreviewWindow::set_status(Some(
+                                "截图中断，请回到中断位置继续滚动",
+                            ));
+                        }
+                        crate::scroll_capture::ScrollCaptureState::Recovered => {
+                            ScrollPreviewWindow::set_status(None);
+                        }
+                        crate::scroll_capture::ScrollCaptureState::MaximumLength { .. } => {
+                            ScrollPreviewWindow::set_status(Some("已达最大长度，无法继续截图"));
+                            self.scroll_frame_captured = true;
+                        }
+                    }
+                }
                 None => break,
             }
         }
         if let Some(bmp) = latest_preview {
             ScrollPreviewWindow::show_or_update(selection, bmp).map_err(AppError::Screenshot)?;
-        }
-        for frame_id in accepted_frames {
-            if let Some(source) = self.scroll_frame_source.as_ref()
-                && source.accept_gpu_candidate(frame_id)
-            {}
-        }
-        for frame_id in discarded_frames {
-            if let Some(source) = self.scroll_frame_source.as_ref() {
-                source.discard_gpu_candidate(frame_id);
-            }
-            self.scroll_frame_captured = false;
         }
         Ok(false)
     }

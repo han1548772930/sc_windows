@@ -1,0 +1,6 @@
+[env]
+OPENCV_INCLUDE_PATHS = { value = "third_party/opencv-static/include", relative = true }
+OPENCV_LINK_PATHS = { value = "third_party/opencv-static/x64/vc17/staticlib", relative = true }
+OPENCV_LINK_LIBS = "static=opencv_features2d4120,static=opencv_imgproc4120,static=opencv_core4120,static=zlib"
+CLANG_PATH = "C:/Program Files/LLVM/bin/clang.exe"
+OPENCV_MSVC_CRT = "static"
