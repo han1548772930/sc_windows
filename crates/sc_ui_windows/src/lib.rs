@@ -20,7 +20,7 @@ pub use cursor::CursorManager;
 pub use preview::PreviewWindow;
 pub use sc_ui::toolbar::ToolbarButton;
 
-pub use scroll_preview::ScrollPreviewWindow;
+pub use scroll_preview::{PreviewPlacement, ScrollPreviewWindow, preview_size};
 pub use settings::SettingsWindow;
 
 use svg_icons::SvgIconManager;

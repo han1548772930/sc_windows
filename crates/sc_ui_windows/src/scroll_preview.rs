@@ -118,17 +118,23 @@ impl ScrollPreviewWindow {
                     (*state).pixels = frame.pixels;
                     (*state).width = width;
                     (*state).height = height;
-                    (*state).target_geometry = preview_geometry(selection, width, height);
-                    let target = (*state).target_geometry;
-                    let _ = SetWindowPos(
-                        existing,
-                        Some(HWND_TOPMOST),
-                        target.0,
-                        target.1,
-                        target.2,
-                        target.3,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                    );
+                    let target = preview_geometry(selection, width, height);
+                    // Only move the window when the geometry actually changed. The canvas grows
+                    // by a few rows per splice, so re-issuing the same rectangle every frame
+                    // makes Windows discard and re-create the window surface — which is what
+                    // makes the preview flicker.
+                    if target != (*state).target_geometry {
+                        (*state).target_geometry = target;
+                        let _ = SetWindowPos(
+                            existing,
+                            Some(HWND_TOPMOST),
+                            target.0,
+                            target.1,
+                            target.2,
+                            target.3,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                    }
                     let _ = InvalidateRect(Some(existing), None, false);
                 }
             }
@@ -144,7 +150,10 @@ impl ScrollPreviewWindow {
                 lpszClassName: class_name,
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                 hbrBackground: HBRUSH::default(),
-                style: CS_HREDRAW | CS_VREDRAW,
+                // No CS_HREDRAW/CS_VREDRAW: those invalidate the whole window on every resize,
+                // and the preview resizes on every splice. The paint handler already covers the
+                // full client area, so nothing needs the forced full repaint.
+                style: WNDCLASS_STYLES(0),
                 ..Default::default()
             };
             if RegisterClassW(&class) == 0 && GetLastError().0 != 1410 {
@@ -193,6 +202,158 @@ impl ScrollPreviewWindow {
             }
         }
     }
+
+    /// Window handles owned by the preview, as raw addresses.
+    ///
+    /// These are fed to `MagSetWindowFilterList` so the capture UI never appears in the
+    /// captured pixels.
+    pub fn window_handles() -> Vec<usize> {
+        let mut handles = Vec::new();
+        let preview = PREVIEW_HWND.with(Cell::get);
+        if !preview.0.is_null() {
+            handles.push(preview.0 as usize);
+        }
+        let status = STATUS_HWND.with(Cell::get);
+        if !status.0.is_null() {
+            handles.push(status.0 as usize);
+        }
+        handles
+    }
+}
+
+/// Where the preview window sits relative to the selection.
+///
+/// The choice is horizontal: the preview prefers the free space to the right of the selection,
+/// falls back to the space on its left, and only overlaps the selection when neither side can
+/// hold it. Each placement carries its own scale rule and height limit.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviewPlacement {
+    /// Right of the selection.
+    Right,
+    /// Left of the selection.
+    Left,
+    /// Overlapping the selection's bottom-right corner.
+    Overlay,
+}
+
+/// Gap the placement test requires beyond the preview itself, as a fraction of selection width.
+const PLACEMENT_MARGIN_RATIO: f64 = 0.2;
+/// Fixed part of that gap, in logical pixels.
+const PLACEMENT_MARGIN_BASE: i32 = 24;
+/// Scale quantum for the side placements; the divide is integral, so scale is a multiple of this.
+const SIDE_SCALE_STEP: f64 = 0.1;
+/// Upper bound on the side placements' scale.
+const SIDE_SCALE_MAX: f64 = 0.4;
+/// Numerator bias for [`PreviewPlacement::Right`].
+const RIGHT_SCALE_BIAS: i32 = 240;
+/// Numerator bias for [`PreviewPlacement::Left`].
+const LEFT_SCALE_BIAS: i32 = 250;
+/// Preview width the overlay placement targets, in logical pixels.
+const OVERLAY_TARGET_WIDTH: f64 = 400.0;
+/// Margin kept between the preview and the screen edge for the side placements.
+const SIDE_HEIGHT_MARGIN: i32 = 12;
+/// Slice of the selection the overlay placement leaves visible.
+const OVERLAY_HEIGHT_RESERVE: i32 = 99;
+/// Inset of the overlay placement from the selection's bottom-right corner.
+const OVERLAY_INSET: i32 = 12;
+/// Gap between the preview and the selection for [`PreviewPlacement::Right`].
+const RIGHT_GAP: i32 = 12;
+/// Gap between the preview and the selection for [`PreviewPlacement::Left`].
+const LEFT_GAP: i32 = 24;
+
+impl PreviewPlacement {
+    /// Choose a placement from the selection and the available screen width.
+    ///
+    /// `screen_width` is the usable desktop width. Widths are inclusive, matching the selection
+    /// rectangle's convention.
+    pub fn choose(selection: RectI32, screen_width: i32) -> Self {
+        let selection_width = selection.right - selection.left + 1;
+        let margin =
+            (selection_width as f64 * PLACEMENT_MARGIN_RATIO).round() as i32 + PLACEMENT_MARGIN_BASE;
+        if selection.right + margin <= screen_width {
+            Self::Right
+        } else if margin < selection.left {
+            Self::Left
+        } else {
+            Self::Overlay
+        }
+    }
+
+    /// Factor the canvas is drawn at.
+    ///
+    /// The side placements derive it from the free space beside the selection and the canvas
+    /// width; since the canvas is only ever extended downwards, its width equals the selection
+    /// width and the factor stays constant for the whole session. The overlay placement instead
+    /// targets a fixed preview width, which can mean magnification for a narrow selection.
+    pub fn scale(self, selection: RectI32, screen_width: i32, canvas_width: i32) -> f64 {
+        let canvas_width = canvas_width.max(1);
+        match self {
+            Self::Right => {
+                let gap = screen_width - selection.right;
+                side_scale(gap * 10 - RIGHT_SCALE_BIAS, canvas_width)
+            }
+            Self::Left => side_scale(selection.left * 10 - LEFT_SCALE_BIAS, canvas_width),
+            Self::Overlay => {
+                let selection_width = (selection.right - selection.left + 1).max(1);
+                OVERLAY_TARGET_WIDTH / selection_width as f64
+            }
+        }
+    }
+
+    /// Tallest the preview may be, in logical pixels.
+    pub fn height_limit(self, selection: RectI32, screen_height: i32) -> i32 {
+        let limit = match self {
+            Self::Right | Self::Left => selection.bottom - SIDE_HEIGHT_MARGIN,
+            Self::Overlay => selection.bottom - selection.top - OVERLAY_HEIGHT_RESERVE,
+        };
+        limit.clamp(1, screen_height.max(1))
+    }
+
+    /// Top-left corner for a preview of `size`, in screen coordinates.
+    pub fn origin(self, selection: RectI32, width: i32, height: i32) -> (i32, i32) {
+        match self {
+            Self::Right => (selection.right + RIGHT_GAP, selection.bottom - height + 1),
+            Self::Left => (
+                selection.left - width - LEFT_GAP,
+                selection.bottom - height + 1,
+            ),
+            Self::Overlay => (
+                selection.right - width - OVERLAY_INSET,
+                selection.bottom - height - OVERLAY_INSET,
+            ),
+        }
+    }
+}
+
+/// Scale for a side placement: an integer divide, then a tenth, capped.
+///
+/// The divide truncating before the multiply quantises the result, so the only reachable values
+/// are 0.1 through 0.4.
+fn side_scale(numerator: i32, canvas_width: i32) -> f64 {
+    let quantised = numerator / canvas_width.max(1);
+    ((quantised as f64) * SIDE_SCALE_STEP).min(SIDE_SCALE_MAX)
+}
+
+/// Size the canvas should be rendered at, in logical pixels.
+///
+/// Applies the placement's scale, then shrinks proportionally if the result exceeds the height
+/// limit. Returns at least 1x1.
+pub fn preview_size(
+    selection: RectI32,
+    screen: (i32, i32),
+    canvas: (i32, i32),
+) -> (u32, u32, PreviewPlacement) {
+    let placement = PreviewPlacement::choose(selection, screen.0);
+    let scale = placement.scale(selection, screen.0, canvas.0);
+    let mut width = (canvas.0 as f64 * scale).round().max(1.0) as i32;
+    let mut height = (canvas.1 as f64 * scale).round().max(1.0) as i32;
+    let limit = placement.height_limit(selection, screen.1);
+    if height > limit {
+        // Keep the aspect ratio while fitting the limit.
+        width = (width as f64 * limit as f64 / height as f64).round().max(1.0) as i32;
+        height = limit;
+    }
+    (width.max(1) as u32, height.max(1) as u32, placement)
 }
 
 fn preview_geometry(
@@ -202,21 +363,14 @@ fn preview_geometry(
 ) -> (i32, i32, i32, i32) {
     let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let available_right = (screen_width - selection.right - 12).max(120);
-    let width = 280.min(available_right);
-    let selection_height = selection.bottom - selection.top;
-    let proportional_height = if image_width > 0 {
-        (width - 16) * image_height / image_width + 16
-    } else {
-        selection_height
-    };
-    let max_height = (screen_height * 9 / 10).min(screen_height - 24).max(180);
-    let height = proportional_height
-        .max(selection_height)
-        .clamp(180, max_height);
-    let x = (selection.right + 12).min(screen_width - width);
-    let selection_center_y = selection.top + selection_height / 2;
-    let y = (selection_center_y - height / 2).clamp(12, (screen_height - height - 12).max(12));
+    let placement = PreviewPlacement::choose(selection, screen_width);
+    // The image was already produced at the size the placement asks for, so the window takes the
+    // image's dimensions verbatim and the paint path never rescales.
+    let width = image_width.max(1);
+    let height = image_height.max(1);
+    let (x, y) = placement.origin(selection, width, height);
+    let x = x.clamp(0, (screen_width - width).max(0));
+    let y = y.clamp(0, (screen_height - height).max(0));
     (x, y, width, height)
 }
 
@@ -240,22 +394,9 @@ unsafe extern "system" fn window_proc(
             let _ = unsafe { GetClientRect(hwnd, &mut client) };
             let client_width = (client.right - client.left).max(1);
             let client_height = (client.bottom - client.top).max(1);
-            let memory_dc = unsafe { CreateCompatibleDC(Some(dc)) };
-            let memory_bitmap = unsafe { CreateCompatibleBitmap(dc, client_width, client_height) };
-            let old_bitmap = unsafe { SelectObject(memory_dc, memory_bitmap.into()) };
-            let brush = HBRUSH(unsafe { GetStockObject(WHITE_BRUSH) }.0);
-            let _ = unsafe { FillRect(memory_dc, &client, brush) };
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PreviewState };
             if !state.is_null() {
                 let state = unsafe { &*state };
-                let available_w = (client.right - client.left - 16).max(1);
-                let available_h = (client.bottom - client.top - 16).max(1);
-                let scale = (available_w as f32 / state.width as f32)
-                    .min(available_h as f32 / state.height as f32);
-                let draw_w = (state.width as f32 * scale) as i32;
-                let draw_h = (state.height as f32 * scale) as i32;
-                let x = (client.right - draw_w) / 2;
-                let y = (client.bottom - draw_h) / 2;
                 let bitmap_info = BITMAPINFO {
                     bmiHeader: BITMAPINFOHEADER {
                         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -268,40 +409,47 @@ unsafe extern "system" fn window_proc(
                     },
                     bmiColors: [RGBQUAD::default(); 1],
                 };
-                unsafe {
-                    SetStretchBltMode(memory_dc, HALFTONE);
-                    StretchDIBits(
-                        memory_dc,
-                        x,
-                        y,
-                        draw_w,
-                        draw_h,
-                        0,
-                        0,
-                        state.width,
-                        state.height,
-                        Some(state.pixels.as_ptr().cast()),
-                        &bitmap_info,
-                        DIB_RGB_COLORS,
-                        SRCCOPY,
-                    );
+                if client_width == state.width && client_height == state.height {
+                    // The common case: the window is sized to the image, so the pixels go
+                    // straight across in one transfer. `StretchDIBits` with HALFTONE would
+                    // rescale block by block instead, and that partial progress is visible as
+                    // flicker on a window that repaints many times a second.
+                    unsafe {
+                        SetDIBitsToDevice(
+                            dc,
+                            0,
+                            0,
+                            state.width as u32,
+                            state.height as u32,
+                            0,
+                            0,
+                            0,
+                            state.height as u32,
+                            state.pixels.as_ptr().cast(),
+                            &bitmap_info,
+                            DIB_RGB_COLORS,
+                        );
+                    }
+                } else {
+                    unsafe {
+                        SetStretchBltMode(dc, HALFTONE);
+                        StretchDIBits(
+                            dc,
+                            0,
+                            0,
+                            client_width,
+                            client_height,
+                            0,
+                            0,
+                            state.width,
+                            state.height,
+                            Some(state.pixels.as_ptr().cast()),
+                            &bitmap_info,
+                            DIB_RGB_COLORS,
+                            SRCCOPY,
+                        );
+                    }
                 }
-            }
-            unsafe {
-                let _ = BitBlt(
-                    dc,
-                    0,
-                    0,
-                    client_width,
-                    client_height,
-                    Some(memory_dc),
-                    0,
-                    0,
-                    SRCCOPY,
-                );
-                SelectObject(memory_dc, old_bitmap);
-                let _ = DeleteObject(memory_bitmap.into());
-                let _ = DeleteDC(memory_dc);
             }
             let _ = unsafe { EndPaint(hwnd, &paint) };
             LRESULT(0)
@@ -396,5 +544,125 @@ unsafe extern "system" fn status_window_proc(
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RectI32 {
+        RectI32 {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn prefers_the_right_side_when_it_fits() {
+        // 800px selection needs 800*0.2 + 24 = 184px of clearance past its right edge.
+        let selection = rect(200, 100, 999, 900);
+        assert_eq!(
+            PreviewPlacement::choose(selection, 1920),
+            PreviewPlacement::Right
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_left_when_the_right_is_too_tight() {
+        // Right edge at 1800 leaves 120px, short of the 184px the margin test wants; the left
+        // has 200px, which clears it.
+        let selection = rect(200, 100, 999, 900);
+        assert_eq!(
+            PreviewPlacement::choose(selection, 1119),
+            PreviewPlacement::Left
+        );
+    }
+
+    #[test]
+    fn overlays_when_neither_side_fits() {
+        let selection = rect(100, 100, 999, 900);
+        assert_eq!(
+            PreviewPlacement::choose(selection, 1000),
+            PreviewPlacement::Overlay
+        );
+    }
+
+    #[test]
+    fn side_scale_is_quantised_to_tenths() {
+        // gap = 1920 - 999 = 921; (921*10 - 240) / 800 = 8966/800 = 11 (integer divide);
+        // 11 * 0.1 = 1.1, capped at 0.4.
+        let selection = rect(200, 100, 999, 900);
+        let scale = PreviewPlacement::Right.scale(selection, 1920, 800);
+        assert!((scale - 0.4).abs() < 1e-9, "scale was {scale}");
+
+        // A narrower gap lands below the cap and stays a multiple of 0.1.
+        let selection = rect(200, 100, 999, 900);
+        let scale = PreviewPlacement::Right.scale(selection, 1240, 800);
+        // gap = 241; (2410 - 240) / 800 = 2; 2 * 0.1 = 0.2
+        assert!((scale - 0.2).abs() < 1e-9, "scale was {scale}");
+    }
+
+    #[test]
+    fn side_scale_does_not_shrink_as_the_canvas_grows() {
+        // The canvas only extends downwards, so the divisor — its width — never changes. A
+        // taller canvas must therefore not change the factor.
+        let selection = rect(200, 100, 999, 900);
+        let short = PreviewPlacement::Right.scale(selection, 1240, 800);
+        let tall = PreviewPlacement::Right.scale(selection, 1240, 800);
+        assert_eq!(short, tall);
+    }
+
+    #[test]
+    fn overlay_scale_targets_a_fixed_width() {
+        let selection = rect(100, 100, 899, 900);
+        // 800px wide selection -> 400/800 = 0.5, so the preview is 400px across.
+        let scale = PreviewPlacement::Overlay.scale(selection, 1000, 800);
+        assert!((scale - 0.5).abs() < 1e-9, "scale was {scale}");
+        assert_eq!((800.0 * scale).round() as i32, 400);
+    }
+
+    #[test]
+    fn height_limit_differs_per_placement() {
+        let selection = rect(200, 100, 999, 900);
+        assert_eq!(PreviewPlacement::Right.height_limit(selection, 1080), 888);
+        assert_eq!(PreviewPlacement::Left.height_limit(selection, 1080), 888);
+        assert_eq!(PreviewPlacement::Overlay.height_limit(selection, 1080), 701);
+    }
+
+    #[test]
+    fn origins_anchor_to_the_selection() {
+        let selection = rect(200, 100, 999, 900);
+        assert_eq!(PreviewPlacement::Right.origin(selection, 320, 400), (1011, 501));
+        assert_eq!(PreviewPlacement::Left.origin(selection, 320, 400), (-144, 501));
+        assert_eq!(
+            PreviewPlacement::Overlay.origin(selection, 400, 600),
+            (587, 288)
+        );
+    }
+
+    #[test]
+    fn preview_size_keeps_the_aspect_ratio_when_clamping() {
+        let selection = rect(200, 100, 999, 900);
+        // Canvas 800 wide at scale 0.2 is 160 across; a 20000px-tall canvas scales to 4000,
+        // well past the 888px limit, so both axes shrink together.
+        let (width, height, placement) = preview_size(selection, (1240, 1080), (800, 20000));
+        assert_eq!(placement, PreviewPlacement::Right);
+        assert_eq!(height, 888);
+        let unclamped_ratio = 160.0 / 4000.0;
+        let clamped_ratio = width as f64 / height as f64;
+        assert!(
+            (unclamped_ratio - clamped_ratio).abs() < 0.01,
+            "ratio drifted: {unclamped_ratio} vs {clamped_ratio}"
+        );
+    }
+
+    #[test]
+    fn preview_size_is_never_degenerate() {
+        let selection = rect(0, 0, 0, 0);
+        let (width, height, _) = preview_size(selection, (1920, 1080), (1, 1));
+        assert!(width >= 1 && height >= 1);
     }
 }

@@ -87,16 +87,14 @@ pub fn crop_bmp(original_image_data: &[u8], crop_rect: &sc_drawing::Rect) -> Res
     Ok(new_bmp)
 }
 
-/// Read pixels from a Win32 `HBITMAP` and return BMP file bytes.
-/// The returned bytes include a BMP file header + BITMAPINFOHEADER + pixel data (32bpp BGRA).
-pub fn bitmap_to_bmp_data(
+/// Read pixels from a Win32 `HBITMAP` into a top-down 32bpp BGRA buffer.
+pub fn bitmap_to_bgra_pixels(
     mem_dc: HDC,
     bitmap: HBITMAP,
     width: i32,
     height: i32,
 ) -> Result<Vec<u8>> {
     unsafe {
-        // Bitmap info.
         let mut bitmap_info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -131,25 +129,39 @@ pub fn bitmap_to_bmp_data(
             return Err(err("GetDIBits failed"));
         }
 
-        // Build BMP file header.
-        let file_size = 54 + data_size as u32;
-        let mut bmp_data = Vec::with_capacity(file_size as usize);
-
-        // BMP file header (14 bytes).
-        bmp_data.extend_from_slice(b"BM");
-        bmp_data.extend_from_slice(&file_size.to_le_bytes());
-        bmp_data.extend_from_slice(&[0u8; 4]);
-        bmp_data.extend_from_slice(&54u32.to_le_bytes());
-
-        // BITMAPINFOHEADER (40 bytes).
-        bmp_data.extend_from_slice(&40u32.to_le_bytes());
-        bmp_data.extend_from_slice(&width.to_le_bytes());
-        bmp_data.extend_from_slice(&(-height).to_le_bytes());
-        bmp_data.extend_from_slice(&1u16.to_le_bytes());
-        bmp_data.extend_from_slice(&32u16.to_le_bytes());
-        bmp_data.extend_from_slice(&[0u8; 24]);
-
-        bmp_data.extend_from_slice(&pixel_data);
-        Ok(bmp_data)
+        Ok(pixel_data)
     }
+}
+
+/// Read pixels from a Win32 `HBITMAP` and return BMP file bytes.
+/// The returned bytes include a BMP file header + BITMAPINFOHEADER + pixel data (32bpp BGRA).
+pub fn bitmap_to_bmp_data(
+    mem_dc: HDC,
+    bitmap: HBITMAP,
+    width: i32,
+    height: i32,
+) -> Result<Vec<u8>> {
+    let pixel_data = bitmap_to_bgra_pixels(mem_dc, bitmap, width, height)?;
+    let data_size = pixel_data.len();
+
+    // Build BMP file header.
+    let file_size = 54 + data_size as u32;
+    let mut bmp_data = Vec::with_capacity(file_size as usize);
+
+    // BMP file header (14 bytes).
+    bmp_data.extend_from_slice(b"BM");
+    bmp_data.extend_from_slice(&file_size.to_le_bytes());
+    bmp_data.extend_from_slice(&[0u8; 4]);
+    bmp_data.extend_from_slice(&54u32.to_le_bytes());
+
+    // BITMAPINFOHEADER (40 bytes).
+    bmp_data.extend_from_slice(&40u32.to_le_bytes());
+    bmp_data.extend_from_slice(&width.to_le_bytes());
+    bmp_data.extend_from_slice(&(-height).to_le_bytes());
+    bmp_data.extend_from_slice(&1u16.to_le_bytes());
+    bmp_data.extend_from_slice(&32u16.to_le_bytes());
+    bmp_data.extend_from_slice(&[0u8; 24]);
+
+    bmp_data.extend_from_slice(&pixel_data);
+    Ok(bmp_data)
 }

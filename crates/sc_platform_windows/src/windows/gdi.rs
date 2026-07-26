@@ -96,6 +96,55 @@ pub fn capture_screen_region_to_bmp(selection_rect: Rect) -> Result<Vec<u8>, Str
     }
 }
 
+/// Capture a screen rectangle directly into a top-down 32-bit BGRA pixel buffer.
+///
+/// Unlike [`capture_screen_region_to_bmp`] this skips the BMP container entirely: `GetDIBits`
+/// writes straight into the returned buffer, so the scrolling capture loop does not serialize
+/// and re-parse a bitmap for every frame.
+pub fn capture_screen_region_to_bgra(selection_rect: Rect) -> Result<(u32, u32, Vec<u8>), String> {
+    let width = selection_rect.right - selection_rect.left;
+    let height = selection_rect.bottom - selection_rect.top;
+    if width <= 0 || height <= 0 {
+        return Err("capture region is empty".to_string());
+    }
+    unsafe {
+        let desktop = HWND(null_mut());
+        let screen_dc = GetDC(Some(desktop));
+        if screen_dc.is_invalid() {
+            return Err("GetDC failed".to_string());
+        }
+        let memory_dc = ManagedDC::new(CreateCompatibleDC(Some(screen_dc)));
+        let bitmap = ManagedBitmap::new(CreateCompatibleBitmap(screen_dc, width, height));
+        let old_bitmap = SelectObject(memory_dc.handle(), bitmap.handle().into());
+        let blitted = BitBlt(
+            memory_dc.handle(),
+            0,
+            0,
+            width,
+            height,
+            Some(screen_dc),
+            selection_rect.left,
+            selection_rect.top,
+            SRCCOPY,
+        );
+        SelectObject(memory_dc.handle(), old_bitmap);
+        let result = blitted
+            .map_err(|e| format!("BitBlt failed: {e}"))
+            .and_then(|()| {
+                super::bmp::bitmap_to_bgra_pixels(
+                    memory_dc.handle(),
+                    bitmap.handle(),
+                    width,
+                    height,
+                )
+                .map_err(|e| e.to_string())
+            })
+            .map(|pixels| (width as u32, height as u32, pixels));
+        let _ = ReleaseDC(Some(desktop), screen_dc);
+        result
+    }
+}
+
 /// Capture a screen-coordinate region directly from a window, even when another window covers it.
 pub fn capture_window_screen_region_to_bmp(
     window: WindowId,

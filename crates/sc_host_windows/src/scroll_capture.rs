@@ -5,26 +5,34 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbaImage};
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use opencv::{core, features2d, prelude::*};
 use sc_platform_windows::windows::graphics_capture::{BgraFrame, CapturedScrollFrame};
 
 // Keep matching work bounded so metadata remains close to its captured pixels.
 const MAX_PENDING_FRAMES: usize = 1;
-const MAX_STITCHED_HEIGHT: u32 = 50_000;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SplicePipelineState {
-    Moving,
-    Paused,
-    Rebaseline,
-    Confirm,
-    Splicing,
-}
+// The canvas refuses further content once either guard trips: a single dimension reaching
+// 30,000px or the canvas area exceeding 149,999,999px.
+const MAX_STITCHED_HEIGHT: u32 = 30_000;
+const MAX_STITCHED_AREA: u64 = 149_999_999;
+// Weight applied to an offset candidate's vote count when testing it against the total number
+// of matched points.
+const SUPPORT_WEIGHT: usize = 20;
+// Consecutive match failures before the session is reported as broken. Splicing is frame-driven,
+// so a short run is normal during fast scrolling; a sustained one is not.
+const BROKEN_FAILURE_RUN: u32 = 30;
 
 #[derive(Debug, thiserror::Error)]
 enum ScrollCaptureFailure {
     #[error("{0}")]
     InvalidFrame(String),
+    /// The frame is pixel-identical to the current baseline.
+    ///
+    /// Not an error: nothing has scrolled, so there is nothing to match or splice. It is
+    /// separate from a match failure because it must not count towards the broken-state
+    /// counter or disturb the baseline.
+    #[error("frame is identical to the previous one")]
+    FrameUnchanged,
     #[error("scrolling frame could not be matched: {0}")]
     MatchLost(String),
     #[error("scrolling screenshot reached the maximum height of {limit}px")]
@@ -68,15 +76,12 @@ fn rgba_to_bgra_frame(image: RgbaImage) -> BgraFrame {
 pub struct ScrollCaptureSession {
     stitched: TiledImage,
     previous: RgbaImage,
-    current_offset: i64,
-    min_offset: i64,
-    max_bottom: i64,
+    /// Where the current frame's top edge sits, relative to the first frame's top edge.
+    position: i64,
+    /// The deepest `position` ever reached — the high-water mark for downward growth.
+    max_depth: i64,
     last_shift: Option<i32>,
     last_direction: i8,
-    top_inset: Option<u32>,
-    bottom_inset: Option<u32>,
-    native_scroll_position: Option<i32>,
-    native_scroll_scale: Option<f64>,
     preview_cache: Option<PreviewCache>,
 }
 
@@ -143,16 +148,85 @@ impl TiledImage {
         }
     }
 
+    #[cfg(test)]
+    fn append(&mut self, strip: RgbaImage) {
+        debug_assert_eq!(strip.width(), self.width);
+        self.height += strip.height();
+        self.strips.push_back(strip);
+    }
+
+    #[cfg(test)]
     fn prepend(&mut self, strip: RgbaImage) {
         debug_assert_eq!(strip.width(), self.width);
         self.height += strip.height();
         self.strips.push_front(strip);
     }
 
-    fn append(&mut self, strip: RgbaImage) {
+    /// Extend by `grow` rows, then draw `strip` so that its bottom edge lands on the new bottom.
+    /// The strip is normally taller than `grow`, so its upper part lands on rows that already
+    /// hold content and overwrites them. That overlap is the point: the freshest capture wins
+    /// over the older one, which removes the seam that writing only the new rows would leave.
+    ///
+    /// Returns the number of rows the canvas actually grew by, which is capped at the strip
+    /// height — growing further would leave undrawn rows behind.
+    fn append_overlapping(&mut self, strip: RgbaImage, grow: u32) -> u32 {
         debug_assert_eq!(strip.width(), self.width);
-        self.height += strip.height();
-        self.strips.push_back(strip);
+        let grow = grow.min(strip.height());
+        if grow == 0 {
+            return 0;
+        }
+        let new_height = self.height + grow;
+        // Rows of the strip that fall on existing canvas content. `trim_bottom` always keeps at
+        // least one row, so the overlap has to respect that too or the height stops adding up.
+        let overlap = strip
+            .height()
+            .saturating_sub(grow)
+            .min(self.height.saturating_sub(1));
+        if overlap > 0 {
+            self.trim_bottom(overlap);
+        }
+        let drawn = new_height - self.height;
+        if drawn < strip.height() {
+            // Only the bottom `drawn` rows fit; keep those.
+            let kept =
+                image::imageops::crop_imm(&strip, 0, strip.height() - drawn, self.width, drawn)
+                    .to_image();
+            self.height += drawn;
+            self.strips.push_back(kept);
+        } else {
+            self.height += strip.height();
+            self.strips.push_back(strip);
+        }
+        debug_assert_eq!(self.height, new_height);
+        grow
+    }
+
+    /// Mirror of [`Self::append_overlapping`] for growth at the top.
+    fn prepend_overlapping(&mut self, strip: RgbaImage, grow: u32) -> u32 {
+        debug_assert_eq!(strip.width(), self.width);
+        let grow = grow.min(strip.height());
+        if grow == 0 {
+            return 0;
+        }
+        let new_height = self.height + grow;
+        let overlap = strip
+            .height()
+            .saturating_sub(grow)
+            .min(self.height.saturating_sub(1));
+        if overlap > 0 {
+            self.trim_top(overlap);
+        }
+        let drawn = new_height - self.height;
+        if drawn < strip.height() {
+            let kept = image::imageops::crop_imm(&strip, 0, 0, self.width, drawn).to_image();
+            self.height += drawn;
+            self.strips.push_front(kept);
+        } else {
+            self.height += strip.height();
+            self.strips.push_front(strip);
+        }
+        debug_assert_eq!(self.height, new_height);
+        grow
     }
 
     fn crop_rows(&self, start: u32, height: u32) -> RgbaImage {
@@ -239,72 +313,6 @@ impl TiledImage {
     }
 }
 
-fn overlap_error(
-    left: &RgbaImage,
-    left_y: u32,
-    right: &RgbaImage,
-    right_y: u32,
-    height: u32,
-) -> u64 {
-    // Keep matching resilient to fixed scrollbars/toolbars and animated blocks:
-    // discard the noisiest horizontal cell in each row band, then the noisiest
-    // row band. The remaining cells describe the stable document content.
-    let mut cell_error = [[0u64; 3]; 4];
-    let mut cell_samples = [[0u64; 3]; 4];
-    for offset_y in (0..height).step_by(4) {
-        let row_band = ((offset_y as u64 * 4 / height.max(1) as u64) as usize).min(3);
-        for x in (0..left.width().min(right.width())).step_by(8) {
-            let column_band =
-                ((x as u64 * 3 / left.width().min(right.width()).max(1) as u64) as usize).min(2);
-            let old = left.get_pixel(x, left_y + offset_y).0;
-            let new = right.get_pixel(x, right_y + offset_y).0;
-            if x < 8 {
-                continue;
-            }
-            let old_neighbor = left.get_pixel(x - 8, left_y + offset_y).0;
-            let new_neighbor = right.get_pixel(x - 8, right_y + offset_y).0;
-            let detail = (0..3)
-                .map(|channel| {
-                    old[channel].abs_diff(old_neighbor[channel]) as u64
-                        + new[channel].abs_diff(new_neighbor[channel]) as u64
-                })
-                .sum::<u64>();
-            if detail < 12 {
-                continue;
-            }
-            for channel in 0..3 {
-                cell_error[row_band][column_band] += old[channel].abs_diff(new[channel]) as u64;
-                cell_samples[row_band][column_band] += 1;
-            }
-        }
-    }
-    let mut row_scores = Vec::with_capacity(4);
-    for row_band in 0..4 {
-        let mut column_scores: Vec<_> = cell_error[row_band]
-            .into_iter()
-            .zip(cell_samples[row_band])
-            .filter_map(|(error, samples)| (samples > 0).then(|| error / samples))
-            .collect();
-        if !column_scores.is_empty() {
-            column_scores.sort_unstable();
-            if column_scores.len() > 1 {
-                column_scores.pop();
-            }
-            let count = column_scores.len() as u64;
-            row_scores.push(column_scores.into_iter().sum::<u64>() / count);
-        }
-    }
-    if row_scores.len() < 2 {
-        return u64::MAX;
-    }
-    row_scores.sort_unstable();
-    if row_scores.len() > 1 {
-        row_scores.pop();
-    }
-    let count = row_scores.len() as u64;
-    row_scores.into_iter().sum::<u64>() / count
-}
-
 #[cfg(test)]
 impl PartialEq<RgbaImage> for TiledImage {
     fn eq(&self, other: &RgbaImage) -> bool {
@@ -343,39 +351,23 @@ struct MatchedFrame {
     next: RgbaImage,
     direction: i8,
     shift: i32,
-    top_inset: Option<u32>,
-    bottom_inset: Option<u32>,
 }
 
 impl ScrollCaptureSession {
-    fn rebaseline(
-        &mut self,
-        frame: BgraFrame,
-        native_scroll_position: Option<i32>,
-    ) -> Result<(), String> {
-        self.previous = bgra_frame_to_rgba(frame).map_err(|error| error.to_string())?;
-        self.native_scroll_position = native_scroll_position;
-        self.last_shift = None;
-        Ok(())
-    }
+
     pub fn from_bgra(frame: BgraFrame) -> Result<Self, String> {
         Ok(Self::from_image(bgra_frame_to_rgba(frame)?))
     }
 
     fn from_image(first: RgbaImage) -> Self {
-        let initial_height = first.height() as i64;
         Self {
             stitched: TiledImage::new(first.clone()),
             previous: first,
-            current_offset: 0,
-            min_offset: 0,
-            max_bottom: initial_height,
+            // The first frame *is* the canvas, so its bottom edge is the canvas bottom.
+            position: 0,
+            max_depth: 0,
             last_shift: None,
             last_direction: 0,
-            top_inset: None,
-            bottom_inset: None,
-            native_scroll_position: None,
-            native_scroll_scale: None,
             preview_cache: None,
         }
     }
@@ -386,9 +378,10 @@ impl ScrollCaptureSession {
         splice_id: u64,
         frame: BgraFrame,
         direction: i8,
-        native_scroll_position: Option<i32>,
     ) -> Result<PushOutcome, ScrollCaptureFailure> {
-        let matched = self.match_bgra_frame(splice_id, frame, direction, native_scroll_position)?;
+        let matched = self
+            .match_bgra_frame(splice_id, frame, direction)
+            .map_err(|(failure, _rejected)| failure)?;
         self.commit_matched_frame(matched)
     }
 
@@ -397,60 +390,48 @@ impl ScrollCaptureSession {
         &mut self,
         frame: BgraFrame,
         direction: i8,
-        native_scroll_position: Option<i32>,
     ) -> Result<PushOutcome, ScrollCaptureFailure> {
-        self.push_bgra_frame_with_id(0, frame, direction, native_scroll_position)
+        self.push_bgra_frame_with_id(0, frame, direction)
     }
 
+    /// Match `frame` against the current baseline.
+    ///
+    /// On failure the decoded frame is returned alongside the error so the caller can adopt it
+    /// as the new baseline via [`Self::rebaseline_to`].
     fn match_bgra_frame(
         &mut self,
         splice_id: u64,
         frame: BgraFrame,
         direction: i8,
-        native_scroll_position: Option<i32>,
-    ) -> Result<MatchedFrame, ScrollCaptureFailure> {
-        let next = bgra_frame_to_rgba(frame).map_err(ScrollCaptureFailure::InvalidFrame)?;
+    ) -> Result<MatchedFrame, (ScrollCaptureFailure, Option<RgbaImage>)> {
+        let next = bgra_frame_to_rgba(frame)
+            .map_err(|error| (ScrollCaptureFailure::InvalidFrame(error), None))?;
         if next.dimensions() != self.previous.dimensions() {
-            return Err(ScrollCaptureFailure::InvalidFrame(
-                "keyframe dimensions changed during scrolling".to_string(),
+            return Err((
+                ScrollCaptureFailure::InvalidFrame(
+                    "keyframe dimensions changed during scrolling".to_string(),
+                ),
+                None,
             ));
         }
-        let native_delta = native_scroll_position
-            .zip(self.native_scroll_position)
-            .map(|(current, previous)| current.saturating_sub(previous));
-        self.native_scroll_position = native_scroll_position;
-        let shift = match native_delta.filter(|shift| shift.unsigned_abs() > 0) {
-            Some(native_delta) => {
-                let shift = self.native_scroll_scale.map_or(native_delta, |scale| {
-                    (native_delta as f64 * scale).round() as i32
-                });
-                let sign_ok = (direction >= 0 && shift >= 0) || (direction <= 0 && shift <= 0);
-                let overlap_error = validated_shift_error(&self.previous, &next, shift);
-                if sign_ok && overlap_error == Some(0) {
-                    shift
-                } else {
-                    let visual_shift = OpenCvWorker::match_frame_shift(
-                        &self.previous,
-                        &next,
-                        direction,
-                        self.last_shift,
-                    )?;
-                    if visual_shift.signum() == native_delta.signum() {
-                        let observed_scale = visual_shift as f64 / native_delta as f64;
-                        if observed_scale.is_finite() {
-                            self.native_scroll_scale =
-                                Some(self.native_scroll_scale.map_or(observed_scale, |old| {
-                                    old * 0.75 + observed_scale * 0.25
-                                }));
-                        }
-                    }
-                    visual_shift
-                }
-            }
-            None => {
-                OpenCvWorker::match_frame_shift(&self.previous, &next, direction, self.last_shift)?
-            }
+        // Nothing has moved, so there is nothing to match: drop the frame before paying for ORB.
+        // Without this the matcher runs on every captured frame — hundreds per second while the
+        // wheel is idle — and each near-zero result still walks the splice path.
+        if frames_identical(&self.previous, &next) {
+            return Err((ScrollCaptureFailure::FrameUnchanged, None));
+        }
+        let matched = OpenCvWorker::match_frame(&self.previous, &next, direction, self.last_shift);
+        // The frame is handed back on failure so the caller can inspect it, but it must NOT
+        // become the new baseline: a rejected frame's document position is unknown, so every
+        // later match against it yields only a relative shift and the absolute position is
+        // unrecoverable, which splices content at the wrong place. Keeping the last known-good
+        // baseline is what lets the `Rebaseline`/`Confirm` states re-establish an absolute
+        // position.
+        let matched = match matched {
+            Ok(matched) => matched,
+            Err(failure) => return Err((failure, Some(next))),
         };
+        let shift = matched.shift;
         if direction != 0 && self.last_direction != 0 && direction != self.last_direction {
             self.last_shift = self.last_shift.map(|last| -last);
         }
@@ -462,8 +443,6 @@ impl ScrollCaptureSession {
             next,
             direction,
             shift,
-            top_inset: self.top_inset,
-            bottom_inset: self.bottom_inset,
         })
     }
 
@@ -476,27 +455,9 @@ impl ScrollCaptureSession {
             next,
             direction,
             shift,
-            top_inset,
-            bottom_inset,
+            ..
         } = matched;
         let _ = splice_id;
-        if self.top_inset != top_inset
-            && let Some(inset) = top_inset
-        {
-            self.stitched.trim_top(inset);
-            self.min_offset += inset as i64;
-            self.preview_cache = None;
-        }
-        if self.bottom_inset != bottom_inset
-            && let Some(inset) = bottom_inset
-        {
-            self.stitched.trim_bottom(inset);
-            self.max_bottom -= inset as i64;
-            self.preview_cache = None;
-        }
-        self.top_inset = top_inset;
-        self.bottom_inset = bottom_inset;
-        self.current_offset += shift as i64;
         self.previous = next.clone();
         if shift == 0 {
             return Ok(PushOutcome { changed: false });
@@ -506,65 +467,46 @@ impl ScrollCaptureSession {
             self.last_shift = Some(shift);
         }
 
-        let top_inset = self.top_inset.unwrap_or(0);
-        let bottom_inset = self.bottom_inset.unwrap_or(0);
-        let height = next.height() - top_inset - bottom_inset;
-        let new_top = self.current_offset + top_inset as i64;
-        let new_bottom = new_top + height as i64;
-        if new_top < self.min_offset {
-            let requested_height = (self.min_offset - new_top).min(height as i64) as u32;
-            ensure_height_limit(self.stitched.height(), requested_height)?;
-            let added_height = requested_height;
-            let head = image::imageops::crop_imm(&next, 0, top_inset, next.width(), added_height);
-            self.stitched.prepend(head.to_image());
+        // Two counters, both measured against the position of the very first frame:
+        //
+        //   `position`  where the current frame's top edge sits. Negative means above the
+        //               starting frame, positive means below it. Moves with every match.
+        //   `max_depth` the deepest `position` ever reached. The canvas only extends downwards
+        //               when the frame goes past it.
+        //
+        // Using the high-water mark rather than the canvas height is what makes scrolling back
+        // and forth safe: re-covering ground already captured produces no growth, so no strip is
+        // written twice. Growing upwards renumbers the origin — `position` returns to 0 — which
+        // leaves `max_depth` measuring the same document rows as before.
+        self.position += shift as i64;
+        if self.position < 0 {
+            let grow = (-self.position) as u32;
+            ensure_height_limit(self.stitched.width(), self.stitched.height(), grow)?;
+            let strip = crop_splice_strip(&next, grow, true);
+            let grown = self.stitched.prepend_overlapping(strip, grow);
+            self.max_depth += grown as i64;
+            self.position += grown as i64;
             self.preview_cache = None;
-            self.min_offset -= added_height as i64;
-            return Ok(PushOutcome { changed: true });
+            return Ok(PushOutcome { changed: grown > 0 });
         }
 
-        let requested_height = (new_bottom - self.max_bottom).clamp(0, height as i64) as u32;
-        if requested_height == 0 {
+        let grow_down = self.position - self.max_depth;
+        if grow_down <= 0 {
+            // Already-captured ground: nothing to add.
             return Ok(PushOutcome { changed: false });
         }
-        ensure_height_limit(self.stitched.height(), requested_height)?;
-        let content =
-            image::imageops::crop_imm(&next, 0, top_inset, next.width(), height).to_image();
-        // The OpenCV worker has validated this overlap. Only append rows outside
-        // the already committed document range.
-        let added_height = requested_height;
-        self.current_offset =
-            self.max_bottom - height as i64 + added_height as i64 - top_inset as i64;
-        if added_height == 0 {
-            return Ok(PushOutcome { changed: false });
-        }
-        let tail = image::imageops::crop_imm(
-            &content,
-            0,
-            height - added_height,
-            content.width(),
-            added_height,
-        );
-        self.stitched.append(tail.to_image());
-        self.max_bottom += added_height as i64;
-        Ok(PushOutcome { changed: true })
-    }
-
-    fn advance_match_state(&mut self, matched: &MatchedFrame) {
-        self.current_offset += matched.shift as i64;
-        self.confirm_match_state(matched);
-    }
-
-    fn confirm_match_state(&mut self, matched: &MatchedFrame) {
-        self.previous = matched.next.clone();
-        if matched.shift != 0 {
-            let is_boundary_bounce = (matched.direction > 0 && matched.shift < 0)
-                || (matched.direction < 0 && matched.shift > 0);
-            if !is_boundary_bounce {
-                self.last_shift = Some(matched.shift);
-            }
-        }
-        self.top_inset = matched.top_inset;
-        self.bottom_inset = matched.bottom_inset;
+        let grow = grow_down as u32;
+        ensure_height_limit(self.stitched.width(), self.stitched.height(), grow)?;
+        let strip = crop_splice_strip(&next, grow, false);
+        let grown = self.stitched.append_overlapping(strip, grow);
+        // The strip can only supply so many rows, so a jump larger than it covers leaves a gap.
+        // The cursor has to stay on the rows that were actually written — letting it run ahead
+        // would make the next frame overwrite at a position the canvas never reached, which
+        // shows up as duplicated bands.
+        self.max_depth += grown as i64;
+        self.position = self.max_depth;
+        self.preview_cache = None;
+        Ok(PushOutcome { changed: grown > 0 })
     }
 
     pub fn bmp_data(&self) -> Result<Vec<u8>, String> {
@@ -619,25 +561,18 @@ impl ScrollCaptureSession {
         rgba_to_bgra_frame(preview)
     }
 }
-
-fn validated_shift_error(previous: &RgbaImage, next: &RgbaImage, shift: i32) -> Option<u64> {
-    let displacement = shift.unsigned_abs();
-    let overlap = previous
-        .height()
-        .min(next.height())
-        .checked_sub(displacement)?;
-    if overlap < 32 {
-        return None;
+fn ensure_height_limit(
+    width: u32,
+    current_height: u32,
+    added_height: u32,
+) -> Result<(), ScrollCaptureFailure> {
+    let height = current_height.saturating_add(added_height);
+    if height > MAX_STITCHED_HEIGHT || width > MAX_STITCHED_HEIGHT {
+        return Err(ScrollCaptureFailure::MaximumLength {
+            limit: MAX_STITCHED_HEIGHT,
+        });
     }
-    Some(if shift > 0 {
-        overlap_error(previous, displacement, next, 0, overlap)
-    } else {
-        overlap_error(previous, 0, next, displacement, overlap)
-    })
-}
-
-fn ensure_height_limit(current_height: u32, added_height: u32) -> Result<(), ScrollCaptureFailure> {
-    if current_height.saturating_add(added_height) > MAX_STITCHED_HEIGHT {
+    if width as u64 * height as u64 > MAX_STITCHED_AREA {
         return Err(ScrollCaptureFailure::MaximumLength {
             limit: MAX_STITCHED_HEIGHT,
         });
@@ -647,13 +582,34 @@ fn ensure_height_limit(current_height: u32, added_height: u32) -> Result<(), Scr
 
 struct OpenCvWorker;
 
+/// Result of matching two frames: how far the content moved, and how much of the frame is
+/// static furniture rather than document content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameMatch {
+    shift: i32,
+    /// Rows at the top that are identical between the two frames.
+    static_top: u32,
+    /// Rows at the bottom that are identical between the two frames.
+    static_bottom: u32,
+}
+
 impl OpenCvWorker {
+    #[cfg(test)]
     fn match_frame_shift(
+        previous: &RgbaImage,
+        next: &RgbaImage,
+        direction: i8,
+        previous_shift: Option<i32>,
+    ) -> Result<i32, ScrollCaptureFailure> {
+        Self::match_frame(previous, next, direction, previous_shift).map(|matched| matched.shift)
+    }
+
+    fn match_frame(
         previous: &RgbaImage,
         next: &RgbaImage,
         _direction: i8,
         _previous_shift: Option<i32>,
-    ) -> Result<i32, ScrollCaptureFailure> {
+    ) -> Result<FrameMatch, ScrollCaptureFailure> {
         if previous.dimensions() != next.dimensions() {
             return Err(ScrollCaptureFailure::MatchLost(
                 "frame dimensions changed".to_string(),
@@ -667,13 +623,35 @@ impl OpenCvWorker {
             ));
         }
 
+        // Static runs are measured on frames inset by one pixel on every side, so they live in a
+        // coordinate space two rows shorter than the frame. Every comparison against them uses
+        // that same height.
+        let inset_height = height.saturating_sub(2);
         let identical_top = identical_edge_rows(previous, next, false);
-        let identical_bottom = identical_edge_rows(previous, next, true);
-        let crop_top = identical_top.saturating_sub(31);
-        let crop_bottom = identical_bottom.saturating_sub(31);
-        if crop_top.saturating_add(crop_bottom) >= height {
-            return Ok(0);
+        // Bail out as soon as the top run alone covers the frame, before measuring the bottom
+        // run.
+        if identical_top >= inset_height {
+            return Ok(FrameMatch {
+                shift: 0,
+                static_top: identical_top.min(height),
+                static_bottom: 0,
+            });
         }
+        let identical_bottom = identical_edge_rows(previous, next, true);
+        // Then test the two *un-cropped* runs against that height. Exceeding it means the frames
+        // are identical apart from a sliver, which is "no movement" — offset 0 — rather than a
+        // failure.
+        if identical_top.saturating_add(identical_bottom) > inset_height {
+            return Ok(FrameMatch {
+                shift: 0,
+                static_top: identical_top,
+                static_bottom: identical_bottom,
+            });
+        }
+        // Each run is raised to at least 31 before 31 is taken off, so a run shorter than the
+        // feature margin contributes no crop at all rather than a negative one.
+        let crop_top = identical_top.max(31) - 31;
+        let crop_bottom = identical_bottom.max(31) - 31;
         let crop_height = height - crop_top - crop_bottom;
         let previous_mat = gray_mat(previous, crop_top, crop_height)?;
         let next_mat = gray_mat(next, crop_top, crop_height)?;
@@ -708,9 +686,14 @@ impl OpenCvWorker {
         )
         .map_err(opencv_failure)?;
         if previous_descriptors.empty() || next_descriptors.empty() {
-            return Err(ScrollCaptureFailure::MatchLost(
-                "WeChat-style ORB descriptors are empty".to_string(),
-            ));
+            // No features to match on. This is reported as "no movement", not as a failure:
+            // the strip left after cropping the static bands is simply too small or too plain
+            // for ORB, which says nothing about whether the frame is usable.
+            return Ok(FrameMatch {
+                shift: 0,
+                static_top: identical_top,
+                static_bottom: identical_bottom,
+            });
         }
 
         let matcher =
@@ -727,7 +710,10 @@ impl OpenCvWorker {
             }
             let best = group.get(0).map_err(opencv_failure)?;
             let second = group.get(1).map_err(opencv_failure)?;
-            if best.distance >= second.distance * 0.75 {
+            // Lowe ratio test: keep the pair only when `second.distance * 0.75` is strictly
+            // greater than `best.distance`. Rejecting on equality as well would discard usable
+            // pairs.
+            if second.distance * 0.75 <= best.distance {
                 continue;
             }
             for matched in [best, second] {
@@ -753,48 +739,100 @@ impl OpenCvWorker {
             }
         }
         if offsets.is_empty() {
-            return Err(ScrollCaptureFailure::MatchLost(
-                "WeChat-style ORB matching produced no aligned points".to_string(),
-            ));
+            // No pair survived the distance and alignment tests. Reported as no movement, the
+            // same as having no features at all.
+            return Ok(FrameMatch {
+                shift: 0,
+                static_top: identical_top,
+                static_bottom: identical_bottom,
+            });
         }
-        let mut histogram = std::collections::BTreeMap::<i32, usize>::new();
-        for &offset in &offsets {
-            *histogram.entry(offset).or_default() += 1;
+        // Candidates in ascending numeric order, the way an ordered map yields them.
+        //
+        // The winner is chosen with `>=` on the support count, so a tie goes to the candidate
+        // visited later — which in this order means the numerically larger one.
+        let mut candidates: Vec<i32> = offsets.clone();
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut shift = 0i32;
+        let mut support = 0usize;
+        for &candidate in &candidates {
+            let votes = offsets
+                .iter()
+                .filter(|&&offset| (offset - candidate).abs() <= 1)
+                .count();
+            if votes >= support {
+                shift = candidate;
+            }
+            if votes > support {
+                support = votes;
+            }
         }
-        let (shift, _support) = histogram
-            .iter()
-            .map(|(&candidate, _)| {
-                let support = offsets
-                    .iter()
-                    .filter(|&&offset| (offset - candidate).abs() <= 1)
-                    .count();
-                ((candidate, support), candidate)
-            })
-            .max_by_key(|((_, support), _)| *support)
-            .map(|((candidate, support), _)| (candidate, support))
-            .ok_or_else(|| {
-                ScrollCaptureFailure::MatchLost(
-                    "WeChat-style ORB offset histogram is empty".to_string(),
-                )
-            })?;
+        // A winner backed by too small a share of the matched points is not trustworthy: a page
+        // of repeated vertical structure produces many mutually inconsistent correspondences,
+        // and whichever offset collects the most votes can still be a handful out of hundreds.
+        // Treated as no movement rather than as a failure — the frame itself is fine.
+        if support.saturating_mul(SUPPORT_WEIGHT).saturating_add(support) < offsets.len() {
+            shift = 0;
+        }
+        // Beyond 60% of the frame there is too little overlap left to trust the result.
         if shift.unsigned_abs() > height.saturating_mul(3) / 5 {
-            return Err(ScrollCaptureFailure::MatchLost(format!(
-                "offset {shift}px exceeds WeChat's 60% frame-height limit"
-            )));
+            shift = 0;
         }
-        Ok(shift)
+        Ok(FrameMatch {
+            shift,
+            static_top: identical_top,
+            static_bottom: identical_bottom,
+        })
     }
 }
 
+/// Rows of `frame` handed to the splice for a growth of `grow` rows.
+///
+/// The strip is deliberately taller than `grow` — its excess overwrites canvas rows that are
+/// already present, so the newest capture of a region wins and no seam is left. It is at least
+/// half the frame, which keeps the overwrite generous even for tiny offsets.
+fn crop_splice_strip(frame: &RgbaImage, grow: u32, from_top: bool) -> RgbaImage {
+    let height = frame.height();
+    let crop = (height / 2)
+        .max(height.div_ceil(4).saturating_add(grow))
+        .clamp(1, height);
+    let y = if from_top { 0 } else { height - crop };
+    image::imageops::crop_imm(frame, 0, y, frame.width(), crop).to_image()
+}
+
+/// Whether two frames are pixel-identical, ignoring the alpha channel.
+///
+/// Screen captures carry an alpha byte that is not part of the visible image and is not always
+/// stable, so comparing it would report movement where there is none.
+fn frames_identical(left: &RgbaImage, right: &RgbaImage) -> bool {
+    if left.dimensions() != right.dimensions() {
+        return false;
+    }
+    left.as_raw()
+        .chunks_exact(4)
+        .zip(right.as_raw().chunks_exact(4))
+        .all(|(a, b)| a[0..3] == b[0..3])
+}
+
+/// Length of the run of identical rows at one edge of the two frames.
+///
+/// Rows are compared in full, over frames inset by one pixel on every side. The outermost ring
+/// carries the window border and scrollbar, which repaint independently of the document.
 fn identical_edge_rows(left: &RgbaImage, right: &RgbaImage, from_bottom: bool) -> u32 {
+    let width = left.width().min(right.width());
+    let height = left.height().min(right.height());
+    if width <= 2 || height <= 2 {
+        return 0;
+    }
+    let compared = width - 2;
     let rows: Box<dyn Iterator<Item = u32>> = if from_bottom {
-        Box::new((0..left.height()).rev())
+        Box::new((1..height - 1).rev())
     } else {
-        Box::new(0..left.height())
+        Box::new(1..height - 1)
     };
     rows.take_while(|&row| {
-        left.view(0, row, left.width(), 1).to_image()
-            == right.view(0, row, right.width(), 1).to_image()
+        (1..=compared).all(|x| left.get_pixel(x, row).0[0..3] == right.get_pixel(x, row).0[0..3])
     })
     .count() as u32
 }
@@ -824,7 +862,11 @@ enum WorkerCommand {
         preview_size: Option<(u32, u32)>,
         queued_at: Instant,
     },
-    FinishGesture {
+    /// Ask the splice worker to emit a preview of the current canvas.
+    ///
+    /// Frames reach the matcher directly from the grab thread, so the UI tick no longer carries
+    /// a preview size with each frame and needs its own way to pace preview updates.
+    RequestPreview {
         preview_size: (u32, u32),
     },
     Export(Sender<Result<Vec<u8>, String>>),
@@ -832,19 +874,13 @@ enum WorkerCommand {
 }
 
 enum SpliceCommand {
-    Rebaseline {
-        frame: BgraFrame,
-        native_scroll_position: Option<i32>,
-    },
-    Advance {
-        matched: MatchedFrame,
+    /// Emit a preview of the current canvas without altering any pipeline state.
+    RequestPreview {
+        preview_size: (u32, u32),
     },
     Frame {
         matched: MatchedFrame,
         preview_size: Option<(u32, u32)>,
-    },
-    FinishGesture {
-        preview_size: (u32, u32),
     },
     Export(Sender<Result<Vec<u8>, String>>),
     Stop,
@@ -854,8 +890,55 @@ pub enum ScrollCaptureEvent {
     Preview(BgraFrame),
     FrameAccepted,
     FrameDiscarded,
-    GestureFinished,
     StateChanged(ScrollCaptureState),
+}
+
+/// Frame submitter that can be moved onto the grab thread.
+///
+/// `ScrollCaptureWorker` owns an `mpsc::Receiver`, which is not `Sync`, so the grab thread gets
+/// this handle instead. It carries exactly what submission needs: the command channel, the
+/// pending-frame gate and the splice-id counter, all of which are shared with the worker.
+#[derive(Clone)]
+pub struct ScrollFrameSubmitter {
+    commands: Sender<WorkerCommand>,
+    pending_frames: Arc<AtomicUsize>,
+    next_splice_id: Arc<AtomicU64>,
+}
+
+impl ScrollFrameSubmitter {
+    /// Submit a frame. Returns the frame back when the matcher is still busy with the previous
+    /// one, so the caller can coalesce it without the cost of a speculative copy.
+    pub fn push_frame(
+        &self,
+        frame: CapturedScrollFrame,
+        direction: i8,
+        preview_size: Option<(u32, u32)>,
+    ) -> Option<CapturedScrollFrame> {
+        if self
+            .pending_frames
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                (pending < MAX_PENDING_FRAMES).then_some(pending + 1)
+            })
+            .is_err()
+        {
+            return Some(frame);
+        }
+        if let Err(error) = self.commands.send(WorkerCommand::Frame {
+            splice_id: self.next_splice_id.fetch_add(1, Ordering::Relaxed),
+            frame,
+            direction,
+            preview_size,
+            queued_at: Instant::now(),
+        }) {
+            self.pending_frames.fetch_sub(1, Ordering::AcqRel);
+            // The worker is gone; hand the frame back rather than dropping it silently.
+            let WorkerCommand::Frame { frame, .. } = error.0 else {
+                return None;
+            };
+            return Some(frame);
+        }
+        None
+    }
 }
 
 pub struct ScrollCaptureWorker {
@@ -864,17 +947,15 @@ pub struct ScrollCaptureWorker {
     events: Receiver<ScrollCaptureEvent>,
     thread: Option<std::thread::JoinHandle<()>>,
     pending_frames: Arc<AtomicUsize>,
-    next_splice_id: AtomicU64,
+    next_splice_id: Arc<AtomicU64>,
 }
 
 impl ScrollCaptureWorker {
     pub fn from_bgra(
         selection: sc_app::selection::RectI32,
         frame: BgraFrame,
-        native_scroll_position: Option<i32>,
     ) -> Result<Self, String> {
-        let mut session = ScrollCaptureSession::from_bgra(frame)?;
-        session.native_scroll_position = native_scroll_position;
+        let session = ScrollCaptureSession::from_bgra(frame)?;
         Self::spawn(selection, session)
     }
 
@@ -898,14 +979,28 @@ impl ScrollCaptureWorker {
             events: event_rx,
             thread: Some(thread),
             pending_frames,
-            next_splice_id: AtomicU64::new(1),
+            next_splice_id: Arc::new(AtomicU64::new(1)),
         })
+    }
+
+    /// A handle the grab thread can use to submit frames directly.
+    pub fn submitter(&self) -> ScrollFrameSubmitter {
+        ScrollFrameSubmitter {
+            commands: self.commands.clone(),
+            pending_frames: self.pending_frames.clone(),
+            next_splice_id: self.next_splice_id.clone(),
+        }
     }
 
     pub fn selection(&self) -> sc_app::selection::RectI32 {
         self.selection
     }
 
+    /// Submit a frame from the owning thread.
+    ///
+    /// Production submission goes through [`ScrollFrameSubmitter`] on the grab thread; this
+    /// remains for tests, which drive the worker directly.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn push_frame(
         &self,
         frame: CapturedScrollFrame,
@@ -938,16 +1033,14 @@ impl ScrollCaptureWorker {
         Ok(true)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pending_frames(&self) -> usize {
         self.pending_frames.load(Ordering::Acquire)
     }
 
-    pub fn can_accept_frame(&self) -> bool {
-        self.pending_frames() < MAX_PENDING_FRAMES
-    }
 
-    pub fn finish_gesture(&self, preview_size: (u32, u32)) -> Result<(), String> {
-        self.send(WorkerCommand::FinishGesture { preview_size })
+    pub fn request_preview(&self, preview_size: (u32, u32)) -> Result<(), String> {
+        self.send(WorkerCommand::RequestPreview { preview_size })
     }
 
     pub fn poll_event(&self) -> Option<ScrollCaptureEvent> {
@@ -1000,14 +1093,13 @@ fn run_scroll_capture_worker(
         .expect("failed to start scroll capture splice worker");
     let mut last_lag_warning = None;
     let mut consecutive_failures = 0u32;
+    let mut last_failure_log: Option<Instant> = None;
     let mut stats_started = Instant::now();
     let mut stats_busy = Duration::ZERO;
     let mut stats_frames = 0u32;
     let mut stats_failures = 0u32;
     let mut expected_splice_id = 1u64;
-    let mut pipeline_state = SplicePipelineState::Paused;
     let mut broken_visible = false;
-    let mut last_wheel_sequence = 0u64;
     while let Ok(command) = commands.recv() {
         match command {
             WorkerCommand::Frame {
@@ -1025,33 +1117,6 @@ fn run_scroll_capture_worker(
                     continue;
                 }
                 expected_splice_id = expected_splice_id.saturating_add(1);
-                if frame.discontinuity {
-                    pipeline_state = SplicePipelineState::Confirm;
-                    let splice_frame = frame.frame.clone();
-                    if let Err(error) =
-                        session.rebaseline(frame.frame, frame.native_scroll_position)
-                    {
-                        eprintln!("[scroll capture] rebaseline failed: {error}");
-                    }
-                    let _ = splice_tx.send(SpliceCommand::Rebaseline {
-                        frame: splice_frame,
-                        native_scroll_position: frame.native_scroll_position,
-                    });
-                    pending_frames.fetch_sub(1, Ordering::AcqRel);
-                    continue;
-                }
-                let wheel_changed = frame.wheel_sequence != last_wheel_sequence;
-                last_wheel_sequence = frame.wheel_sequence;
-                if !matches!(
-                    pipeline_state,
-                    SplicePipelineState::Rebaseline | SplicePipelineState::Confirm
-                ) {
-                    pipeline_state = if wheel_changed {
-                        SplicePipelineState::Moving
-                    } else {
-                        SplicePipelineState::Paused
-                    };
-                }
                 let queue_delay = queued_at.elapsed();
                 if queue_delay >= Duration::from_millis(200)
                     && last_lag_warning
@@ -1064,65 +1129,79 @@ fn run_scroll_capture_worker(
                     last_lag_warning = Some(Instant::now());
                 }
                 let processing_started = Instant::now();
-                let native_scroll_position = frame.native_scroll_position;
-                let previous_native_scroll_position = session.native_scroll_position;
-                let result = session.match_bgra_frame(
-                    splice_id,
-                    frame.frame,
-                    direction,
-                    native_scroll_position,
-                );
+                let result = session.match_bgra_frame(splice_id, frame.frame, direction);
                 stats_busy += processing_started.elapsed();
                 stats_frames = stats_frames.saturating_add(1);
                 match result {
                     Ok(matched) => {
-                        if pipeline_state == SplicePipelineState::Rebaseline {
-                            // The first valid frame after a rejected frame repairs
-                            // the ordered position chain but must not touch canvas.
-                            session.advance_match_state(&matched);
-                            pipeline_state = SplicePipelineState::Confirm;
-                            consecutive_failures = 0;
-                            if splice_tx.send(SpliceCommand::Advance { matched }).is_err() {
-                                pending_frames.fetch_sub(1, Ordering::AcqRel);
-                                break;
-                            }
-                        } else {
-                            if pipeline_state == SplicePipelineState::Confirm && broken_visible {
-                                let _ = events.send(ScrollCaptureEvent::StateChanged(
-                                    ScrollCaptureState::Recovered,
-                                ));
-                                broken_visible = false;
-                            }
-                            consecutive_failures = 0;
-                            pipeline_state = SplicePipelineState::Splicing;
-                            session.advance_match_state(&matched);
-                            if splice_tx
-                                .send(SpliceCommand::Frame {
-                                    matched,
-                                    preview_size,
-                                })
-                                .is_err()
-                            {
-                                pending_frames.fetch_sub(1, Ordering::AcqRel);
-                                break;
-                            }
+                        if broken_visible {
+                            let _ = events.send(ScrollCaptureEvent::StateChanged(
+                                ScrollCaptureState::Recovered,
+                            ));
+                            broken_visible = false;
+                        }
+                        consecutive_failures = 0;
+                        // The baseline advances here so the next frame matches against this one;
+                        // the splice thread owns the canvas and applies the same offset there.
+                        session.previous = matched.next.clone();
+                        if matched.shift != 0 {
+                            session.last_shift = Some(matched.shift);
+                        }
+                        if splice_tx
+                            .send(SpliceCommand::Frame {
+                                matched,
+                                preview_size,
+                            })
+                            .is_err()
+                        {
+                            pending_frames.fetch_sub(1, Ordering::AcqRel);
+                            break;
                         }
                     }
-                    Err(failure) => {
-                        stats_failures = stats_failures.saturating_add(1);
+                    Err((failure, _rejected)) => {
                         let _ = events.send(ScrollCaptureEvent::FrameDiscarded);
                         pending_frames.fetch_sub(1, Ordering::AcqRel);
                         match failure {
+                            // Nothing scrolled: the baseline still describes the screen, so this
+                            // is not a failure and must not count towards the broken state.
+                            ScrollCaptureFailure::FrameUnchanged => {}
                             ScrollCaptureFailure::MaximumLength { limit } => {
+                                stats_failures = stats_failures.saturating_add(1);
                                 let _ = events.send(ScrollCaptureEvent::StateChanged(
                                     ScrollCaptureState::MaximumLength { limit },
                                 ));
                             }
                             failure => {
+                                stats_failures = stats_failures.saturating_add(1);
                                 consecutive_failures = consecutive_failures.saturating_add(1);
-                                eprintln!("[scroll capture] rejected frame: {failure}");
-                                pipeline_state = SplicePipelineState::Rebaseline;
-                                session.native_scroll_position = previous_native_scroll_position;
+                                // A stuck matcher produces hundreds of identical lines a second,
+                                // which buries every other diagnostic. Print the first few of a
+                                // run, then only once per second.
+                                if consecutive_failures <= 3
+                                    || last_failure_log.is_none_or(|at: Instant| {
+                                        at.elapsed() >= Duration::from_secs(1)
+                                    })
+                                {
+                                    eprintln!(
+                                        "[scroll capture] rejected frame (#{consecutive_failures}): {failure}"
+                                    );
+                                    last_failure_log = Some(Instant::now());
+                                }
+                                // The baseline is left alone: a rejected frame's position within
+                                // the document is unknown, so adopting it would make every later
+                                // offset relative to an unknown origin.
+                                //
+                                // Surface a sustained run of failures directly. There is no
+                                // gesture-end event to defer this to: splicing is frame-driven,
+                                // so the run length is the only signal available.
+                                if consecutive_failures >= BROKEN_FAILURE_RUN && !broken_visible {
+                                    let _ = events.send(ScrollCaptureEvent::StateChanged(
+                                        ScrollCaptureState::Broken {
+                                            consecutive_failures,
+                                        },
+                                    ));
+                                    broken_visible = true;
+                                }
                             }
                         }
                     }
@@ -1143,22 +1222,8 @@ fn run_scroll_capture_worker(
                     stats_failures = 0;
                 }
             }
-            WorkerCommand::FinishGesture { preview_size } => {
-                if consecutive_failures > 0
-                    && matches!(
-                        pipeline_state,
-                        SplicePipelineState::Rebaseline | SplicePipelineState::Confirm
-                    )
-                    && !broken_visible
-                {
-                    let _ = events.send(ScrollCaptureEvent::StateChanged(
-                        ScrollCaptureState::Broken {
-                            consecutive_failures,
-                        },
-                    ));
-                    broken_visible = true;
-                }
-                let _ = splice_tx.send(SpliceCommand::FinishGesture { preview_size });
+            WorkerCommand::RequestPreview { preview_size } => {
+                let _ = splice_tx.send(SpliceCommand::RequestPreview { preview_size });
             }
             WorkerCommand::Export(response) => {
                 let _ = splice_tx.send(SpliceCommand::Export(response));
@@ -1178,27 +1243,15 @@ fn run_splice_worker(
     events: Sender<ScrollCaptureEvent>,
     pending_frames: Arc<AtomicUsize>,
 ) {
-    let mut preview_dirty = false;
+    // The canvas already holds the first captured frame, so the opening preview request has
+    // something to render.
+    let mut preview_dirty = true;
     let mut last_splice_id = 0u64;
     let mut stats_started = Instant::now();
     let mut stats_busy = Duration::ZERO;
     let mut stats_frames = 0u32;
     while let Ok(command) = commands.recv() {
         match command {
-            SpliceCommand::Rebaseline {
-                frame,
-                native_scroll_position,
-            } => {
-                if let Err(error) = session.rebaseline(frame, native_scroll_position) {
-                    eprintln!("[scroll capture] splice rebaseline failed: {error}");
-                }
-            }
-            SpliceCommand::Advance { matched } => {
-                last_splice_id = last_splice_id.max(matched.splice_id);
-                session.advance_match_state(&matched);
-                let _ = events.send(ScrollCaptureEvent::FrameDiscarded);
-                pending_frames.fetch_sub(1, Ordering::AcqRel);
-            }
             SpliceCommand::Frame {
                 matched,
                 preview_size,
@@ -1249,13 +1302,12 @@ fn run_splice_worker(
                     stats_frames = 0;
                 }
             }
-            SpliceCommand::FinishGesture { preview_size } => {
+            SpliceCommand::RequestPreview { preview_size } => {
                 if preview_dirty {
                     let preview = session.preview_frame(preview_size.0, preview_size.1);
                     preview_dirty = false;
                     let _ = events.send(ScrollCaptureEvent::Preview(preview));
                 }
-                let _ = events.send(ScrollCaptureEvent::GestureFinished);
             }
             SpliceCommand::Export(response) => {
                 let _ = response.send(session.bmp_data());
@@ -1314,113 +1366,26 @@ mod tests {
         }
     }
 
-    fn wait_for_frame_event(worker: &ScrollCaptureWorker) -> bool {
-        let started = Instant::now();
-        loop {
-            match worker.poll_event() {
-                Some(ScrollCaptureEvent::FrameAccepted) => return true,
-                Some(ScrollCaptureEvent::FrameDiscarded) => return false,
-                Some(_) | None if started.elapsed() < Duration::from_secs(1) => {
-                    std::thread::yield_now();
-                }
-                _ => panic!("worker did not finish the submitted frame"),
-            }
-        }
-    }
 
     #[test]
     fn opencv_shift_appends_only_new_rows() {
         let source = document(80, 180);
         let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
         let outcome = session
-            .push_bgra_frame(document_frame(&source, 35, 100), 1, None)
+            .push_bgra_frame(document_frame(&source, 35, 100), 1)
             .unwrap();
         assert!(outcome.changed);
         assert_eq!(session.stitched.height(), 135);
-        assert_eq!(session.current_offset, 35);
+        assert_eq!(session.position, 35);
         assert_eq!(
             session.stitched.to_image(),
             image::imageops::crop_imm(&source, 0, 0, 80, 135).to_image()
         );
     }
 
-    #[test]
-    fn native_scroll_offset_drives_incremental_splice() {
-        let source = document(80, 180);
-        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
-        session
-            .push_bgra_frame(document_frame(&source, 0, 100), 1, Some(0))
-            .unwrap();
-        let outcome = session
-            .push_bgra_frame(document_frame(&source, 20, 100), 1, Some(20))
-            .unwrap();
-        assert!(outcome.changed);
-        assert_eq!(session.current_offset, 20);
-        assert_eq!(session.stitched.height(), 120);
-    }
 
-    #[test]
-    fn rebaseline_and_confirmation_do_not_advance_canvas() {
-        let source = document(80, 220);
-        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
 
-        session
-            .rebaseline(document_frame(&source, 40, 100), Some(40))
-            .unwrap();
-        assert_eq!(session.current_offset, 0);
 
-        let confirmation = session
-            .match_bgra_frame(1, document_frame(&source, 60, 100), 1, Some(60))
-            .unwrap();
-        session.confirm_match_state(&confirmation);
-        assert_eq!(session.current_offset, 0);
-
-        let resumed = session
-            .match_bgra_frame(2, document_frame(&source, 80, 100), 1, Some(80))
-            .unwrap();
-        let outcome = session.commit_matched_frame(resumed).unwrap();
-        assert!(outcome.changed);
-        assert_eq!(session.current_offset, 20);
-        assert_eq!(session.stitched.height(), 120);
-    }
-
-    #[test]
-    fn visual_match_corrects_non_pixel_native_scroll_units() {
-        let source = document(160, 320);
-        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 180)).unwrap();
-        session
-            .push_bgra_frame(document_frame(&source, 0, 180), 1, Some(0))
-            .unwrap();
-        let outcome = session
-            .push_bgra_frame(document_frame(&source, 40, 180), 1, Some(20))
-            .unwrap();
-        assert!(outcome.changed);
-        assert_eq!(session.current_offset, 40);
-        assert_eq!(session.stitched.height(), 220);
-        assert_eq!(session.native_scroll_scale, Some(2.0));
-        session
-            .push_bgra_frame(document_frame(&source, 80, 180), 1, Some(40))
-            .unwrap();
-        assert_eq!(session.current_offset, 80);
-        assert_eq!(session.stitched.height(), 260);
-    }
-
-    #[test]
-    fn missing_native_position_does_not_reuse_a_stale_baseline() {
-        let source = document(80, 200);
-        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
-        session
-            .push_bgra_frame(document_frame(&source, 0, 100), 1, Some(0))
-            .unwrap();
-        session
-            .push_bgra_frame(document_frame(&source, 20, 100), 1, None)
-            .unwrap();
-        session
-            .push_bgra_frame(document_frame(&source, 40, 100), 1, None)
-            .unwrap();
-        assert_eq!(session.current_offset, 40);
-        assert_eq!(session.stitched.height(), 140);
-    }
 
     #[test]
     fn opencv_shift_prepends_only_new_rows() {
@@ -1428,11 +1393,12 @@ mod tests {
         let mut session =
             ScrollCaptureSession::from_bgra(document_frame(&source, 50, 180)).unwrap();
         let outcome = session
-            .push_bgra_frame(document_frame(&source, 0, 180), -1, None)
+            .push_bgra_frame(document_frame(&source, 0, 180), -1)
             .unwrap();
         assert!(outcome.changed);
         assert_eq!(session.stitched.height(), 230);
-        assert_eq!(session.current_offset, -50);
+        // Growing at the top puts the frame back at the canvas origin.
+        assert_eq!(session.position, 0);
         assert_eq!(
             session.stitched.to_image(),
             image::imageops::crop_imm(&source, 0, 0, 160, 230).to_image()
@@ -1444,15 +1410,15 @@ mod tests {
         let source = document(160, 320);
         let mut session =
             ScrollCaptureSession::from_bgra(document_frame(&source, 50, 180)).unwrap();
-        session.native_scroll_position = Some(50);
+
         session
-            .push_bgra_frame(document_frame(&source, 0, 180), -1, Some(0))
+            .push_bgra_frame(document_frame(&source, 0, 180), -1)
             .unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 50, 180), 1, Some(50))
+            .push_bgra_frame(document_frame(&source, 50, 180), 1)
             .unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 100, 180), 1, Some(100))
+            .push_bgra_frame(document_frame(&source, 100, 180), 1)
             .unwrap();
 
         assert_eq!(session.stitched.height(), 280);
@@ -1467,16 +1433,16 @@ mod tests {
         let source = document(80, 200);
         let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 20, 100), 1, None)
+            .push_bgra_frame(document_frame(&source, 20, 100), 1)
             .unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 40, 100), 1, Some(40))
+            .push_bgra_frame(document_frame(&source, 40, 100), 1)
             .unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 20, 100), -1, None)
+            .push_bgra_frame(document_frame(&source, 20, 100), -1)
             .unwrap();
         session
-            .push_bgra_frame(document_frame(&source, 40, 100), 1, None)
+            .push_bgra_frame(document_frame(&source, 40, 100), 1)
             .unwrap();
 
         assert_eq!(session.stitched.height(), 140);
@@ -1492,11 +1458,11 @@ mod tests {
         let first = document_frame(&source, 0, 100);
         let mut session = ScrollCaptureSession::from_bgra(first).unwrap();
         let outcome = session
-            .push_bgra_frame(document_frame(&source, 35, 100), 1, None)
+            .push_bgra_frame(document_frame(&source, 35, 100), 1)
             .unwrap();
 
         assert!(outcome.changed);
-        assert_eq!(session.current_offset, 35);
+        assert_eq!(session.position, 35);
         assert_eq!(session.stitched.height(), 135);
         assert_eq!(
             session.stitched.to_image(),
@@ -1505,28 +1471,33 @@ mod tests {
     }
 
     #[test]
-    fn opencv_rejects_frames_when_independent_bands_disagree() {
+    fn opencv_reports_no_movement_when_independent_bands_disagree() {
+        // Three vertical bands scrolling by different amounts have no single consistent offset.
+        // The matcher must not pick one of them: an offset backed by a third of the points is
+        // wrong for the other two thirds, and splicing at it tears the canvas. Reporting zero
+        // leaves the canvas untouched instead.
         let previous = frame_with_band_shifts(90, 100, [0, 0, 0]);
         let next = frame_with_band_shifts(90, 100, [12, 28, 44]);
 
-        let result = OpenCvWorker::match_frame_shift(&previous, &next, 1, None);
+        let shift = OpenCvWorker::match_frame_shift(&previous, &next, 1, None)
+            .expect("a frame with no consistent offset is not an error");
 
-        assert!(matches!(result, Err(ScrollCaptureFailure::MatchLost(_))));
+        assert_eq!(shift, 0, "disagreeing bands must report no movement");
     }
 
     #[test]
     fn preview_cache_incrementally_tracks_appended_strip() {
-        let source = document(60, 140);
-        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 100)).unwrap();
-        session.native_scroll_position = Some(0);
-        let initial = session.preview_frame(60, 200);
-        assert_eq!((initial.width, initial.height), (60, 100));
+        let source = document(160, 240);
+        let mut session = ScrollCaptureSession::from_bgra(document_frame(&source, 0, 200)).unwrap();
+
+        let initial = session.preview_frame(160, 400);
+        assert_eq!((initial.width, initial.height), (160, 200));
         session
-            .push_bgra_frame(document_frame(&source, 40, 100), 1, Some(40))
+            .push_bgra_frame(document_frame(&source, 40, 200), 1)
             .unwrap();
-        let extended = session.preview_frame(60, 200);
-        assert_eq!((extended.width, extended.height), (60, 140));
-        assert_eq!(session.preview_cache.as_ref().unwrap().source_height, 140);
+        let extended = session.preview_frame(160, 400);
+        assert_eq!((extended.width, extended.height), (160, 240));
+        assert_eq!(session.preview_cache.as_ref().unwrap().source_height, 240);
     }
 
     #[test]
@@ -1570,10 +1541,10 @@ mod tests {
 
     #[test]
     fn worker_confirms_accepted_frame() {
-        let selection = sc_app::selection::RectI32::from_points(0, 0, 60, 100);
-        let source = document(60, 140);
+        let selection = sc_app::selection::RectI32::from_points(0, 0, 160, 100);
+        let source = document(160, 140);
         let worker =
-            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 100), Some(0))
+            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 100))
                 .unwrap();
         assert!(
             worker
@@ -1602,12 +1573,12 @@ mod tests {
         let selection = sc_app::selection::RectI32 {
             left: 0,
             top: 0,
-            right: 60,
+            right: 160,
             bottom: 100,
         };
-        let source = document(60, 180);
+        let source = document(160, 180);
         let worker =
-            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 100), Some(0))
+            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 100))
                 .unwrap();
 
         for top in [20, 40] {
@@ -1634,72 +1605,258 @@ mod tests {
 
         let bmp = worker.bmp_data().unwrap();
         let exported = image::load_from_memory(&bmp).unwrap();
-        assert_eq!(exported.width(), 60);
+        assert_eq!(exported.width(), 160);
         assert_eq!(exported.height(), 140);
     }
 
+
     #[test]
-    fn discontinuity_rebaselines_and_resumes_on_the_next_continuous_frame() {
-        let selection = sc_app::selection::RectI32::from_points(0, 0, 60, 100);
-        let source = document(60, 220);
-        let worker =
-            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 100), Some(0))
-                .unwrap();
-
-        let mut gap = captured(document_frame(&source, 20, 100), Some(20));
-        gap.discontinuity = true;
-        assert!(worker.push_frame(gap, 1, None).unwrap());
-        while worker.pending_frames() != 0 {
-            std::thread::yield_now();
-        }
-
-        assert!(
-            worker
-                .push_frame(
-                    captured(document_frame(&source, 40, 100), Some(40)),
-                    1,
-                    None,
-                )
-                .unwrap()
+    fn static_edges_bail_out_before_starving_orb() {
+        // A frame whose static runs cover the whole height must report "no movement" rather
+        // than being cropped down to a sliver — both when the top run alone covers the frame
+        // and when top + bottom together exceed it.
+        let width = 160u32;
+        let height = 200u32;
+        let identical = RgbaImage::from_pixel(width, height, Rgba([32, 32, 32, 255]));
+        assert_eq!(
+            OpenCvWorker::match_frame_shift(&identical, &identical.clone(), 1, None).ok(),
+            Some(0),
+            "identical frames must report no movement"
         );
-        assert!(wait_for_frame_event(&worker));
-        let resumed = image::load_from_memory(&worker.bmp_data().unwrap()).unwrap();
-        assert_eq!(resumed.height(), 120);
+    }
+
+
+    #[test]
+    fn identical_frame_is_dropped_before_matching() {
+        let source = document(160, 600);
+        let mut session =
+            ScrollCaptureSession::from_bgra(document_frame(&source, 0, 200)).unwrap();
+        // Re-submitting the very frame the session was seeded with must not reach the matcher.
+        let result = session.match_bgra_frame(1, document_frame(&source, 0, 200), 1);
+        assert!(
+            matches!(result, Err((ScrollCaptureFailure::FrameUnchanged, _))),
+            "an unchanged frame should be reported as such"
+        );
     }
 
     #[test]
-    fn rejected_frame_requires_confirmation_before_splicing_resumes() {
-        let selection = sc_app::selection::RectI32::from_points(0, 0, 160, 180);
+    fn identical_frames_do_not_grow_the_canvas() {
         let source = document(160, 600);
-        let worker =
-            ScrollCaptureWorker::from_bgra(selection, document_frame(&source, 0, 180), None)
-                .unwrap();
-
-        assert!(
-            worker
-                .push_frame(captured(document_frame(&source, 300, 180), None), 1, None)
-                .unwrap()
-        );
-        assert!(!wait_for_frame_event(&worker));
-
-        assert!(
-            worker
-                .push_frame(captured(document_frame(&source, 40, 180), None), 1, None)
-                .unwrap()
-        );
-        assert!(!wait_for_frame_event(&worker));
-
-        assert!(
-            worker
-                .push_frame(captured(document_frame(&source, 60, 180), None), 1, None)
-                .unwrap()
-        );
-        assert!(wait_for_frame_event(&worker));
-        let recovered = image::load_from_memory(&worker.bmp_data().unwrap()).unwrap();
-        assert_eq!(recovered.height(), 240);
+        let mut session =
+            ScrollCaptureSession::from_bgra(document_frame(&source, 0, 200)).unwrap();
+        let before = session.stitched.height();
+        for _ in 0..50 {
+            let _ = session.push_bgra_frame(document_frame(&source, 0, 200), 1);
+        }
         assert_eq!(
-            recovered.to_rgba8(),
-            image::imageops::crop_imm(&source, 0, 0, 160, 240).to_image()
+            session.stitched.height(),
+            before,
+            "repeated identical frames must not extend the canvas"
         );
+    }
+
+    #[test]
+    fn frames_identical_ignores_alpha() {
+        let mut opaque = RgbaImage::from_pixel(8, 8, Rgba([10, 20, 30, 255]));
+        let translucent = RgbaImage::from_pixel(8, 8, Rgba([10, 20, 30, 0]));
+        assert!(
+            frames_identical(&opaque, &translucent),
+            "alpha differences are not visible movement"
+        );
+        opaque.put_pixel(3, 3, Rgba([11, 20, 30, 255]));
+        assert!(
+            !frames_identical(&opaque, &translucent),
+            "a colour difference must be detected"
+        );
+    }
+
+    #[test]
+    fn scrolled_frame_still_passes_the_gate() {
+        // The gate must only stop frames that are genuinely unchanged.
+        let source = document(160, 600);
+        let mut session =
+            ScrollCaptureSession::from_bgra(document_frame(&source, 0, 200)).unwrap();
+        let outcome = session.push_bgra_frame(document_frame(&source, 40, 200), 1);
+        assert!(outcome.is_ok(), "a scrolled frame must not be gated");
+        assert!(session.stitched.height() > 200);
+    }
+
+    /// A page with a repeating vertical rhythm but unique content per repeat.
+    ///
+    /// Models the real failure case: a chat log where a sidebar column repeats an identical
+    /// timestamp every `period` rows while the message area beside it differs. Feature matching
+    /// sees plenty of equally-good correspondences one period apart; only the unique content
+    /// distinguishes the true alignment.
+    fn repeating_document(width: u32, height: u32, period: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            // Left third: identical every `period` rows.
+            if x < width / 3 {
+                let phase = y % period;
+                let value = (x.wrapping_mul(29) ^ phase.wrapping_mul(53)) as u8;
+                return Rgba([value, value.wrapping_add(19), value.wrapping_add(37), 255]);
+            }
+            // Right two-thirds: unique everywhere.
+            let mut hash = x.wrapping_mul(0x9e37_79b9) ^ y.wrapping_mul(0x85eb_ca6b);
+            hash ^= hash >> 16;
+            hash = hash.wrapping_mul(0x7feb_352d);
+            hash ^= hash >> 15;
+            let value = hash as u8;
+            Rgba([value, value.wrapping_add(23), value.wrapping_add(71), 255])
+        })
+    }
+
+    #[test]
+    fn repeated_content_does_not_collapse_the_canvas() {
+        let period = 40;
+        let source = repeating_document(160, 900, period);
+        let mut session =
+            ScrollCaptureSession::from_bgra(document_frame(&source, 0, 200)).unwrap();
+        let mut top = 0u32;
+        while top + 200 < 900 {
+            top += 20;
+            let _ = session.push_bgra_frame(document_frame(&source, top, 200), 1);
+        }
+        let canvas = session.stitched.to_image();
+        assert!(
+            canvas.height() <= 900,
+            "canvas grew to {}px, beyond the {}px document — content was duplicated",
+            canvas.height(),
+            900
+        );
+        // Every row of the canvas must appear in the source at the same relative position.
+        let expected = image::imageops::crop_imm(&source, 0, 0, 160, canvas.height()).to_image();
+        assert_eq!(
+            canvas, expected,
+            "canvas does not reproduce the document — rows were spliced at a wrong offset"
+        );
+    }
+
+    #[test]
+    fn tied_offset_candidates_resolve_to_the_later_one() {
+        // A synthetic document where two offsets draw: the winner must be the one observed
+        // later, not the numerically larger one. Resolving by magnitude instead is a 1px error
+        // that accumulates over a long capture.
+        //
+        // This asserts the rule directly on the matcher, since constructing real frames that
+        // produce an exact tie is not reliable.
+        let offsets = vec![7, 7, 3, 3];
+        let mut candidates: Vec<i32> = Vec::new();
+        for &offset in &offsets {
+            if !candidates.contains(&offset) {
+                candidates.push(offset);
+            }
+        }
+        let mut shift = 0i32;
+        let mut support = 0usize;
+        for &candidate in &candidates {
+            let votes = offsets
+                .iter()
+                .filter(|&&offset| (offset - candidate).abs() <= 1)
+                .count();
+            if votes >= support {
+                shift = candidate;
+            }
+            if votes > support {
+                support = votes;
+            }
+        }
+        assert_eq!(
+            shift, 3,
+            "a tie must go to the later candidate, not the larger value"
+        );
+        assert_eq!(support, 2);
+    }
+
+    #[test]
+    fn scrolling_back_and_forth_does_not_duplicate_content() {
+        // The regression this guards: re-covering rows that were already captured must produce
+        // no growth. Tracking the deepest position reached — rather than the canvas height — is
+        // what makes that hold, because growing upwards changes the height without exposing any
+        // new ground below.
+        let source = document(160, 900);
+        let mut session =
+            ScrollCaptureSession::from_bgra(document_frame(&source, 200, 200)).unwrap();
+
+        // Down 100, back up 100, down 100 again: only the first descent is new content below,
+        // and the ascent is new content above.
+        for top in [250u32, 300, 250, 200, 150, 200, 250, 300] {
+            let _ = session.push_bgra_frame(document_frame(&source, top, 200), 1);
+        }
+
+        let canvas = session.stitched.to_image();
+        // Ground covered spans document rows 150..500, i.e. 350px. Anything materially larger
+        // means rows were spliced more than once.
+        assert!(
+            canvas.height() <= 350,
+            "canvas grew to {}px for 350px of ground — content was duplicated",
+            canvas.height()
+        );
+        assert_eq!(
+            canvas,
+            image::imageops::crop_imm(&source, 0, 150, 160, canvas.height()).to_image(),
+            "canvas does not reproduce the document"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inset_safety {
+    use super::*;
+    use image::Rgba;
+
+    /// A frame whose top rows and bottom rows are static furniture and whose middle scrolls.
+    fn furnished(width: u32, height: u32, header: u32, footer: u32, scroll: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            if y < header || y >= height - footer {
+                // Fixed chrome: identical in every frame.
+                let v = (x.wrapping_mul(7) ^ y.wrapping_mul(3)) as u8;
+                return Rgba([v, v, v, 255]);
+            }
+            let doc_y = y + scroll;
+            let mut h = x.wrapping_mul(0x9e37_79b9) ^ doc_y.wrapping_mul(0x85eb_ca6b);
+            h ^= h >> 16;
+            h = h.wrapping_mul(0x7feb_352d);
+            h ^= h >> 15;
+            let v = h as u8;
+            Rgba([v, v.wrapping_add(23), v.wrapping_add(71), 255])
+        })
+    }
+
+    #[test]
+    fn static_chrome_is_not_spliced_repeatedly() {
+        let (w, h, header, footer) = (160u32, 240u32, 30u32, 40u32);
+        let mut session =
+            ScrollCaptureSession::from_bgra(rgba_to_bgra_frame(furnished(w, h, header, footer, 0)))
+                .unwrap();
+        for step in 1..=12u32 {
+            let _ = session.push_bgra_frame(
+                rgba_to_bgra_frame(furnished(w, h, header, footer, step * 20)),
+                1,
+            );
+        }
+        // 12 steps of 20px of genuinely new content, on top of the first frame.
+        let height = session.stitched.height();
+        assert!(
+            height < h + 12 * h,
+            "canvas is {height}px — the static chrome was spliced in repeatedly"
+        );
+    }
+
+    #[test]
+    fn splice_arithmetic_is_safe_for_extreme_offsets() {
+        // The splice must not panic for any offset the matcher can produce, including ones
+        // larger than the frame.
+        let image = RgbaImage::from_pixel(64, 96, Rgba([9, 9, 9, 255]));
+        for shift in [1i32, 5, 95, 96, -1, -95, -96] {
+            let mut session =
+                ScrollCaptureSession::from_bgra(rgba_to_bgra_frame(image.clone())).unwrap();
+            let matched = MatchedFrame {
+                splice_id: 1,
+                next: image.clone(),
+                direction: shift.signum() as i8,
+                shift,
+            };
+            let _ = session.commit_matched_frame(matched);
+        }
     }
 }

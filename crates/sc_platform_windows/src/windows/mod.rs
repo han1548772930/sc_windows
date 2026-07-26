@@ -11,6 +11,7 @@ pub mod graphics_capture;
 pub mod host_platform;
 pub mod hotkey_manager;
 pub mod hotkeys;
+pub mod magnifier_capture;
 pub mod message_box;
 pub mod resources;
 pub mod system;
