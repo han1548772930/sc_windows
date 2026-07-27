@@ -1215,9 +1215,9 @@ dependencies = [
 
 [[package]]
 name = "ocr-rs"
-version = "2.3.3"
+version = "2.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e946c2dc5ab54c5bf4a5c215f9b202367078c6abebec5e326d2a00e77df4d6de"
+checksum = "1c28cbc7b083b717381d48b8259de60dbdbead05ebc31f5828e791e13946d163"
 dependencies = [
  "bindgen",
  "cc",

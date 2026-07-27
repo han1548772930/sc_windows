@@ -674,13 +674,18 @@ impl SettingsWindowState {
             let _ = SetWindowTextW(self.config_path_edit, PCWSTR(config_path_text.as_ptr()));
 
             // OCR language.
+            let mut selected = false;
             for i in 0..self.ocr_language_item_count() {
                 if let Some(value) = self.ocr_language_value_at(i)
                     && value == self.settings.ocr_language
                 {
                     SendMessageW(self.ocr_language_combo, CB_SETCURSEL, Some(WPARAM(i)), None);
+                    selected = true;
                     break;
                 }
+            }
+            if !selected && self.ocr_language_item_count() > 0 {
+                SendMessageW(self.ocr_language_combo, CB_SETCURSEL, Some(WPARAM(0)), None);
             }
 
             self.update_color_brushes();

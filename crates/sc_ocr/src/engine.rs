@@ -9,7 +9,7 @@ use crate::types::{BoundingBox, OcrResult};
 /// OCR language information.
 #[derive(Debug, Clone)]
 pub struct OcrLanguageInfo {
-    /// Language identifier (e.g. "chinese", "english").
+    /// Language identifier (e.g. "multilingual", "korean").
     pub id: String,
     /// Display name.
     pub display_name: String,
@@ -39,10 +39,15 @@ impl OcrConfig {
 
 /// Get model paths for the given config.
 pub fn get_model_paths(config: &OcrConfig) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    let language = config.language.as_str();
+    // These legacy choices used separate models before PP-OCRv6. They now map
+    // to the single multilingual v6 model so existing settings keep working.
+    let language = match config.language.as_str() {
+        "chinese" | "english" | "latin" => "multilingual",
+        language => language,
+    };
 
     // Detection model (shared by all languages).
-    let det_path = config.models_dir.join("PP-OCRv5_mobile_det.mnn");
+    let det_path = config.models_dir.join("PP-OCRv6_small_det.mnn");
 
     // Dynamic language model selection.
     let available_languages = get_available_languages(&config.models_dir);
@@ -83,16 +88,10 @@ pub fn get_available_languages(models_dir: &Path) -> Vec<OcrLanguageInfo> {
     // Language config: (id, display_name, rec_model, charset)
     let lang_configs = [
         (
-            "chinese",
-            "简体中文",
-            "PP-OCRv5_mobile_rec.mnn",
-            "ppocr_keys_v5.txt",
-        ),
-        (
-            "english",
-            "English",
-            "en_PP-OCRv5_mobile_rec_infer.mnn",
-            "ppocr_keys_en.txt",
+            "multilingual",
+            "多语言（中文、英文、日文及拉丁语系）",
+            "PP-OCRv6_small_rec.mnn",
+            "ppocr_keys_v6_small.txt",
         ),
         (
             "korean",
@@ -117,12 +116,6 @@ pub fn get_available_languages(models_dir: &Path) -> Vec<OcrLanguageInfo> {
             "देवनागरी",
             "devanagari_PP-OCRv5_mobile_rec_infer.mnn",
             "ppocr_keys_devanagari.txt",
-        ),
-        (
-            "latin",
-            "Latin",
-            "latin_PP-OCRv5_mobile_rec_infer.mnn",
-            "ppocr_keys_latin.txt",
         ),
         (
             "greek",

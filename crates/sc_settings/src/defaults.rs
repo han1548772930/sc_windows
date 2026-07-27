@@ -87,5 +87,5 @@ pub fn default_config_path() -> String {
 
 // OCR language default
 pub fn default_ocr_language() -> String {
-    "chinese".to_string()
+    "multilingual".to_string()
 }
