@@ -108,6 +108,91 @@ impl ScrollPreviewWindow {
         let width = frame.width as i32;
         let height = frame.height as i32;
         if width <= 0 || height <= 0 || frame.pixels.len() != width as usize * height as usize * 4 {
+            return Err("invalid scrolling preview pixel buffer".to_string());
+        }
+        let target = preview_geometry(selection, width, height);
+        let existing = PREVIEW_HWND.with(Cell::get);
+        if !existing.0.is_null() && unsafe { IsWindow(Some(existing)) }.as_bool() {
+            unsafe {
+                let state = GetWindowLongPtrW(existing, GWLP_USERDATA) as *mut PreviewState;
+                if !state.is_null() {
+                    let previous = (*state).target_geometry;
+                    (*state).pixels = frame.pixels;
+                    (*state).width = width;
+                    (*state).height = height;
+                    (*state).target_geometry = target;
+                    present_layered_frame(existing, &*state, target)?;
+                    if target != previous {
+                        eprintln!(
+                            "[scroll preview] geometry: ({},{},{},{}) -> ({},{},{},{})",
+                            previous.0,
+                            previous.1,
+                            previous.2,
+                            previous.3,
+                            target.0,
+                            target.1,
+                            target.2,
+                            target.3,
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        unsafe {
+            let instance = GetModuleHandleW(None).map_err(|error| error.to_string())?;
+            let class_name = windows::core::w!("ScrollCapturePreviewLayered");
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance.into(),
+                lpszClassName: class_name,
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                ..Default::default()
+            };
+            if RegisterClassW(&class) == 0 && GetLastError().0 != 1410 {
+                return Err(format!(
+                    "failed to register scroll preview window: {:?}",
+                    GetLastError()
+                ));
+            }
+            let state = Box::into_raw(Box::new(PreviewState {
+                pixels: frame.pixels,
+                width,
+                height,
+                target_geometry: target,
+            }));
+            let hwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                class_name,
+                windows::core::w!("Scrolling screenshot preview"),
+                WS_POPUP,
+                target.0,
+                target.1,
+                target.2,
+                target.3,
+                None,
+                None,
+                Some(instance.into()),
+                Some(state.cast()),
+            )
+            .map_err(|error| {
+                drop(Box::from_raw(state));
+                error.to_string()
+            })?;
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            PREVIEW_HWND.with(|slot| slot.set(hwnd));
+            present_layered_frame(hwnd, &*state, target)?;
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn show_or_update_legacy(selection: RectI32, frame: BgraFrame) -> Result<(), String> {
+        let width = frame.width as i32;
+        let height = frame.height as i32;
+        if width <= 0 || height <= 0 || frame.pixels.len() != width as usize * height as usize * 4 {
             return Err("滚动预览像素缓冲区无效".to_string());
         }
         let existing = PREVIEW_HWND.with(Cell::get);
@@ -124,15 +209,37 @@ impl ScrollPreviewWindow {
                     // makes Windows discard and re-create the window surface — which is what
                     // makes the preview flicker.
                     if target != (*state).target_geometry {
+                        let previous = (*state).target_geometry;
                         (*state).target_geometry = target;
+                        // WeChat's normal update_preview branch moves before it resizes.
                         let _ = SetWindowPos(
                             existing,
                             Some(HWND_TOPMOST),
                             target.0,
                             target.1,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOREDRAW | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                        let _ = SetWindowPos(
+                            existing,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
                             target.2,
                             target.3,
-                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                            SWP_NOMOVE | SWP_NOREDRAW | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                        eprintln!(
+                            "[scroll preview] geometry: ({},{},{},{}) -> ({},{},{},{})",
+                            previous.0,
+                            previous.1,
+                            previous.2,
+                            previous.3,
+                            target.0,
+                            target.1,
+                            target.2,
+                            target.3,
                         );
                     }
                     let _ = InvalidateRect(Some(existing), None, false);
@@ -171,7 +278,11 @@ impl ScrollPreviewWindow {
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class_name,
                 windows::core::w!("滚动截图预览"),
-                WS_POPUP | WS_BORDER | WS_VISIBLE,
+                // Keep the client area exactly equal to the preview bitmap. A framed popup's
+                // non-client border makes it two pixels smaller in each dimension, forcing
+                // every update through StretchDIBits; that call paints in visible horizontal
+                // blocks and produces the flashing/folded preview seen during fast scrolling.
+                WS_POPUP | WS_VISIBLE,
                 x,
                 y,
                 preview_width,
@@ -182,6 +293,10 @@ impl ScrollPreviewWindow {
                 Some(Box::into_raw(state).cast()),
             )
             .map_err(|e| e.to_string())?;
+            // The preview is created after the grab worker starts. Exclude it at the compositor
+            // immediately, before the grab thread has a chance to publish the HWND through
+            // MagSetWindowFilterList on its next iteration.
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
             PREVIEW_HWND.with(|slot| slot.set(hwnd));
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         }
@@ -268,8 +383,8 @@ impl PreviewPlacement {
     /// rectangle's convention.
     pub fn choose(selection: RectI32, screen_width: i32) -> Self {
         let selection_width = selection.right - selection.left + 1;
-        let margin =
-            (selection_width as f64 * PLACEMENT_MARGIN_RATIO).round() as i32 + PLACEMENT_MARGIN_BASE;
+        let margin = (selection_width as f64 * PLACEMENT_MARGIN_RATIO).round() as i32
+            + PLACEMENT_MARGIN_BASE;
         if selection.right + margin <= screen_width {
             Self::Right
         } else if margin < selection.left {
@@ -350,10 +465,67 @@ pub fn preview_size(
     let limit = placement.height_limit(selection, screen.1);
     if height > limit {
         // Keep the aspect ratio while fitting the limit.
-        width = (width as f64 * limit as f64 / height as f64).round().max(1.0) as i32;
+        width = (width as f64 * limit as f64 / height as f64)
+            .round()
+            .max(1.0) as i32;
         height = limit;
     }
     (width.max(1) as u32, height.max(1) as u32, placement)
+}
+
+/// Size a scrolling preview using the bounds of the monitor containing the selection.
+pub fn preview_size_on_monitor(
+    selection: RectI32,
+    canvas: (i32, i32),
+) -> (u32, u32, PreviewPlacement) {
+    let (selection, monitor) = selection_on_monitor(selection);
+    preview_size(selection, (monitor.2, monitor.3), canvas)
+}
+
+/// Maximum preview box for a canvas whose height is not known by the UI thread.
+pub fn preview_bounds_on_monitor(selection: RectI32, canvas_width: i32) -> (u32, u32) {
+    let (selection, monitor) = selection_on_monitor(selection);
+    let placement = PreviewPlacement::choose(selection, monitor.2);
+    let scale = placement.scale(selection, monitor.2, canvas_width);
+    let width = (canvas_width.max(1) as f64 * scale).round().max(1.0) as u32;
+    let height = placement.height_limit(selection, monitor.3).max(1) as u32;
+    (width, height)
+}
+
+fn selection_on_monitor(selection: RectI32) -> (RectI32, (i32, i32, i32, i32)) {
+    let rect = RECT {
+        left: selection.left,
+        top: selection.top,
+        right: selection.right + 1,
+        bottom: selection.bottom + 1,
+    };
+    let monitor = unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let bounds =
+        if !monitor.is_invalid() && unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            info.rcMonitor
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: unsafe { GetSystemMetrics(SM_CXSCREEN) },
+                bottom: unsafe { GetSystemMetrics(SM_CYSCREEN) },
+            }
+        };
+    let width = (bounds.right - bounds.left).max(1);
+    let height = (bounds.bottom - bounds.top).max(1);
+    (
+        RectI32 {
+            left: selection.left - bounds.left,
+            top: selection.top - bounds.top,
+            right: selection.right - bounds.left,
+            bottom: selection.bottom - bounds.top,
+        },
+        (bounds.left, bounds.top, width, height),
+    )
 }
 
 fn preview_geometry(
@@ -361,17 +533,78 @@ fn preview_geometry(
     image_width: i32,
     image_height: i32,
 ) -> (i32, i32, i32, i32) {
-    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let (selection, monitor) = selection_on_monitor(selection);
+    let (screen_left, screen_top, screen_width, screen_height) = monitor;
     let placement = PreviewPlacement::choose(selection, screen_width);
     // The image was already produced at the size the placement asks for, so the window takes the
     // image's dimensions verbatim and the paint path never rescales.
     let width = image_width.max(1);
     let height = image_height.max(1);
     let (x, y) = placement.origin(selection, width, height);
-    let x = x.clamp(0, (screen_width - width).max(0));
-    let y = y.clamp(0, (screen_height - height).max(0));
+    let x = x.clamp(0, (screen_width - width).max(0)) + screen_left;
+    let y = y.clamp(0, (screen_height - height).max(0)) + screen_top;
     (x, y, width, height)
+}
+
+fn present_layered_frame(
+    hwnd: HWND,
+    state: &PreviewState,
+    geometry: (i32, i32, i32, i32),
+) -> Result<(), String> {
+    let bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: state.width,
+            biHeight: -state.height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        bmiColors: [RGBQUAD::default(); 1],
+    };
+    unsafe {
+        let dc = CreateCompatibleDC(None);
+        if dc.is_invalid() {
+            return Err("failed to create scroll preview memory DC".to_string());
+        }
+        let mut bits = std::ptr::null_mut();
+        let bitmap = match CreateDIBSection(None, &bitmap_info, DIB_RGB_COLORS, &mut bits, None, 0)
+        {
+            Ok(bitmap) => bitmap,
+            Err(error) => {
+                let _ = DeleteDC(dc);
+                return Err(error.to_string());
+            }
+        };
+        std::ptr::copy_nonoverlapping(state.pixels.as_ptr(), bits.cast::<u8>(), state.pixels.len());
+        let previous = SelectObject(dc, bitmap.into());
+        let destination = POINT {
+            x: geometry.0,
+            y: geometry.1,
+        };
+        let size = SIZE {
+            cx: geometry.2,
+            cy: geometry.3,
+        };
+        let source = POINT { x: 0, y: 0 };
+        let result = UpdateLayeredWindow(
+            hwnd,
+            None,
+            Some(&destination),
+            Some(&size),
+            Some(dc),
+            Some(&source),
+            COLORREF(0),
+            None,
+            ULW_OPAQUE,
+        )
+        .map_err(|error| error.to_string());
+        SelectObject(dc, previous);
+        let _ = DeleteObject(bitmap.into());
+        let _ = DeleteDC(dc);
+        result
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -635,8 +868,14 @@ mod tests {
     #[test]
     fn origins_anchor_to_the_selection() {
         let selection = rect(200, 100, 999, 900);
-        assert_eq!(PreviewPlacement::Right.origin(selection, 320, 400), (1011, 501));
-        assert_eq!(PreviewPlacement::Left.origin(selection, 320, 400), (-144, 501));
+        assert_eq!(
+            PreviewPlacement::Right.origin(selection, 320, 400),
+            (1011, 501)
+        );
+        assert_eq!(
+            PreviewPlacement::Left.origin(selection, 320, 400),
+            (-144, 501)
+        );
         assert_eq!(
             PreviewPlacement::Overlay.origin(selection, 400, 600),
             (587, 288)

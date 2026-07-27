@@ -341,9 +341,19 @@ VA  0x180022520
 | patchSize | 31 |
 | fastThreshold | 20 |
 
+`0x18002236D` 将 `GetMergeOffsetInner` 构造出的输入 `cv::Mat` 直接交给 ORB 的
+`detectAndCompute`，中间没有手写灰度化或额外 `cvtColor`。对微信滚动截图使用的
+`Format_RGB32`，传入像素保持 8-bit 四通道 BGRA 内存布局和原始 stride。
+
+`wxocr.dll` 静态链接的是 **OpenCV 4.5.5**。使用项目原先的 OpenCV 4.12 会改变
+ORB 关键点与描述子结果，因此项目构建也固定到 4.5.5。`Format_RGB32` 对应导出函数
+的像素类型参数 `1`。在 ORB 之前，两幅输入 Mat 都被替换为
+`Rect(1, 1, width - 2, height - 2)` ROI；外圈 1px 不参与特征提取。
+
 已确认匹配规则：
 
-- `DescriptorMatcher::create(6)`，即 `BRUTEFORCE_SL2`/平方 L2 距离。
+- `DescriptorMatcher::create(6)`，即 `NORM_HAMMING`/汉明距离。OpenCV 中
+  `NORM_L2SQR = 5`，而 `NORM_HAMMING = 6`；ORB 的二进制描述子使用后者。
 - KNN 的 `k = 5`。
 - Lowe ratio 为 `0.75`。
 - descriptor distance 上限为 `20`。
@@ -353,7 +363,49 @@ VA  0x180022520
 - 选择支持数最多的候选 offset。
 - 相邻帧顶部和底部完全相同的静态行会被排除，同时保留 `31px` 特征边界。
 
+候选选择分为两次遍历，不能简化为对 Lowe 阶段 offset 的单次直方图：
+
+1. 第一遍只处理通过 Lowe ratio 的前两个 KNN 匹配，生成精确 offset 计数并按
+   `best_exact + candidate_exact * 20 >= first_pass_points` 预筛候选。
+2. 第二遍针对每个保留候选重新遍历每组 KNN 的全部 5 个匹配；此时不再执行
+   Lowe ratio，只应用 `distance <= 20`、`abs(dx) <= 4` 和
+   `abs(dy - candidate) <= 1`，以第二遍支持数选最终 offset。
+
+候选容器使用降序整数比较器。最终 winner 在 `support >= best_support` 时更新，
+所以同票时选择后访问到的、数值更小的 offset。真实 `wxocr.dll` 对照样本已验证：
+`-35/-35`、`60/60`、`-40/-40` 完全一致；第一组支持数为 377。
+
+该第二遍位于 `0x180022CE6`–`0x180022E92`，是重复聊天气泡、头像和侧栏特征下
+避免少量错误对应点胜出的关键步骤。
+
 微信外层只消费最终 offset。虽然内部会计算支持数，但没有证据表明外层使用额外的“最小支持数阈值”。
+
+### OpenCVWorker 的独立显示合成阶段
+
+`OpenCVWorker::handle_works` 在 `0x181C3E7A4` 先调用 `0x1808725E0`，将原始当前帧、
+offset 和序号发送给 `SpliceWorker`；随后才在 `0x181C3E7FF` 调用 `0x181C3EAA0`。
+因此后者生成并存入 `OpenCVWorker +0x60` 的 QPixmap 属于独立显示状态，不能作为
+最终长图拼接的输入。
+
+设帧高为 `H`、`S = abs(offset)`，两个分支共同使用：
+
+```text
+B = max(H / 2, H / 4 + S)
+```
+
+这里 `/2` 和 `/4` 均为整数除法。输出先复制当前帧，然后按增长方向覆盖上一帧像素：
+
+```text
+上边界增长，0x183E47F00:
+    previous[y = B-S .. H-S) -> output[y = B .. H)
+
+下边界增长，0x183E47CF0:
+    previous[y = S .. S+H-B) -> output[y = 0 .. H-B)
+```
+
+两个 helper 的像素行为由完整函数体确认，但它们的调用发生在拼接任务发送之后。
+最终 `SpliceWorker` 接收原始当前帧，并在 `0x181C3D380` 中独立维护位置和最大深度；
+不能使用 `OpenCVWorker` 的显示合成图，也不能在上游预先过滤掉不增长的非零 offset。
 
 ## 6. SpliceWorker
 
@@ -372,7 +424,10 @@ Qt 元对象中可见的方法：
 - offset 为零：不改变画布。
 - 超过 60% 限制或无法匹配：拒绝该帧，不把像素写入画布。
 
-这避免了回滚后再次经过旧内容时重复拼接整帧。
+`OpenCVWorker` 会把每个通过外层限制的非零 offset 连同原始当前帧发送给
+`SpliceWorker`。边界计算以及 `position/max_depth` 更新由 `SpliceWorker` 独立完成；
+处于已捕获范围内的任务仍可进入拼接队列，但不会增长画布。这避免了回滚后再次
+经过旧内容时重复写入整帧。
 
 ### SpliceWorker 对象布局
 
@@ -482,7 +537,7 @@ Qt 元对象中可见的方法：
 即裁剪高度为：
 
 ```
-crop_h = max(frame_height / 2, frame_height / 4 + grow)
+crop_h = max(frame_height / 2, ceil(frame_height / 4) + grow)
 ```
 
 注意 `0x183E47AB7` 的 `cmovlel` 取的是**较大者**：`edx` 不大于 `ecx` 时用 `ecx`。
@@ -661,7 +716,7 @@ else                      size = scaledToWidth (size.width * dpr)   ; 0x181C3E3A
 | ORB WTA_K | 2 |
 | ORB patchSize | 31 |
 | ORB fastThreshold | 20 |
-| DescriptorMatcher | BRUTEFORCE_SL2 (6) |
+| DescriptorMatcher | NORM_HAMMING (6) |
 | KNN k | 5 |
 | Lowe ratio | 0.75 |
 | descriptor distance 上限 | 20 |
@@ -744,15 +799,65 @@ else                      size = scaledToWidth (size.width * dpr)   ; 0x181C3E3A
 以下内容没有足够的静态证据，不应当作为微信既有规则：
 
 - 根据滚轮速度动态改变位移上限。
-- 除 ORB 规则外的额外整图相似度阈值（外层确认没有；`wxocr.dll` 内部除
-  支持数阈值外是否还有其他判据尚未穷尽）。
-- 队列积压时是否主动覆盖旧帧。
-- `SetExcludeHwnds` 抓屏 helper 对每个排除窗口的具体像素修复算法。
-- 动态内容、视频和透明窗口的全部特殊处理分支。
 - `0x181C3B5E2` 处返回值为 4 的具体含义（该值只影响 `0x88`/`0xB0` 两个窗口的
   resize/move 先后顺序，不影响最终几何）。
 - `0xB0` 窗口对象的角色 —— 只在返回值为 4 的分支被 resize/move。
 - 预览窗口的背景绘制方式：`update_preview` 全程只做几何计算和 `setVisible`，
   未见任何 `QPalette`/`setStyleSheet`/`fillRect` 调用，背景来源需动态调试确认。
 
-已确认 `GrabWorker` 连续产生工作项，`OpenCVWorker` 按工作序号处理，`SpliceWorker` 只接收需要扩展边界的像素条带；但 Qt 信号连接的所有运行时队列策略仍需动态调试才能完全确定。
+### 由完整 PE 补充确认（2026-07-27）
+
+使用 `D:\Weixin\4.1.11.55\Weixin.dll` 重新提取上述未决调用链。配套
+`WeChatOcr.bin` 的 SHA-256 为
+`621F4DDCAB1D0C1A909CDB8351041DBBEEBAFA82158CD4F9743CD87167D88412`，与本次分析样本
+完全相同；旧记录中的函数地址也逐字节匹配。
+
+- 帧交接确定为覆盖式单槽：生产者替换 `0x18ADBC838` 后递增序号并
+  `notify_all`，不存在积压队列。
+- `0x183E46980` 依次解析 `MagInitialize`、`MagUninitialize`、
+  `MagSetWindowSource`、`MagSetWindowFilterList` 和
+  `MagSetImageScalingCallback`。`0x183E472B0` 读取
+  `MagSetWindowFilterList`，`0x183E47379` 以模式 0、HWND 数量及数组直接调用。
+  回调 `0x183E48E30` 之后只按 stride 复制 BGRA 扫描线；不存在
+  `SetExcludeHwnds` 特有的像素修复算法。
+- 动态内容、视频和透明窗口没有长截图专用后处理分支；其捕获结果完全由
+  Magnification API 回调决定。
+- `GetMergeOffsetInner` 的所有正常返回路径已经穷尽；除本文列出的静态边缘裁剪、
+  ORB/KNN过滤、候选支持数和 60% 外层位移上限外，没有额外整图相似度阈值。
+- `GrabWorker`、`OpenCVWorker`、`SpliceWorker` 是独立流水段；OpenCV 投递拼接工作后
+  即可继续消费最新槽帧，不等待 SpliceWorker 完成。
+
+### 预览提交顺序与 Windows 实现
+
+每次成功拼接后，`0x181C3E17B` 先把最新画布 pixmap 复制到预览状态，随后
+`0x181C3E18B` 调用 `update_preview`。预览 helper `0x181C3E360` 完成缩放并把 pixmap
+设置到 `this+0x88` 的窗口对象，然后 `update_preview` 执行 move/resize，最后
+`setVisible(true)`。因此一次拼接对应一次有序的预览更新，不能在 UI 定时器中丢弃
+中间尺寸。
+
+Qt backing store 会把新 pixmap 与窗口几何交给合成器。项目的 Win32 预览使用
+`UpdateLayeredWindow` 一次提交新 BGRA 像素、位置和尺寸，以复现相同的可见提交语义；
+若先 `SetWindowPos`、再等待异步 `WM_PAINT`，旧表面会短暂出现在新位置，表现为首次
+滚动时预览上下抖动。`UpdateLayeredWindow` 是 Windows 侧的等价实现方式，不是微信
+二进制调用的 API。
+
+预览 HWND 在初始帧显示后立即加入 `MagSetWindowFilterList`，并等待 GrabWorker 应用
+新列表后才开放 matcher 帧投递，避免过渡帧递归捕获预览窗口。
+
+### 运行时逐帧验证（2026-07-27）
+
+使用真实 `wxocr.dll`（SHA-256
+`41D6EDF75670401382240BD72137E58C63FD262D4C69C4D66511BBBB2C0758E1`）记录每次
+增长的原始帧和传给拼接 helper 的裁剪条。快速滚动样本中，`+264`、`+247`、
+`+246` 等接近上限的 offset 均对应真实连续帧；按 offset 对齐后的重叠区域 RMSE
+约为 1.4%--1.6%。`+295`、`+302`、`+336` 等超过帧高 60% 的结果按微信外层逻辑
+置零，matcher baseline 仍前移。
+
+该验证同时确认：捕获帧中没有右侧预览，原始聊天帧内没有折叠，项目裁剪条的高度、
+方向和覆盖坐标与 `0x183E47A40`/`0x183E47780` 一致。重复聊天元素或快速滚动产生的
+低支持数但未超 60% 的 offset，微信外层仍会接受；在相同帧序列下可能留下局部折叠。
+不能为消除此现象额外加入 support、滚轮方向、速度或整图相似度阈值，否则会偏离
+已确认的微信行为。
+
+剩余未确认项都只涉及两个 Qt 预览对象的具体界面角色或背景来源，不改变抓帧、
+匹配、拼接、停止条件和最终预览几何。

@@ -34,8 +34,8 @@ use sc_rendering::Rectangle;
 use sc_settings::{ConfigManager, Settings};
 use sc_ui_windows::cursor::CursorContext;
 use sc_ui_windows::{
-    CursorManager, PreviewPlacement, PreviewWindow, ScrollPreviewWindow, ToolbarButton, UIError,
-    UIManager, preview_size,
+    CursorManager, PreviewWindow, ScrollPreviewWindow, ToolbarButton, UIError, UIManager,
+    preview_bounds_on_monitor,
 };
 
 use crate::HostEvent;
@@ -71,8 +71,6 @@ pub struct App {
     scroll_pending_direction: i8,
     /// Scroll direction published for the grab thread's frame sink to read.
     scroll_direction_hint: Arc<AtomicI8>,
-    scroll_last_preview: Instant,
-    scroll_frame_captured: bool,
 }
 
 impl App {
@@ -114,8 +112,6 @@ impl App {
             scroll_wheel_delta: 0,
             scroll_pending_direction: 0,
             scroll_direction_hint: Arc::new(AtomicI8::new(0)),
-            scroll_last_preview: Instant::now(),
-            scroll_frame_captured: true,
         })
     }
 
@@ -161,8 +157,6 @@ impl App {
         self.scroll_capture = None;
         self.scroll_frame_source = None;
         self.scroll_target_window = None;
-        self.scroll_last_preview = Instant::now();
-        self.scroll_frame_captured = true;
         self.ui.set_scrolling_mode(false);
         ScrollPreviewWindow::close();
 
@@ -818,10 +812,20 @@ impl App {
         // published into this slot once the matcher exists, a moment after the grabber starts.
         let submitter_slot: Arc<Mutex<Option<ScrollFrameSubmitter>>> = Arc::new(Mutex::new(None));
         let sink_slot = submitter_slot.clone();
+        let ready_slot = submitter_slot.clone();
         let sink_direction = self.scroll_direction_hint.clone();
+        let canvas_width = (selection.right - selection.left + 1).max(1);
+        let frame_preview_size = Some(preview_bounds_on_monitor(selection, canvas_width));
         let frame_source = match GraphicsCaptureSource::with_frame_sink(
             selection.into(),
             excluded,
+            Box::new(move || {
+                ready_slot
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.as_ref().map(ScrollFrameSubmitter::is_ready))
+                    .unwrap_or(false)
+            }),
             Box::new(move |frame| {
                 let Ok(slot) = sink_slot.lock() else {
                     return Some(frame);
@@ -830,7 +834,7 @@ impl App {
                     return Some(frame);
                 };
                 let direction = sink_direction.load(std::sync::atomic::Ordering::Relaxed);
-                submitter.push_frame(frame, direction, None)
+                submitter.push_frame(frame, direction, frame_preview_size)
             }),
         ) {
             Ok(source) => source,
@@ -862,38 +866,54 @@ impl App {
             ScrollCaptureWorker::from_bgra(selection, first.frame.clone())
                 .map_err(AppError::Screenshot)?,
         );
-        // The matcher exists now, so let the grab thread start feeding it directly.
-        if let Ok(mut slot) = submitter_slot.lock() {
-            *slot = self
-                .scroll_capture
-                .as_ref()
-                .map(ScrollCaptureWorker::submitter);
-        }
-        let sequence =
-            sc_platform_windows::windows::system::start_scroll_wheel_hook(selection.into())
-                .map_err(AppError::Screenshot)?;
         self.scroll_frame_source = Some(frame_source);
-        self.scroll_wheel_sequence = sequence;
-        self.scroll_wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
-        self.scroll_pending_direction = 0;
-        self.scroll_last_preview = Instant::now();
-        self.scroll_frame_captured = true;
-        // Ask the worker to render the opening preview rather than showing the raw frame: it is
-        // the only place that knows the canvas size, and a full-resolution frame here would open
-        // the window at capture size and then jump to the scaled size on the first splice.
+        // WeChat constructs and positions the preview objects before starting GrabWorker. Keep
+        // frame delivery paused while reproducing that order: render the opening preview, apply
+        // its HWND to the Magnification filter, then expose captured frames to the matcher.
         let preview_size = self.scroll_preview_size();
         self.scroll_capture
             .as_ref()
             .expect("scroll capture created above")
             .request_preview(preview_size)
             .map_err(AppError::Screenshot)?;
-        // The preview windows exist only now, so publish the full exclusion set (overlay +
-        // preview + status).
+        let preview_started = Instant::now();
+        while ScrollPreviewWindow::window_handles().is_empty()
+            && preview_started.elapsed() < Duration::from_millis(750)
+        {
+            self.drain_scroll_capture_events(window, selection)?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if ScrollPreviewWindow::window_handles().is_empty() {
+            return Err(AppError::Screenshot(
+                "scroll preview did not produce its initial frame".to_string(),
+            ));
+        }
         if let Some(source) = self.scroll_frame_source.as_ref() {
             let mut excluded = vec![sc_platform_windows::windows::hwnd(window).0 as usize];
             excluded.extend(ScrollPreviewWindow::window_handles());
             source.set_excluded_windows(excluded);
+            if !source.wait_for_excluded_windows(Duration::from_millis(750)) {
+                return Err(AppError::Screenshot(
+                    "Magnification preview exclusion was not applied".to_string(),
+                ));
+            }
         }
+        if let Ok(mut slot) = submitter_slot.lock() {
+            *slot = self
+                .scroll_capture
+                .as_ref()
+                .map(ScrollCaptureWorker::submitter);
+        }
+        self.scroll_frame_source
+            .as_ref()
+            .expect("frame source stored above")
+            .enable_delivery();
+        let sequence =
+            sc_platform_windows::windows::system::start_scroll_wheel_hook(selection.into())
+                .map_err(AppError::Screenshot)?;
+        self.scroll_wheel_sequence = sequence;
+        self.scroll_wheel_delta = sc_platform_windows::windows::system::scroll_wheel_delta_total();
+        self.scroll_pending_direction = 0;
         self.host_platform
             .start_timer(
                 window,
@@ -931,18 +951,6 @@ impl App {
             }
         }
 
-        // Frames reach the matcher straight from the grab thread, at capture rate, so this tick
-        // only paces the preview. Anything the sink declined is still in the mailbox; draining it
-        // here keeps the mailbox from holding a stale frame.
-        if let Some(source) = self.scroll_frame_source.as_ref() {
-            let _ = source.try_next_frame();
-        }
-        if self.scroll_last_preview.elapsed() >= Duration::from_millis(100)
-            && let Some(capture) = self.scroll_capture.as_ref()
-        {
-            let _ = capture.request_preview(self.scroll_preview_size());
-            self.scroll_last_preview = Instant::now();
-        }
         Ok(())
     }
 
@@ -951,42 +959,50 @@ impl App {
         _window: WindowId,
         selection: core_selection::RectI32,
     ) -> AppResult<bool> {
-        let mut latest_preview = None;
+        let mut preview_updated = false;
         loop {
             let event = self
                 .scroll_capture
                 .as_ref()
                 .and_then(ScrollCaptureWorker::poll_event);
             match event {
-                Some(ScrollCaptureEvent::Preview(bmp)) => latest_preview = Some(bmp),
+                Some(ScrollCaptureEvent::Preview(bmp)) => {
+                    // WeChat calls setPixmap/update_preview once for every successful splice.
+                    // Do not collapse intermediate sizes: at scroll start that turns several
+                    // ordered growth steps into one visible geometry jump.
+                    ScrollPreviewWindow::show_or_update(selection, bmp)
+                        .map_err(AppError::Screenshot)?;
+                    preview_updated = true;
+                }
                 Some(ScrollCaptureEvent::FrameAccepted) => {}
-                Some(ScrollCaptureEvent::FrameDiscarded) => self.scroll_frame_captured = false,
+                Some(ScrollCaptureEvent::FrameDiscarded) => {}
                 Some(ScrollCaptureEvent::StateChanged(state)) => {
                     eprintln!("[scroll capture] state changed: {state:?}");
                     match state {
-                        crate::scroll_capture::ScrollCaptureState::Broken { .. } => {
-                            ScrollPreviewWindow::set_status(
-                                selection,
-                                Some("截图中断 返回截图位置继续滚动"),
-                            );
-                        }
-                        crate::scroll_capture::ScrollCaptureState::Recovered => {
-                            ScrollPreviewWindow::set_status(selection, None);
-                        }
                         crate::scroll_capture::ScrollCaptureState::MaximumLength { .. } => {
                             ScrollPreviewWindow::set_status(
                                 selection,
                                 Some("已达最大长度，无法继续截图"),
                             );
-                            self.scroll_frame_captured = true;
                         }
                     }
                 }
                 None => break,
             }
         }
-        if let Some(bmp) = latest_preview {
-            ScrollPreviewWindow::show_or_update(selection, bmp).map_err(AppError::Screenshot)?;
+        if preview_updated {
+            // The preview HWND does not exist when capture starts, so the initial filter list
+            // only contains the overlay. Republish it immediately after creating/updating the
+            // preview; otherwise Magnification captures the preview recursively when it overlaps
+            // the selection, producing flicker and folded bands.
+            if let (Some(source), Some(overlay)) = (
+                self.scroll_frame_source.as_ref(),
+                self.scroll_overlay_window,
+            ) {
+                let mut excluded = vec![sc_platform_windows::windows::hwnd(overlay).0 as usize];
+                excluded.extend(ScrollPreviewWindow::window_handles());
+                source.set_excluded_windows(excluded);
+            }
         }
         Ok(false)
     }
@@ -1008,14 +1024,7 @@ impl App {
         // unknown here; passing the height limit lets `preview_size` clamp and the splice
         // worker fit the real canvas into the same box.
         let canvas_width = (selection.right - selection.left + 1).max(1);
-        let placement = PreviewPlacement::choose(selection, self.screen_size.0);
-        let limit = placement.height_limit(selection, self.screen_size.1);
-        let (width, _, _) = preview_size(
-            selection,
-            self.screen_size,
-            (canvas_width, limit),
-        );
-        (width, limit.max(1) as u32)
+        preview_bounds_on_monitor(selection, canvas_width)
     }
 
     pub(crate) fn save_scrolling_to_clipboard(&mut self) -> AppResult<()> {

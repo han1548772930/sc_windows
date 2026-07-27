@@ -1,14 +1,10 @@
 @echo off
-REM Legacy OpenCV 4.12.0 build. WeChat-compatible builds use
-REM build-opencv-4.5.5-static.bat and third_party/opencv-4.5.5-static.
-REM   modules -> core, imgproc, features2d (+ static CRT, no DLLs)
 setlocal
-
-set "THIRD_PARTY=%~dp0"
-set "CMAKE=%THIRD_PARTY%cmake\bin\cmake.exe"
-set "SOURCE=%THIRD_PARTY%opencv-sdk\sources"
-set "BUILD=%THIRD_PARTY%opencv-static-build"
-set "INSTALL=%THIRD_PARTY%opencv-static"
+set "ROOT=%~dp0"
+set "CMAKE=C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+set "SOURCE=%ROOT%opencv-4.5.5-source"
+set "BUILD=%ROOT%opencv-4.5.5-static-build"
+set "INSTALL=%ROOT%opencv-4.5.5-static"
 
 "%CMAKE%" -S "%SOURCE%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_INSTALL_PREFIX="%INSTALL%" ^
@@ -19,6 +15,7 @@ set "INSTALL=%THIRD_PARTY%opencv-static"
   -DBUILD_LIST=core,imgproc,features2d ^
   -DBUILD_opencv_apps=OFF ^
   -DBUILD_opencv_python_bindings_generator=OFF ^
+  -DBUILD_opencv_python3=OFF ^
   -DBUILD_opencv_python_tests=OFF ^
   -DBUILD_opencv_js_bindings_generator=OFF ^
   -DBUILD_opencv_objc_bindings_generator=OFF ^
@@ -41,7 +38,6 @@ set "INSTALL=%THIRD_PARTY%opencv-static"
   -DWITH_OPENEXR=OFF ^
   -DWITH_PROTOBUF=OFF ^
   -DWITH_QUIRC=OFF ^
-  -DWITH_ADE=OFF ^
   -DWITH_EIGEN=OFF ^
   -DWITH_JPEG=OFF ^
   -DWITH_PNG=OFF ^
@@ -60,7 +56,5 @@ set "INSTALL=%THIRD_PARTY%opencv-static"
   -DINSTALL_TESTS=OFF
 if errorlevel 1 exit /b 1
 
-"%CMAKE%" --build "%BUILD%" --config Release --target install --parallel 16
-if errorlevel 1 exit /b 1
-
-endlocal
+"%CMAKE%" --build "%BUILD%" --config Release --target install --parallel 4
+exit /b %errorlevel%

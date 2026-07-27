@@ -11,6 +11,9 @@ third_party/opencv-*-windows.exe
 third_party/opencv-sdk/
 third_party/opencv-static-build/
 third_party/opencv-static/
+third_party/opencv-*-source/
+third_party/opencv-*-static-build/
+third_party/opencv-*-static/
 third_party/cmake/
 third_party/cmake-*.zip
 third_party/configure-build.log
