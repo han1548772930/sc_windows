@@ -6,9 +6,6 @@ Windows 原生截图与标注工具（Rust + Direct2D），支持矩形/圆形/�
 ![screenshot](https://github.com/user-attachments/assets/b6417c1c-4abe-4e4b-943d-1d6b1b2bc7d6)
 
 
-https://github.com/user-attachments/assets/0a5fcbf0-5df5-4543-81e6-d8903f788c99
-
-
 ## 功能
 - **截图**：框选区域、智能窗口检测与高亮、实时尺寸预览
 - **滚动截图**：后台逐帧拼接、实时长图预览、支持反向滚动与向已有范围外继续扩展
