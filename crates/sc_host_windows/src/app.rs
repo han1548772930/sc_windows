@@ -66,6 +66,7 @@ pub struct App {
     scroll_frame_source: Option<GraphicsCaptureSource>,
     scroll_overlay_window: Option<WindowId>,
     scroll_target_window: Option<WindowId>,
+    scroll_hidden_windows: Vec<usize>,
     scroll_wheel_sequence: u64,
     scroll_wheel_delta: i64,
     scroll_pending_direction: i8,
@@ -108,6 +109,7 @@ impl App {
             scroll_frame_source: None,
             scroll_overlay_window: None,
             scroll_target_window: None,
+            scroll_hidden_windows: Vec::new(),
             scroll_wheel_sequence: 0,
             scroll_wheel_delta: 0,
             scroll_pending_direction: 0,
@@ -154,6 +156,9 @@ impl App {
             );
         }
         sc_platform_windows::windows::system::stop_scroll_wheel_hook();
+        sc_platform_windows::windows::system::restore_hidden_windows(
+            &mut self.scroll_hidden_windows,
+        );
         self.scroll_capture = None;
         self.scroll_frame_source = None;
         self.scroll_target_window = None;
@@ -790,6 +795,11 @@ impl App {
         let _ = self.handle_ui_message(UIMessage::ShowToolbar(selection));
         self.dirty_tracker.mark_full_redraw();
         let _ = self.host_platform.request_redraw(window);
+        self.scroll_hidden_windows =
+            sc_platform_windows::windows::system::hide_floating_windows_overlapping(
+                selection.into(),
+                window,
+            );
         let center_x = selection.left + (selection.right - selection.left) / 2;
         let center_y = selection.top + (selection.bottom - selection.top) / 2;
         let target_window = sc_platform_windows::windows::system::window_below_at_screen_point(

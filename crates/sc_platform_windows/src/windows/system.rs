@@ -45,7 +45,7 @@ pub fn vertical_scroll_position(window: WindowId) -> Option<i32> {
     }
     None
 }
-use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Graphics::Gdi::{
     CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn,
@@ -56,15 +56,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx, GW_HWNDNEXT,
-    GetCursorPos, GetWindow, GetWindowRect, IsWindowVisible, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
-    SetCursorPos, WM_MOUSEWHEEL, WindowFromPoint,
+    GWL_EXSTYLE, GetClientRect, GetCursorPos, GetTopWindow, GetWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, SMTO_ABORTIFHUNG,
+    SW_HIDE, SW_SHOWNOACTIVATE, SendMessageTimeoutW, SetCursorPos, ShowWindow, WM_MOUSEWHEEL,
+    WS_EX_LAYERED, WS_EX_TOPMOST, WindowFromPoint,
 };
 
 use sc_drawing::Rect;
 use sc_platform::WindowId;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use windows::Win32::Foundation::LRESULT;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW,
     SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL, WM_QUIT,
@@ -147,7 +149,7 @@ pub fn scroll_wheel_delta_total() -> i64 {
 /// Exclude a rectangle from a window's visible and hit-test region.
 pub fn set_window_region_hole(
     window: WindowId,
-    screen_size: (i32, i32),
+    _screen_size: (i32, i32),
     hole: Option<Rect>,
 ) -> Result<(), String> {
     unsafe {
@@ -156,8 +158,32 @@ pub fn set_window_region_hole(
             SetWindowRgn(hwnd, None, true);
             return Ok(());
         };
-        let region = CreateRectRgn(0, 0, screen_size.0, screen_size.1);
-        let excluded = CreateRectRgn(hole.left, hole.top, hole.right, hole.bottom);
+        let mut client = RECT::default();
+        GetClientRect(hwnd, &mut client).map_err(|e| e.to_string())?;
+
+        // Selection rectangles are in inclusive screen coordinates. Window regions use
+        // client-relative coordinates with an exclusive right/bottom edge.
+        let mut top_left = POINT {
+            x: hole.left,
+            y: hole.top,
+        };
+        let mut bottom_right = POINT {
+            x: hole.right.saturating_add(1),
+            y: hole.bottom.saturating_add(1),
+        };
+        if !ScreenToClient(hwnd, &mut top_left).as_bool()
+            || !ScreenToClient(hwnd, &mut bottom_right).as_bool()
+        {
+            return Err("ScreenToClient failed".to_string());
+        }
+
+        let region = CreateRectRgn(client.left, client.top, client.right, client.bottom);
+        let excluded = CreateRectRgn(
+            top_left.x.clamp(client.left, client.right),
+            top_left.y.clamp(client.top, client.bottom),
+            bottom_right.x.clamp(client.left, client.right),
+            bottom_right.y.clamp(client.top, client.bottom),
+        );
         if region.is_invalid() || excluded.is_invalid() {
             return Err("CreateRectRgn failed".to_string());
         }
@@ -218,6 +244,62 @@ pub fn window_below_at_screen_point(exclude: WindowId, x: i32, y: i32) -> Option
         candidate = unsafe { GetWindow(hwnd, GW_HWNDNEXT) };
     }
     None
+}
+
+/// Return visible top-level layered/topmost windows intersecting the capture rectangle.
+///
+/// Magnification can exclude these windows by HWND even when most of their window rectangle is
+/// transparent. Floating-ball applications commonly use exactly this shape: a large layered
+/// surface with only a small painted icon.
+pub fn floating_windows_overlapping(rect: Rect, exclude: WindowId) -> Vec<usize> {
+    let excluded = super::hwnd(exclude);
+    let own_process = unsafe { GetCurrentProcessId() };
+    let mut result = Vec::new();
+    let mut current = unsafe { GetTopWindow(None) };
+    while let Ok(hwnd) = current {
+        if hwnd.0.is_null() {
+            break;
+        }
+        if hwnd != excluded && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            let mut process_id = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+            let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+            let floating_mask = WS_EX_LAYERED.0 | WS_EX_TOPMOST.0;
+            let mut window_rect = RECT::default();
+            if process_id != own_process
+                && ex_style & floating_mask == floating_mask
+                && unsafe { GetWindowRect(hwnd, &mut window_rect) }.is_ok()
+                && window_rect.left < rect.right
+                && window_rect.right > rect.left
+                && window_rect.top < rect.bottom
+                && window_rect.bottom > rect.top
+            {
+                result.push(hwnd.0 as usize);
+            }
+        }
+        current = unsafe { GetWindow(hwnd, GW_HWNDNEXT) };
+    }
+    result
+}
+
+/// Hide external layered/topmost windows that overlap a scrolling capture.
+pub fn hide_floating_windows_overlapping(rect: Rect, exclude: WindowId) -> Vec<usize> {
+    let windows = floating_windows_overlapping(rect, exclude);
+    for &window in &windows {
+        let hwnd = HWND(window as *mut core::ffi::c_void);
+        unsafe { ShowWindow(hwnd, SW_HIDE) };
+    }
+    windows
+}
+
+/// Restore windows hidden by [`hide_floating_windows_overlapping`].
+pub fn restore_hidden_windows(windows: &mut Vec<usize>) {
+    for window in windows.drain(..) {
+        let hwnd = HWND(window as *mut core::ffi::c_void);
+        if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+            unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+        }
+    }
 }
 
 /// Post a wheel-down message directly to a window, independent of keyboard focus.

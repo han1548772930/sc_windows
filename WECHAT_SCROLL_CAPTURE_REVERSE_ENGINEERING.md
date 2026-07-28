@@ -68,6 +68,137 @@ LongScreenShoter
 
 三个阶段位于独立线程中。`OpenCVWorker` 按工作序号处理帧，不能任意清空中间帧后继续拿旧基准匹配新帧。
 
+### ShotSelection 与 ScreenshotView 的元对象边界（悬浮内容调查）
+
+重新按 PE section 映射解析 Qt 字符串表后，确认此前的类归属有误：`allstrings.txt` 第一列
+是文件偏移，不是 VA。例如文件偏移 `0xA665AC0` 的 `ShotSelection` 实际 VA 是
+`0x18A666AC0`。
+
+`ShotSelection` 的 static meta-object 是 `0x1885E5C10`，stringdata 为
+`0x18A666970`，metadata 为 `0x1885E5AA0`，真正的 `qt_static_metacall` 是
+`0x180871840`。其十项跳转表 `0x1885F3628` 解析如下：
+
+```text
+0 captured       -> 0x180871883
+1 moved          -> 0x180871A66
+2 resized        -> 0x1808719C7
+3 locked         -> 0x1808719FE
+4 statusChanged  -> 0x180871958
+5 drawSelected   -> 0x180871A9D
+6 start(filter)  -> 0x180871B5A
+7 start()        -> 0x180871A35
+8 status(value)  -> 0x180871B8C -> 0x181C33370
+9 showRegion()   -> 0x1808719A0 -> 0x181C373C0
+```
+
+#### `showRegion()` 的真实动作：隐藏冻结选区图层
+
+`0x181C373C0` 的行为现已闭环，不再只是“更新一个未知 Qt 图形对象”：
+
+```text
+0x181C373C8  rcx = [ShotSelection+0x258]
+0x181C373CF  call 0x180591710
+0x181C373D4  byte [ShotSelection+0x260] = 1
+0x181C373DE  this = ShotSelection
+0x181C373E3  jmp 0x180594A40
+```
+
+`0x180591710` 本身只有三条有效指令：
+
+```text
+mov  rax, [rcx]
+mov  rax, [rax+0x58]
+xor  edx, edx
+jmp  rax
+```
+
+也就是对 `ShotSelection+0x258` 调用其 QWidget 虚表 `+0x58`，参数严格为
+`false`。同一虚表槽在 LongScreenShoter 的预览路径以 `dl=1` 调用，已由窗口出现行为
+确认是 `QWidget::setVisible(bool)`。因此这里的真实调用是：
+
+```cpp
+selection_snapshot_widget->setVisible(false);
+```
+
+随后 `ShotSelection+0x260 = 1` 记录“真实选区已经露出”，`0x180594A40` 把当前
+ShotSelection 几何同步到窗口系统。方法名 `showRegion` 的含义是显示选区后面的实时内容，
+不是显示 `+0x258` 控件。
+
+反向状态也在 `0x181C36A20` 闭环：`0x181C36A73--0x181C36A7A` 对同一个
+`ShotSelection+0x258` 调用 `0x180591710`，完成矩形归一化和几何更新后，
+`0x181C36BB7` 把 `ShotSelection+0x260` 清零。两条路径操作的是同一个独立 QWidget
+和同一个状态位。
+
+这解释了屏幕现象：微信没有从抓取帧、预览或拼接画布中识别并删除悬浮球；它隐藏的是
+截图 UI 中承载初始冻结选区图像的独立 QWidget。底层目标窗口继续滚动后，旧冻结帧里的
+悬浮内容随该控件一起从屏幕上真正消失，选区显示底层实时窗口。该机制也不是
+`MagSetWindowFilterList` 的 HWND 排除。
+
+当前项目的 `set_window_region_hole(...)` 操作整个全屏 HWND 的 HRGN，而微信操作的是
+`ShotSelection` 内独立的选区截图 QWidget；二者不是同一对象模型。不能再用抓帧排除、
+预览过滤或 matcher 修改来代替这条 UI 显隐链。
+
+`ShotSelection::showRegion()` 在 `0x181C373C0` 对 `ShotSelection+0x258` 所持有的 Qt
+图形对象调用 `0x180591710`，设置 `ShotSelection+0x260 = 1`，然后调用
+`0x180594A40` 更新其几何/窗口系统状态。`+0x258` 在 ShotSelection 构造路径
+`0x181C32F7F`--`0x181C32FA1` 中创建：分配 0x30 字节 wrapper，调用
+`0x1813AB7F0(this, ShotSelection, 0)`，再保存到该字段。
+
+紧随其后的 meta-object `0x1885E5CF0`、`qt_static_metacall 0x180871E80` 实际属于
+`mmui::ScreenshotView`，不是 ShotSelection。其 index 3 才会进入 `0x181C38140`；
+LongScreenShoter 在 `0x181C3AEA2` 和 `0x181C3AF1D` 调用的也是这个
+ScreenshotView 状态入口。因此不能再把 `0x181C38140/0x181C6AEA0` 描述成
+`ShotSelection::showRegion`，也不能据此断言它撤掉的是选区覆盖层。
+
+当前直接调用 `ShotSelection::showRegion` 的业务位置只找到 `0x181C5E171`，
+LongScreenShoter 区域没有直接调用。后续必须继续跟踪 ScreenshotView 状态变化与全屏
+Qt 窗口 paint/update 的关系，不能把两套元对象混为一条链。
+
+进一步解析 `ScreenshotView` 的 method 顺序后，确认 `0x180872010` 不是
+`Captured(...)` signal：它以 meta-object `0x1885E5CF0`、method index `1` 调用
+`QMetaObject::activate`，对应 `ScreenshotDidFinish(etype)`。`Captured(...)` 本身是 index
+`3` 的槽，入口 `0x181C38140`；它先在 `0x181C38148` 发出
+`ScreenshotDidFinish(etype)`，随后才处理 `ScreenshotView+0x10`。因此完整顺序是：
+
+```text
+LongScreenShoter -> ScreenshotView::Captured(etype)
+                 -> emit ScreenshotDidFinish(etype)
+                 -> 处理 ScreenshotView+0x10
+```
+
+`ScreenshotView+0x10` 的对象在 `0x181C37E00` 中按 0x60 字节分配，并由
+`0x181C6A310(object, 0, ScreenshotView)` 构造。其 vtable 为 `0x1888EEEF8`。此前被误称为
+hide 的 `0x181C6AEA0` 实际首先检查该对象 `+0x10/+0x18` 的共享所有权字段，调用
+`0x180266380` 释放所持对象并清空这两个字段；随后收缩 `+0x20/+0x28` 容器、调用
+`0x181EB80D0`，并清理全局共享指针 `0x18ADBFAE0`。这段代码没有出现可直接认定为
+`QWidget::hide` 或 `ShowWindow(SW_HIDE)` 的调用，因此仍不能把它写成“隐藏选区悬浮层”。
+
+`ScreenshotWillStart`/`ScreenshotDidFinish` 的确存在外部 UI 订阅者，但必须逐个判定类归属。
+已确认的一组连接位于 `0x18580CE31`--`0x18580CF3E`：start 回调
+`0x185819F20` 把 receiver `+0x188` 置 0，finish 回调 `0x185819F60` 置 1；若
+`receiver+0x168` 非空，两者都调用 `0x185807500(receiver+0x168)` 刷新状态。该 receiver
+附近引用 `:/gui/svg/chat/voice/voice_me_`、`:/gui/svg/chat/voice/voice_friends_` 等聊天语音
+资源，而 `0x185807500` 是该模块的大型状态重建路径。因此这是一条截图生命周期控制聊天
+语音 UI 状态的链，不能作为通用悬浮内容消失的实现接入项目。
+
+从 PE `.rdata` 原始数据解析 vtable 后又确认：`ScreenshotView+0x10` 对象的 vtable
+`0x1888EEEF8` 只有 11 项，除元对象/析构入口外均为 QObject 基类实现；它不是 QWidget，
+没有 paintEvent。因此全屏窗口和选区绘制不能归属于这个对象。
+
+`ShotSelection` 才是 QWidget 风格的大型多继承对象。其构造函数从 `0x181C32D70` 开始调用
+窗口基类构造，并把主 vtable `0x1888E9D58` 写入对象首字段；该表包含 50 项，定制覆盖入口
+包括 `0x181C33ED0`、`0x181C36530`、`0x181C36700`、`0x181C36A20`、
+`0x181C338C0`。其中 `0x181C36A20` 会关闭 `ShotSelection+0x258` 图形对象、把拖拽矩形
+归一化写回 `+0x180`，清空文本状态，调用 `0x180594A40` 更新几何，最后转入基类事件处理；
+这是选区交互结束路径，不是滚动截图悬浮内容消失路径。后续应在其余 QWidget 覆盖入口中
+定位 paintEvent，并检查它是否接收或绘制 LongScreenShoter 的持续抓帧 pixmap。
+
+OpenCVWorker 在 `0x181C3E7FF` 调用 `0x181C3EAA0`，生成一张合成 pixmap
+并交换到 `OpenCVWorker+0x60`。该函数不发 Qt 信号，最终拼接任务也已在此前的
+`0x181C3E7A4` 发出。`0x180872670` 属于另一个 worker 的元对象，不能将它标为
+`GrabWorker::update_pixmap`；所以不能把 `+0x60` 表述为已确认的 UI 回写图，它也可能只是
+worker 的内部相邻帧状态。
+
 ## 4. GrabWorker
 
 ### 已确认行为
@@ -86,6 +217,23 @@ Qt 元对象中可见的方法：
 - `SetExcludeHwnds`
 - `doWork`
 - `Stop`
+
+`GrabWorker::update_pixmap(QPixmap)` 的真实 signal wrapper 是 `0x180872AE0`，元对象为
+`0x1885E6090`，method index 为 0，最终调用 `QMetaObject::activate` wrapper
+`0x18026BB40`。抓帧循环的两个方向分支分别在 `0x181C3D922` 和 `0x181C3D9EE`
+调用它。LongScreenShoter 构造时在 `0x181C3CCF3` 设置接收槽 `0x181C3E110`，并在
+`0x181C3CD05`/`0x181C3CD36` 使用上述 signal wrapper 和元对象建立连接。接收槽把 pixmap
+赋给 `LongScreenShoter+0xE0` 后调用 `0x181C3B110`；后者最终经 `0x181C3E360` 将缩放后的
+pixmap 交给 `LongScreenShoter+0x88` 所指对象。这个调用链只证明 `+0x88` 接收更新图像；
+运行实测已经否定“`+0x88` 是覆盖主选区、负责让悬浮内容消失”的解释，因此不能据此实现
+选区覆盖窗口。
+
+`GrabWorker::qt_static_metacall` 已重新定位为 `0x1808728E0`。调用类型为
+`QMetaObject::InvokeMetaMethod` 时，method index 4 落到 `0x18087294C`：它取
+`argv[1]` 的 `QVector<HWND>`，调用 Qt 容器赋值 helper `0x18088D0D0`，目标正是
+`GrabWorker+0x28`。同一跳转表中 index 2 在 `0x180872962` 写 target，index 3 在
+`0x18087296F` 写 `QScreen*`，index 1/5 分别进入 `doWork`/`Stop`。这确认
+`SetExcludeHwnds` 是调用方提供列表的纯 setter，不包含图像识别。
 
 `doWork` 位于 VA `0x181C3D0D0`。循环体没有任何 sleep、yield 或定时器：`0x181C3D10A` 是回边，
 每轮重新检查 `+0x68` 的停止标志后立即再次调用抓帧步骤。节流完全来自下游的条件变量阻塞，
@@ -120,6 +268,49 @@ VA `0x183E48E30` 的回调每轮做两次 `memcpy`（一次两条扫描线），
 `weshot::graphics::window_filter_t` 即 `MagSetWindowFilterList(MW_FILTERMODE_EXCLUDE)` 的封装：
 先用 `IsWindow()` 过滤 `SetExcludeHwnds` 传入的句柄，再交给放大镜排除。截图工具自身窗口
 因此不会进入画面 —— 不需要在自己的窗口上挖洞。
+
+### 首帧排除列表不是自动枚举结果
+
+`LongScreenShoter` 的启动路径在 `0x181C39068` 把 `0x18A565710` 写入栈上
+`rbp+0x1B0`。这是 Qt 容器使用的共享空数据块；`0x181C390A4` 随后把该容器地址作为
+第四参数传给 `0x183E46E40`，并在调用返回后按 Qt 共享数据引用计数规则释放
+（`0x181C390DC`–`0x181C39154`）。所以这次直接抓取首帧时传入的是**空
+`QVector<HWND>`**。
+
+这也从反汇编层面排除了一个容易误判的解释：抓帧 helper 不会枚举选区中的窗口，微信也
+不是在首次抓帧时自动发现并删除页面内的悬浮球。helper 在 `0x183E47275` 只对调用者已经
+给出的句柄执行 `IsWindow`，然后在 `0x183E47379` 以 mode `0`
+（`MW_FILTERMODE_EXCLUDE`）调用 `MagSetWindowFilterList`。
+
+这段证据只确认首帧 helper 没有自动枚举 HWND；它本身不能解释客户区内绘制的
+fixed/sticky 元素为何消失。证据链闭合前，不能把画布反馈或增长方向取材条表述成该现象的
+完整实现。
+
+LongScreenShoter 自身的持续抓帧列表也为空。构造函数在 `0x181C38214` 取得
+`LongScreenShoter+0x90`，并在 `0x181C38233`--`0x181C3823A` 写入 Qt 共享空容器。
+创建 GrabWorker 后，`0x181C3C7E6`--`0x181C3C7ED` 直接把这个容器复制到
+`GrabWorker+0x28`；抓帧循环在 `0x181C3D15A` 读取的仍是该字段。这里没有后续自动枚举
+悬浮 HWND 的路径，所以把系统中的 layered/topmost HWND 填入排除列表不是微信行为。
+
+### 原版微信运行时 HWND 证据
+
+2026-07-28 对微信 4.1.11.55 原版进程进行约 40 Hz 的顶层 HWND 采样。截图界面出现时，
+微信创建了一对覆盖整个虚拟屏幕工作区的可见 Qt 窗口（本次环境矩形均为
+`0,0,1707,1067`）：
+
+```text
+Qt51514QWindowIcon          style=0x96000000 exstyle=0x8
+Qt51514QWindowToolSaveBits style=0x16000000 exstyle=0x80088 owner=<上面的 QWindowIcon>
+```
+
+退出截图时，子级 tool window 与顶层 window 同步隐藏并销毁。例如本次记录中
+`0xE200C8`/`0x600872` 在 `16:21:22.471` 同时变为不可见，随后于
+`16:21:22.554` 销毁。原始时间线保存在
+`.re/work/wechat_hwnd_transitions.tsv`。
+
+这证明“屏幕上悬浮内容消失”发生在微信全屏截图 UI 的显示期间，不只是右侧预览或最终
+拼接图中的像素过滤；同时它仍不能单独证明是哪一个 QWidget/paint 路径改写了该区域。
+必须继续把这对原生 HWND 映射到 Qt 对象及 paint/update 调用地址，才能实现对齐。
 
 ### 帧交接：单槽覆盖，无队列
 
