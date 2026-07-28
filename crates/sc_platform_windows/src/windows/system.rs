@@ -57,9 +57,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CWP_SKIPDISABLED, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, ChildWindowFromPointEx, GW_HWNDNEXT,
     GWL_EXSTYLE, GetClientRect, GetCursorPos, GetTopWindow, GetWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, SMTO_ABORTIFHUNG,
-    SW_HIDE, SW_SHOWNOACTIVATE, SendMessageTimeoutW, SetCursorPos, ShowWindow, WM_MOUSEWHEEL,
-    WS_EX_LAYERED, WS_EX_TOPMOST, WindowFromPoint,
+    GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, SMTO_ABORTIFHUNG, SW_HIDE,
+    SW_SHOWNOACTIVATE, SendMessageTimeoutW, SetCursorPos, ShowWindow, WM_MOUSEWHEEL, WS_EX_LAYERED,
+    WS_EX_TOPMOST, WindowFromPoint,
 };
 
 use sc_drawing::Rect;
@@ -287,7 +287,8 @@ pub fn hide_floating_windows_overlapping(rect: Rect, exclude: WindowId) -> Vec<u
     let windows = floating_windows_overlapping(rect, exclude);
     for &window in &windows {
         let hwnd = HWND(window as *mut core::ffi::c_void);
-        unsafe { ShowWindow(hwnd, SW_HIDE) };
+        let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+        eprintln!("[scroll capture] hid floating HWND 0x{window:X}");
     }
     windows
 }
@@ -297,7 +298,8 @@ pub fn restore_hidden_windows(windows: &mut Vec<usize>) {
     for window in windows.drain(..) {
         let hwnd = HWND(window as *mut core::ffi::c_void);
         if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-            unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            eprintln!("[scroll capture] restored floating HWND 0x{window:X}");
         }
     }
 }
