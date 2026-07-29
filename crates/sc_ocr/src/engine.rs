@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use ocr_rs::OcrEngine;
+use ocr_rs::{OcrEngine, RecognizeOptions, RotatedTextMode};
 use sc_app::selection::RectI32;
 
 use crate::types::{BoundingBox, OcrResult};
@@ -181,8 +181,9 @@ pub fn recognize_from_memory(engine: &OcrEngine, image_data: &[u8]) -> Result<Ve
         image::load_from_memory(image_data).map_err(|e| anyhow::anyhow!("图像解码失败: {}", e))?;
 
     // OCR.
+    let options = RecognizeOptions::new().with_rotated_text_mode(RotatedTextMode::Robust);
     let raw_results = engine
-        .recognize(&img)
+        .recognize_with_options(&img, &options)
         .map_err(|e| anyhow::anyhow!("OCR 识别失败: {}", e))?;
 
     // Convert.
@@ -241,10 +242,20 @@ pub fn recognize_text_by_lines(
     let line_height_threshold = 20;
 
     for result in adjusted_results {
+        // Vertical text is already recognized as one block by robust mode. Keep it
+        // separate so it is not merged into a horizontal line near its top edge.
+        if result.bounding_box.height > result.bounding_box.width {
+            text_lines.push(vec![result]);
+            continue;
+        }
+
         let mut added_to_existing_line = false;
 
         for line in &mut text_lines {
             if let Some(first_in_line) = line.first() {
+                if first_in_line.bounding_box.height > first_in_line.bounding_box.width {
+                    continue;
+                }
                 let y_diff = (result.bounding_box.y - first_in_line.bounding_box.y).abs();
                 if y_diff <= line_height_threshold {
                     line.push(result.clone());
