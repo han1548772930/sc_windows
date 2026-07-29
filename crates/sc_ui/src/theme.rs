@@ -2,7 +2,7 @@ pub mod preview {
     use sc_rendering::Color;
 
     // Preview window layout.
-    pub const TITLE_BAR_HEIGHT: i32 = 64;
+    pub const TITLE_BAR_HEIGHT: i32 = 48;
 
     pub const BUTTON_WIDTH_OCR: i32 = TITLE_BAR_HEIGHT; // Square button.
     pub const BUTTON_HEIGHT_OCR: i32 = TITLE_BAR_HEIGHT;
