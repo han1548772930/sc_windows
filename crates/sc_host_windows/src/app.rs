@@ -877,8 +877,8 @@ impl App {
                 .map_err(AppError::Screenshot)?,
         );
         self.scroll_frame_source = Some(frame_source);
-        // WeChat constructs and positions the preview objects before starting GrabWorker. Keep
-        // frame delivery paused while reproducing that order: render the opening preview, apply
+        // Construct and position the preview objects before starting the grabber. Keep frame
+        // delivery paused while reproducing that order: render the opening preview, apply
         // its HWND to the Magnification filter, then expose captured frames to the matcher.
         let preview_size = self.scroll_preview_size();
         self.scroll_capture
@@ -977,9 +977,9 @@ impl App {
                 .and_then(ScrollCaptureWorker::poll_event);
             match event {
                 Some(ScrollCaptureEvent::Preview(bmp)) => {
-                    // WeChat calls setPixmap/update_preview once for every successful splice.
-                    // Do not collapse intermediate sizes: at scroll start that turns several
-                    // ordered growth steps into one visible geometry jump.
+                    // One preview update per successful splice. Do not collapse intermediate
+                    // sizes: at scroll start that turns several ordered growth steps into one
+                    // visible geometry jump.
                     ScrollPreviewWindow::show_or_update(selection, bmp)
                         .map_err(AppError::Screenshot)?;
                     preview_updated = true;

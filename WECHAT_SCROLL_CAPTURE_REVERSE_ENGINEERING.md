@@ -66,7 +66,8 @@ LongScreenShoter
     +-- SpliceWorker     只拼接超出已捕获范围的新像素条带
 ```
 
-三个阶段位于独立线程中。`OpenCVWorker` 按工作序号处理帧，不能任意清空中间帧后继续拿旧基准匹配新帧。
+三个阶段位于独立线程中。帧交接为单槽覆盖（见第 4 节）：`OpenCVWorker` 每次从共享槽
+取最新帧，与上一轮处理的基准帧匹配；被抓取但未消费的中间帧被覆盖丢弃。
 
 ### ShotSelection 与 ScreenshotView 的元对象边界（悬浮内容调查）
 
@@ -314,9 +315,11 @@ Qt51514QWindowToolSaveBits style=0x16000000 exstyle=0x80088 owner=<上面的 QWi
 
 ### 帧交接：单槽覆盖，无队列
 
-生产者写入**单个共享槽**（VA `0x18ADBC838`），无条件覆盖消费者尚未取走的帧，然后递增
+生产者写入**单个共享槽**（VA `0x18ADBC830`，GrabWorker 在 `0x181C3D1C0` 写入、
+OpenCVWorker 在 `0x181C3E56B` 读取），无条件覆盖消费者尚未取走的帧，然后递增
 VA `0x18ADBC848` 的计数器并 `notify_all`。**没有队列、没有深度上限、生产者从不阻塞**。
-旧帧被静默丢弃而非缓冲 —— 即 latest-frame-wins 合并。
+旧帧被静默丢弃而非缓冲 —— 即 latest-frame-wins 合并。相邻的 `0x18ADBC838` 只被
+OpenCVWorker 初始化路径读取，没有 GrabWorker 写入点，不是生产者槽。
 
 消费侧是 `std::condition_variable` 无限等待（互斥量 `0x18ADBC820`、条件变量 `0x18ADBC828`），
 deadline 为 `INT64_MAX`，只被 `notify_all` 唤醒，永不因时钟唤醒。
@@ -476,14 +479,14 @@ offset 为 0"不可区分 —— 调用方在 `0x181C3E718` 只做 `testl %ebx,%
 `0x180022C96`–`0x180022CA8` 逐个筛选候选：
 
 ```
-0x180022C74  esi  = 0x20(%rax)          ; 得票最高候选的支持数
+0x180022C74  esi  = 0x20(%rax)          ; offset 0 桶的票数（find(0) 的计数，无则 0）
 0x180022A4B  r15d = 0                   ; 参与匹配的关键点计数器，清零
 0x180022B44  incl %r15d                 ; 每接受一个匹配点自增
 0x180022C01  incl %r15d                 ;   （两条路径）
 
 0x180022C9B  eax = 0x20(%r8)            ; 当前候选的支持数
 0x180022C9F  leal (%rax,%rax,4), %eax   ; eax = support * 5
-0x180022CA2  leal (%rsi,%rax,4), %eax   ; eax = best_support + support * 20
+0x180022CA2  leal (%rsi,%rax,4), %eax   ; eax = count[0] + support * 20
 0x180022CA5  cmpl %r15d, %eax
 0x180022CA8  jl   0x180022CD5           ; 小于总点数 -> 丢弃该候选
 ```
@@ -491,8 +494,12 @@ offset 为 0"不可区分 —— 调用方在 `0x181C3E718` 只做 `testl %ebx,%
 即判据为：
 
 ```
-best_support + candidate_support * 20 >= total_matched_points
+count[0] + candidate_support * 20 >= total_matched_points
 ```
+
+`count[0]` 是 offset 0 桶的票数：`0x180022C5A` 以键 0 调用 map 查找
+（`0x180023660`，第三参数 `0x18C(%rbp)` 置 0），`0x180022C74` 取回该节点计数；
+映射中不存在 0 键时（`0x180022C47` 的 lower_bound 检查失败）为 0。不是"最高票数"。
 
 支持数不足的候选被整个丢弃，不参与最终 offset 的产生。这正是重复图案
 （同一列时间戳、重复的侧栏标签）下防止误匹配的机制：这类页面会产生大量
@@ -557,14 +564,16 @@ ORB 关键点与描述子结果，因此项目构建也固定到 4.5.5。`Format
 候选选择分为两次遍历，不能简化为对 Lowe 阶段 offset 的单次直方图：
 
 1. 第一遍只处理通过 Lowe ratio 的前两个 KNN 匹配，生成精确 offset 计数并按
-   `best_exact + candidate_exact * 20 >= first_pass_points` 预筛候选。
+   `count[0] + candidate_exact * 20 >= first_pass_points` 预筛候选。
 2. 第二遍针对每个保留候选重新遍历每组 KNN 的全部 5 个匹配；此时不再执行
    Lowe ratio，只应用 `distance <= 20`、`abs(dx) <= 4` 和
    `abs(dy - candidate) <= 1`，以第二遍支持数选最终 offset。
 
-候选容器使用降序整数比较器。最终 winner 在 `support >= best_support` 时更新，
-所以同票时选择后访问到的、数值更小的 offset。真实 `wxocr.dll` 对照样本已验证：
-`-35/-35`、`60/60`、`-40/-40` 完全一致；第一组支持数为 377。
+候选容器使用升序整数比较器（map 的 lower_bound 以 `node_key >= key` 前进，即默认
+`less`）。最终 winner 在 `support >= best_support` 时更新，按升序遍历，所以同票时
+选择后访问到的、数值更大的 offset。真实 `wxocr.dll` 对照样本已验证：
+`-35/-35`、`60/60`、`-40/-40` 完全一致；第一组支持数为 377（样本对均无平票，
+不受 winner 方向影响）。
 
 该第二遍位于 `0x180022CE6`–`0x180022E92`，是重复聊天气泡、头像和侧栏特征下
 避免少量错误对应点胜出的关键步骤。
@@ -914,7 +923,7 @@ else                      size = scaledToWidth (size.width * dpr)   ; 0x181C3E3A
 | 水平坐标误差 | 4px |
 | 垂直差归零范围 | 绝对值小于 2px |
 | offset 支持范围 | +/-1px |
-| 支持数权重 | 20（`best + support*20 >= total`） |
+| 支持数权重 | 20（`count[0] + support*20 >= total`） |
 | 最大位移 | 帧高的 60% |
 
 ### 流水线与时序常量
@@ -926,7 +935,7 @@ else                      size = scaledToWidth (size.width * dpr)   ; 0x181C3E3A
 | 鼠标按下去抖 | 501ms (`0x1F5`) | `0x181C3DB70` |
 | 画布单边上限 | 30,000px (`0x7530`) | `0x181C3E110` |
 | 画布面积上限 | 149,999,999px (`0x8F0D17F`) | `0x181C3E110` |
-| 帧槽容量 | 1（覆盖式，无队列） | `0x18ADBC838` |
+| 帧槽容量 | 1（覆盖式，无队列） | `0x18ADBC830` |
 | 逐帧去重 | 整帧像素相等即丢弃（忽略 alpha） | `0x181C3E637` → `0x1804CE420` |
 | 大位移上限 | 帧高 × 0.6 | `0x18858AB80` / `0x181C3E740` |
 | Qt 连接类型 | 0 = AutoConnection（跨线程即 Queued） | 8 处 connect |
@@ -1003,7 +1012,7 @@ else                      size = scaledToWidth (size.width * dpr)   ; 0x181C3E3A
 `621F4DDCAB1D0C1A909CDB8351041DBBEEBAFA82158CD4F9743CD87167D88412`，与本次分析样本
 完全相同；旧记录中的函数地址也逐字节匹配。
 
-- 帧交接确定为覆盖式单槽：生产者替换 `0x18ADBC838` 后递增序号并
+- 帧交接确定为覆盖式单槽：生产者替换 `0x18ADBC830` 后递增序号并
   `notify_all`，不存在积压队列。
 - `0x183E46980` 依次解析 `MagInitialize`、`MagUninitialize`、
   `MagSetWindowSource`、`MagSetWindowFilterList` 和

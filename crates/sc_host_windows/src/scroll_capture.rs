@@ -10,7 +10,10 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use opencv::{core, features2d, prelude::*};
 use sc_platform_windows::windows::graphics_capture::{BgraFrame, CapturedScrollFrame};
 
-// Keep matching work bounded so metadata remains close to its captured pixels.
+// The grab thread can outrun the matcher (grab ~6ms/frame, match ~2-25ms depending on
+// content). A single shared frame slot reproduces the latest-wins handoff: when the
+// matcher is busy the grab thread coalesces into the newest frame instead of queuing,
+// so frames in between are dropped the same way an overwritten shared slot drops them.
 const MAX_PENDING_FRAMES: usize = 1;
 // The canvas refuses further content once either guard trips: a single dimension reaching
 // 30,000px or the canvas area exceeding 149,999,999px.
@@ -487,6 +490,7 @@ impl ScrollCaptureSession {
         frame: BgraFrame,
         direction: i8,
     ) -> Result<MatchedFrame, (ScrollCaptureFailure, Option<RgbaImage>)> {
+        let frame_height = frame.height;
         if frame.width != self.previous.width() || frame.height != self.previous.height() {
             return Err((
                 ScrollCaptureFailure::InvalidFrame(
@@ -515,17 +519,16 @@ impl ScrollCaptureSession {
             frame.height,
         );
         let next_baseline_bgra = frame.pixels.clone();
-        // WeChat runs exactly one matcher before replacing the baseline. Running our OpenCV
-        // implementation first when the real wxocr fixture is enabled changes which frame wins
-        // the upstream single-slot mailbox, so wxocr no longer sees the same adjacent frames.
+        // Exactly one matcher runs per frame before the baseline is replaced. When the
+        // external OCR DLL fixture is enabled, our OpenCV path must not run first: it would
+        // consume the frame and change which frames the fixture sees as adjacent pairs.
         #[cfg(windows)]
         let (matched, next, next_bgra) = if let Some(wx) = wx_match {
-            let limit = frame.height.saturating_mul(3) / 5;
-            let shift = if wx.offset.unsigned_abs() > limit {
-                0
-            } else {
-                wx.offset
-            };
+            // The 60% check uses the previous (baseline) frame's height, matching the
+            // external matcher's caller, which measures the stored previous frame.
+            let limit = self.previous.height().saturating_mul(3) / 5;
+            let rejected = wx.offset.unsigned_abs() > limit;
+            let shift = if rejected { 0 } else { wx.offset };
             if std::env::var_os("SC_WXOCR_DLL").is_some() && wx.offset != 0 {
                 eprintln!(
                     "[scroll capture] wx match: splice_id={splice_id}, raw_offset={}, accepted_offset={shift}, width={}, height={}, limit={limit}, support={}, groups={}",
@@ -537,6 +540,8 @@ impl ScrollCaptureSession {
                     shift,
                     static_top: 0,
                     static_bottom: 0,
+                    raw_shift: wx.offset,
+                    rejected,
                 }),
                 None,
                 Some(frame),
@@ -560,7 +565,7 @@ impl ScrollCaptureSession {
                 None,
             )
         };
-        // WeChat replaces the baseline after matching and before testing the returned offset.
+        // The baseline is replaced after matching, before the returned offset is validated.
         // Only byte-identical frames above bypass this update.
         if let Some(next) = next.as_ref() {
             self.previous = next.clone();
@@ -571,6 +576,15 @@ impl ScrollCaptureSession {
             Err(failure) => return Err((failure, next)),
         };
         let shift = matched.shift;
+        // A rejected frame (offset beyond the trusted range) is distinct from a plain
+        // no-movement frame: the matcher did produce motion, it just fell outside what can
+        // be trusted. Surface the measured offset rather than the zeroed shift.
+        if matched.rejected {
+            eprintln!(
+                "[scroll capture] rejected frame: offset {} exceeds 60% of frame height {frame_height} at splice_id={splice_id}",
+                matched.raw_shift,
+            );
+        }
         Ok(MatchedFrame {
             splice_id,
             next,
@@ -643,7 +657,7 @@ impl ScrollCaptureSession {
         let next = match next {
             Some(next) => next,
             None => bgra_frame_to_rgba(
-                next_bgra.expect("wxocr matched frames retain their BGRA pixels"),
+                next_bgra.expect("externally matched frames retain their BGRA pixels"),
             )
             .map_err(ScrollCaptureFailure::InvalidFrame)?,
         };
@@ -767,6 +781,14 @@ struct FrameMatch {
     static_top: u32,
     /// Rows at the bottom that are identical between the two frames.
     static_bottom: u32,
+    /// The offset as measured before the 60% rejection, meaningful only when `rejected`
+    /// is true. The rejected offset is preserved rather than wiped, so the failure
+    /// report can say what was actually measured.
+    raw_shift: i32,
+    /// The matcher produced a candidate but it was rejected (offset beyond 60% of the
+    /// frame). This is distinct from "no movement", which is a clean zero; shift is still
+    /// reported as 0 either way.
+    rejected: bool,
 }
 
 impl OpenCvWorker {
@@ -811,6 +833,8 @@ impl OpenCvWorker {
                 shift: 0,
                 static_top: identical_top.min(height),
                 static_bottom: 0,
+                raw_shift: 0,
+                rejected: false,
             });
         }
         let identical_bottom = identical_edge_rows(previous, next, true);
@@ -822,6 +846,8 @@ impl OpenCvWorker {
                 shift: 0,
                 static_top: identical_top,
                 static_bottom: identical_bottom,
+                raw_shift: 0,
+                rejected: false,
             });
         }
         // Each run is raised to at least 31 before 31 is taken off, so a run shorter than the
@@ -869,10 +895,12 @@ impl OpenCvWorker {
                 shift: 0,
                 static_top: identical_top,
                 static_bottom: identical_bottom,
+                raw_shift: 0,
+                rejected: false,
             });
         }
 
-        // wxocr.dll passes OpenCV norm type 6 here. ORB descriptors are binary, so this is
+        // The matcher uses norm type 6 here. ORB descriptors are binary, so this is
         // NORM_HAMMING (not NORM_L2SQR, whose enum value is 5).
         let matcher =
             features2d::BFMatcher::create(core::NORM_HAMMING, false).map_err(opencv_failure)?;
@@ -929,25 +957,30 @@ impl OpenCvWorker {
                 shift: 0,
                 static_top: identical_top,
                 static_bottom: identical_bottom,
+                raw_shift: 0,
+                rejected: false,
             });
         }
-        // wxocr's ordered container uses a descending integer comparator. Its `>=` winner
-        // update therefore resolves equal support in favor of the smaller candidate.
+        // The vote map is ordered by ascending offset (the default `less` comparator). The
+        // candidate filter compares `count[0] + 20 * votes` against the total number of
+        // surviving matches: the zero-offset bucket is the baseline, and a candidate must
+        // clear it plus twenty votes per match to be considered.
         let mut exact_counts = BTreeMap::<i32, usize>::new();
         for &offset in &offsets {
             *exact_counts.entry(offset).or_default() += 1;
         }
-        let best_exact = exact_counts.values().copied().max().unwrap_or(0);
+        let zero_votes = exact_counts.get(&0).copied().unwrap_or(0);
         let candidates = exact_counts
             .into_iter()
-            .rev()
             .filter_map(|(candidate, count)| {
-                (best_exact.saturating_add(count.saturating_mul(SUPPORT_WEIGHT)) >= offsets.len())
+                (zero_votes.saturating_add(count.saturating_mul(SUPPORT_WEIGHT)) >= offsets.len())
                     .then_some(candidate)
             });
         let mut shift = 0i32;
         let mut support = 0usize;
         let mut has_candidate = false;
+        // Candidates iterate in ascending offset order. The winner update uses `>=`, so when
+        // two candidates tie on support the later (larger) offset wins.
         for candidate in candidates {
             has_candidate = true;
             let mut votes = 0usize;
@@ -983,14 +1016,20 @@ impl OpenCvWorker {
         if !has_candidate {
             shift = 999_999;
         }
-        // Beyond 60% of the frame there is too little overlap left to trust the result.
-        if shift.unsigned_abs() > height.saturating_mul(3) / 5 {
+        // Beyond 60% of the frame there is too little overlap left to trust the result. A
+        // rejected candidate is flagged here, distinct from a plain no-movement frame; the
+        // measured offset is kept in `raw_shift` for the failure report.
+        let rejected = shift.unsigned_abs() > height.saturating_mul(3) / 5;
+        let raw_shift = shift;
+        if rejected {
             shift = 0;
         }
         Ok(FrameMatch {
             shift,
             static_top: identical_top,
             static_bottom: identical_bottom,
+            raw_shift,
+            rejected,
         })
     }
 }
@@ -1376,9 +1415,9 @@ fn run_scroll_capture_worker(
                 stats_frames = stats_frames.saturating_add(1);
                 match result {
                     Ok(matched) => {
-                        // WeChat sends every accepted non-zero offset to SpliceWorker. That
-                        // worker owns the independent position/high-water state and decides
-                        // whether the canvas grows for this task.
+                        // Every accepted non-zero offset goes to the splice worker, which owns
+                        // the independent position/high-water state and decides whether the
+                        // canvas grows for this task.
                         if matched.shift == 0 {
                             let _ = events.send(ScrollCaptureEvent::FrameAccepted);
                             pending_frames.fetch_sub(1, Ordering::AcqRel);
@@ -1551,8 +1590,8 @@ mod tests {
         fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
     }
 
-    /// Calls the exact WeChat 4.1.11.55 wxocr export. Kept ignored because the DLL is a local
-    /// reverse-engineering fixture, not a runtime dependency of the application.
+    /// Calls the exact WeChat OCR export. Kept ignored because the DLL is a local fixture,
+    /// not a runtime dependency of the application.
     unsafe fn wx_merge_offset(
         left: &RgbaImage,
         right: &RgbaImage,
@@ -1586,7 +1625,7 @@ mod tests {
         let module = unsafe { LoadLibraryW(path.as_ptr()) };
         assert!(
             !module.is_null(),
-            "failed to load reverse-engineering wxocr.dll"
+            "failed to load the wxocr.dll fixture"
         );
         let address = unsafe { GetProcAddress(module, c"GetMergeOffsetInner".as_ptr().cast()) };
         assert!(!address.is_null(), "GetMergeOffsetInner export is missing");
@@ -1616,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the reverse-engineering wxocr.dll fixture"]
+    #[ignore = "requires the wxocr.dll fixture"]
     fn rust_matcher_agrees_with_real_wxocr() {
         assert_eq!(core::get_version_string().unwrap(), "4.5.5");
         let source = document(160, 500);
@@ -1724,9 +1763,10 @@ mod tests {
             .push_bgra_frame(document_frame(&source, 100, 180), 1)
             .unwrap();
 
-        // The real wxocr ordering resolves the two tied reverse offsets to -51, producing two
-        // rows of cumulative growth across these transitions.
-        assert_eq!(session.stitched.height(), 282);
+        // The real wxocr ordering (an ascending std::map) resolves the two tied reverse
+        // offsets to the larger one, -50, producing two rows less cumulative growth across
+        // these transitions than the smaller -51 would.
+        assert_eq!(session.stitched.height(), 280);
     }
 
     #[test]
@@ -1905,9 +1945,9 @@ mod tests {
         let bmp = worker.bmp_data().unwrap();
         let exported = image::load_from_memory(&bmp).unwrap();
         assert_eq!(exported.width(), 160);
-        // Both synthetic transitions tie at -20/-21; wxocr's descending candidate map and
-        // `>=` winner update select -21 for each transition.
-        assert_eq!(exported.height(), 142);
+        // Both synthetic transitions tie at -20/-21; wxocr's ascending candidate map and
+        // `>=` winner update select -20 for each transition.
+        assert_eq!(exported.height(), 140);
     }
 
     #[test]
@@ -2026,8 +2066,9 @@ mod tests {
     #[test]
     fn tied_offset_candidates_resolve_to_the_later_one() {
         // A synthetic document where two offsets draw: the winner must be the one observed
-        // later, not the numerically larger one. Resolving by magnitude instead is a 1px error
-        // that accumulates over a long capture.
+        // later in wxocr's ascending map traversal, which for an exact tie is the numerically
+        // larger candidate. Resolving by the smaller value instead is a 1px error that
+        // accumulates over a long capture.
         //
         // This asserts the rule directly on the matcher, since constructing real frames that
         // produce an exact tie is not reliable.
@@ -2038,7 +2079,7 @@ mod tests {
         }
         let mut shift = 0i32;
         let mut support = 0usize;
-        for (&candidate, _) in candidates.iter().rev() {
+        for (&candidate, _) in candidates.iter() {
             let votes = offsets
                 .iter()
                 .filter(|&&offset| (offset - candidate).abs() <= 1)
@@ -2051,8 +2092,8 @@ mod tests {
             }
         }
         assert_eq!(
-            shift, 3,
-            "a tie must go to the later candidate, not the larger value"
+            shift, 7,
+            "a tie must go to the later candidate, not the smaller value"
         );
         assert_eq!(support, 2);
     }
